@@ -16,7 +16,7 @@ A zero-dependency Node.js proxy that routes requests to 53 free LLM models acros
 ## Quick Start
 
 ```bash
-git clone https://github.com/tbogdan/Bogdan-s-LLM-Smart-Proxy && cd llm-proxy-docker
+git clone https://github.com/tbogdan/Bogdan-s-LLM-Smart-Proxy && cd Bogdan-s-LLM-Smart-Proxy
 chmod +x setup.sh && ./setup.sh
 ```
 
