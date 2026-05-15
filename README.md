@@ -467,11 +467,22 @@ cp -r skills/autonomous-loop/ /path/to/deer-flow/skills/custom/
 **Core behavior:**
 
 - Run until ALL tasks complete. Never ask permission.
-- Save progress to MemPalace. Resume with "continua".
+- Save progress to MemPalace. Resume with "continue".
 - Spawn sub-agents for parallel work via shared MemPalace.
 - Test with Playwright before marking done.
 - Error = try alternative, continue. Never stop for one failure.
 - Long context = save to MemPalace, summarize, continue.
+
+## Memory (MemPalace)
+
+The proxy includes an optional persistent memory system. When enabled, it:
+- **Auto-saves** session progress, task state, architecture decisions, error resolutions, and user preferences
+- **Auto-recalls** relevant memories and injects them into the system prompt on each request
+- **Resumes context** when user says "continue" -- loads last task state and session progress
+
+Memory runs as a Docker service (`mempalace-mcp` on port 8891). IDEs can also connect directly.
+
+Disable with `MEMPALACE_ENABLED=false` in `.env`. Proxy works normally without it.
 
 ## Architecture
 
@@ -481,17 +492,22 @@ Client Request
      v
 [LLM Smart Proxy :18900]
      |
-     +-- /v1/chat/completions --> Group Router --> Provider 1 --> Provider 2 --> ...
+     +-- /v1/chat/completions --> Recall Memories --> Compact if needed
      |                                  |
-     |                           Score & Rank
-     |                           Transform Request
-     |                           Detect Thinking
+     |                           Group Router --> Provider 1 --> Provider 2 --> ...
+     |                                  |
+     |                           Score & Rank (agent-aware, compat-aware)
+     |                           Transform Request (strip incompatible fields)
+     |                           Detect Thinking / Stalling
+     |                           Save to MemPalace (async)
      |
      +-- /v1/models           --> List all providers + groups
      +-- /v1/capabilities     --> Capability summary
-     +-- /health              --> System status
+     +-- /health              --> System status + MemPalace status
      +-- /scores              --> Scoring data
      +-- /discovery           --> Discovered models
+
+[MemPalace MCP :8891]         --> Persistent memory (sessions, tasks, errors, preferences)
 
 [LLM Discovery Daemon]
      |

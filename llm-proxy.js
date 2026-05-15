@@ -6,6 +6,7 @@ const https = require("https");
 const { URL } = require("url");
 const fs = require("fs");
 const path = require("path");
+const mempalace = require("./llm-mempalace");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -234,9 +235,9 @@ function recordFailure(name, error) {
   saveScores();
 }
 
-function setCooldown(name) {
+function setCooldown(name, durationMs) {
   const s = getScore(name);
-  s.cooldown_until = Date.now() + COOLDOWN_MS;
+  s.cooldown_until = Date.now() + (durationMs || COOLDOWN_MS);
 }
 
 function isOnCooldown(name) {
@@ -296,7 +297,8 @@ function providerScore(p) {
   const rate = s.requests > 0 ? s.success_rate : 1.0;
   const latPenalty = s.avg_latency > 0 ? Math.min(s.avg_latency / 30000, 1) : 0;
   const tierBonus = (4 - p.tier) * 0.2; // tier 1 = 0.6, tier 2 = 0.4, tier 3 = 0.2
-  return rate * 0.5 + (1 - latPenalty) * 0.3 + tierBonus;
+  const stallingPenalty = s.stalling > 0 ? Math.min(s.stalling * 0.05, 0.4) : 0; // -0.05 per stall, max -0.4
+  return rate * 0.5 + (1 - latPenalty) * 0.3 + tierBonus - stallingPenalty;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +361,50 @@ function estimateTokens(messages) {
     if (m.reasoning_content) chars += m.reasoning_content.length;
   }
   return Math.ceil(chars / 4);
+}
+
+// ---------------------------------------------------------------------------
+// Smart context compaction — save middle to MemPalace, keep edges
+// ---------------------------------------------------------------------------
+function compactMessages(messages, targetTokens, maxOutputTokens) {
+  if (!messages || messages.length < 4) return null;
+
+  // Keep: system messages, first user message (task definition), last 4 messages (recent context)
+  const system = messages.filter((m) => m.role === "system");
+  const nonSystem = messages.filter((m) => m.role !== "system");
+  if (nonSystem.length < 6) return null; // not enough to compact
+
+  const firstUser = nonSystem[0]; // original task
+  const lastN = nonSystem.slice(-4); // recent conversation
+  const middle = nonSystem.slice(1, -4); // everything else = compactable
+
+  if (middle.length === 0) return null;
+
+  // Build summary of middle section
+  const middleSummary = middle.map((m) => {
+    const text = typeof m.content === "string" ? m.content : "";
+    const toolInfo = m.tool_calls?.length ? ` [${m.tool_calls.length} tool calls]` : "";
+    const role = m.role;
+    return `${role}: ${text.substring(0, 80).replace(/\n/g, " ")}${toolInfo}`;
+  }).join("\n");
+
+  // Create compacted message array
+  const summaryMsg = {
+    role: "assistant",
+    content: `[CONTEXT COMPACTED — ${middle.length} messages saved to memory. Summary of removed messages:\n${middleSummary.substring(0, 1000)}\nUse memory recall for full details. Continue from the most recent context below.]`,
+  };
+
+  const compacted = [...system, firstUser, summaryMsg, ...lastN];
+  const newTokens = estimateTokens(compacted);
+
+  // If still too big, be more aggressive — keep only last 2
+  if (newTokens + maxOutputTokens > targetTokens) {
+    const lastTwo = nonSystem.slice(-2);
+    const aggressiveCompacted = [...system, firstUser, summaryMsg, ...lastTwo];
+    return { messages: aggressiveCompacted, removed: nonSystem.length - 3 };
+  }
+
+  return { messages: compacted, removed: middle.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +478,17 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     }
   }
 
+  // Tools limit detected (e.g. "maximum number of items is 128")
+  const toolsMatch = body.match(/tools.*?maximum.*?(\d+)/i) || body.match(/maximum number of items is (\d+)/i);
+  if (toolsMatch && (statusCode === 400 || statusCode === 422)) {
+    const cap = parseInt(toolsMatch[1], 10);
+    if (cap > 0 && (!c.max_tools || cap < c.max_tools)) {
+      c.max_tools = cap;
+      changed = true;
+      log(`COMPAT: ${providerName} max tools capped at ${cap}`);
+    }
+  }
+
   if (changed) saveCompat();
 }
 
@@ -471,6 +528,61 @@ function transformRequest(provider, reqBody) {
     body.max_tokens = compat.max_tokens_cap;
   }
 
+  // Cap tools array (auto-learned — e.g. Groq max 128)
+  if (compat.max_tools && body.tools?.length > compat.max_tools) {
+    body.tools = body.tools.slice(0, compat.max_tools);
+  }
+
+  // Inject core system instruction — prevents lazy/stalling responses + autonomous execution
+  if (body.messages && body.messages.length > 0) {
+    let CORE_INSTRUCTION = [
+      "YOU ARE AN AUTONOMOUS EXECUTOR. You do not wait. You do not ask. You execute.",
+      "",
+      "RULES — follow without exception:",
+      "1. Task = EXECUTE COMPLETELY. ALL steps, ALL files, ALL code in one response.",
+      "2. NEVER respond with just \"Let me check\" or \"I'll analyze\" then stop — include the actual result.",
+      "3. NEVER end with a question or \"awaiting confirmation\" — just execute.",
+      "4. NEVER list remaining work without executing it.",
+      "5. If you use tools, call them immediately. Do not narrate what you will do.",
+      "6. Write code directly. Do not describe what you would write.",
+      "7. Be concise. Lead with the answer, not the reasoning.",
+      "8. \"continue\", \"remember\", \"where were we\" = resume immediately, no re-planning.",
+      "",
+      "DECISION MAKING — stop asking, start building:",
+      "- Missing info = read code with tools first, then use best judgment and BUILD.",
+      "- Multiple options = pick the best one and BUILD. Don't present options.",
+      "- Tech choices (DB, auth, style) = decide yourself, you are the expert.",
+      "",
+      "VIOLATIONS (outputting any = failure):",
+      "- \"Should I continue?\" / \"Shall I proceed?\" / \"Awaiting confirmation\" / \"Doriti sa continui?\"",
+      "- \"Please specify\" / \"Please provide\" / \"If you have a preference\" / \"Te rog sa mentionezi\"",
+      "- \"Let me check\" then stopping / \"I will do X next\" without doing it / \"Astept confirmarea\"",
+      "- \"Voi continua cu X\" without doing it / \"Daca ai vreo preferinta\" / \"Ce urmeaza sa fac\"",
+      "- Ending with a question when you can act / Listing work without executing it",
+      "",
+      "ON ERROR: try alternative approach, continue. Never stop for one error.",
+      "ON LONG CONTEXT: summarize progress, continue remaining work.",
+      "",
+      "TOOL CALLS:",
+      "- When tools available, USE them. Don't describe file contents — read them.",
+      "- Tool args must be valid. Verify paths exist before editing. Never pass undefined.",
+      "- If tool fails, try alternative (different path, different approach). Don't repeat same failure.",
+      "- Respond in the same language the user writes in.",
+    ].join("\n");
+
+    // Append recalled memories from MemPalace
+    if (reqBody._memoryInjection) {
+      CORE_INSTRUCTION += reqBody._memoryInjection;
+    }
+
+    // Prepend as first system message
+    if (body.messages[0]?.role === "system") {
+      body.messages[0] = { ...body.messages[0], content: CORE_INSTRUCTION + "\n\n" + body.messages[0].content };
+    } else {
+      body.messages = [{ role: "system", content: CORE_INSTRUCTION }, ...body.messages];
+    }
+  }
+
   return body;
 }
 
@@ -493,6 +605,93 @@ function detectThinking(responseBody) {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Stalling detection — model says "Let me check" without acting
+// ---------------------------------------------------------------------------
+const STALLING_PATTERNS = [
+  /^let me (?:check|look|analyze|search|find|see|review|examine)/i,
+  /^(?:i'll|i will) (?:check|look|analyze|search|find|review|examine)/i,
+  /^(?:let me|i'll) (?:also )?(?:adjust|fix|update|modify)/i,
+  /^checking/i,
+  /^looking at/i,
+  /^searching for/i,
+];
+
+// Fake execution: model outputs shell commands as text instead of tool calls
+const FAKE_EXEC_PATTERNS = [
+  /^(?:npm|npx|yarn|pnpm)\s+(?:run|install|build|start|dev|test)/m,
+  /^docker(?:-compose)?\s+(?:build|up|push|pull|run|stop|restart)/m,
+  /^(?:ssh|scp|rsync)\s+/m,
+  /^(?:git\s+(?:add|commit|push|pull|clone|checkout))/m,
+  /^(?:curl|wget)\s+/m,
+  /^(?:mkdir|rm|cp|mv|chmod|chown)\s+/m,
+  /^(?:cd|ls|cat|pwd)\s+/m,
+];
+
+function detectStalling(responseBody) {
+  try {
+    const data = JSON.parse(responseBody);
+    const choice = data.choices?.[0];
+    if (!choice) return false;
+    const content = (choice.message?.content || "").trim();
+    const hasToolCalls = choice.message?.tool_calls?.length > 0;
+
+    // If model made tool calls, not stalling — it acted
+    if (hasToolCalls) return false;
+
+    // Empty or very short response with no tool calls = stalling
+    if (content.length < 5 && !hasToolCalls) return true;
+
+    // Matches stalling pattern and response is short (< 200 chars)
+    if (content.length < 200) {
+      for (const pat of STALLING_PATTERNS) {
+        if (pat.test(content)) return true;
+      }
+    }
+
+    // Ends with question mark and short = asking instead of doing
+    if (content.length < 300 && content.endsWith("?") && !hasToolCalls) {
+      if (/\b(should I|shall I|do you want|would you like|can you)\b/i.test(content)) {
+        return true;
+      }
+    }
+
+    // Fake execution: outputs shell commands as text instead of calling tools
+    if (!hasToolCalls) {
+      let fakeCount = 0;
+      for (const pat of FAKE_EXEC_PATTERNS) {
+        if (pat.test(content)) fakeCount++;
+      }
+      // 2+ shell commands as text with tools available = fake execution
+      if (fakeCount >= 2) return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function recordStalling(name) {
+  const s = getScore(name);
+  s.stalling = (s.stalling || 0) + 1;
+  log(`STALLING: ${name} (count: ${s.stalling})`);
+  saveScores();
+}
+
+// Per-group ban list — providers banned from specific groups due to repeated stalling
+// Resets on restart (not persisted — stalling is context-dependent, not permanent)
+const groupBans = {}; // { "groupName": Set<providerName> }
+
+function banFromGroup(providerName, groupName) {
+  if (!groupBans[groupName]) groupBans[groupName] = new Set();
+  groupBans[groupName].add(providerName);
+}
+
+function isBannedFromGroup(providerName, groupName) {
+  return groupBans[groupName]?.has(providerName) || false;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +782,45 @@ function detectUseCase(messages, reqBody) {
 }
 
 // ---------------------------------------------------------------------------
+// Smartness bonus — prefer larger, more capable, smarter models
+// ---------------------------------------------------------------------------
+function smartnessBonus(p) {
+  let bonus = 0;
+
+  // More capabilities = smarter model
+  const capCount = p.caps?.length || 0;
+  bonus += Math.min(capCount * 0.05, 0.3); // +0.05 per cap, max +0.3
+
+  // Thinking/reasoning capable = smarter
+  if (p.tc) bonus += 0.2;
+
+  // Coding capability = better trained
+  if (p.caps?.includes("coding")) bonus += 0.15;
+
+  // Larger context = better architecture
+  if (p.context >= 1000000) bonus += 0.2;       // 1M+
+  else if (p.context >= 256000) bonus += 0.15;   // 256K+
+  else if (p.context >= 131072) bonus += 0.1;    // 131K
+  else if (p.context < 32768) bonus -= 0.15;     // <32K = limited
+
+  // Known large/smart models get explicit boost
+  const model = (p.model || "").toLowerCase();
+  if (/gpt-4|gpt-5|gpt-oss-120b/.test(model)) bonus += 0.15;
+  if (/qwen.*(?:max|235b|397b|480b|coder)/.test(model)) bonus += 0.15;
+  if (/deepseek.*(?:v3|v4|r1)/.test(model)) bonus += 0.15;
+  if (/gemini.*(?:2\.5|3).*(?:pro|flash)/.test(model)) bonus += 0.15;
+  if (/command-a|nemotron.*120b|kimi.*k2/.test(model)) bonus += 0.1;
+  if (/llama.*(?:70b|4-maverick)/.test(model)) bonus += 0.05;
+  if (/mistral.*(?:large|medium)/.test(model)) bonus += 0.05;
+
+  // Small/weak models penalized
+  if (/\b(?:7b|8b|1\.5b|0\.6b|3b|4b)\b/.test(model)) bonus -= 0.2;
+  if (/mini|nano|tiny|small|lite/i.test(model) && !/minimax/i.test(model)) bonus -= 0.1;
+
+  return bonus;
+}
+
+// ---------------------------------------------------------------------------
 // Provider selection — unified for all groups with smart fallback
 // ---------------------------------------------------------------------------
 function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
@@ -591,7 +829,7 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
 
   // All alive providers with enough context
   const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
-    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name) && !isBannedFromGroup(p.name, groupName));
   const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
 
   // Does request carry reasoning_content or need thinking?
@@ -599,10 +837,13 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
   const needsThinking = cap === "thinking" || detectedCaps.has("thinking");
   const needsTools = cap === "tools" || detectedCaps.has("tools") || isAgent;
 
-  // Score each provider: base score + group match + detected caps + agent boost + compat
+  // Score each provider: base score + smartness + group match + detected caps + agent boost + compat
   const scored = withContext.map((p) => {
     let bonus = 0;
     const compat = getCompat(p.name);
+
+    // Smartness bonus — prefer more capable, larger, smarter models
+    bonus += smartnessBonus(p);
 
     // Group capability match: strong bonus for matching, but don't exclude non-matching
     if (cap !== null && cap !== undefined) {
@@ -625,8 +866,8 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
     // Learned compat penalties: avoid providers that will fail for this request type
     if (compat.no_reasoning && hasReasoning) bonus -= 0.5;
     if (compat.no_extra_body && needsThinking) bonus -= 0.3;
-    if (compat.max_tokens_cap && needsTools) bonus -= 0.1; // limited output = worse for tools
-    if (compat.no_reasoning && needsThinking) bonus -= 0.3; // can't relay thinking chains
+    if (compat.max_tokens_cap && needsTools) bonus -= 0.1;
+    if (compat.no_reasoning && needsThinking) bonus -= 0.3;
 
     return { provider: p, score: providerScore(p) + bonus };
   });
@@ -641,12 +882,15 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
   const needsThinking = detectedCaps.has("thinking");
 
   const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
-    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name) && !isBannedFromGroup(p.name, "auto"));
   const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
 
   const scored = withContext.map((p) => {
     let bonus = 0;
     const compat = getCompat(p.name);
+
+    // Smartness bonus
+    bonus += smartnessBonus(p);
 
     for (const cap of detectedCaps) {
       if (p.caps.includes(cap)) bonus += 0.3;
@@ -697,10 +941,26 @@ async function routeToProvider(provider, reqBody) {
       disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
     }
     detectIncompatibility(provider.name, resp.status, resp.body);
+    try { mempalace.saveError(mempalace.getSession(reqBody.messages), resp.body.substring(0, 200)); } catch {}
     throw { status: resp.status, body: resp.body, latency };
   }
 
+  // Stalling detection — model says "Let me check" and stops without acting
+  if (reqBody?.tools?.length > 0 || reqBody?.functions?.length > 0) {
+    const stallingDetected = detectStalling(resp.body);
+    if (stallingDetected) {
+      recordStalling(provider.name);
+      throw { status: 422, body: resp.body, latency, stalling: true };
+    }
+  }
+
   recordSuccess(provider.name, latency);
+
+  // MemPalace: save after successful response
+  try {
+    const s = mempalace.getSession(reqBody.messages);
+    mempalace.triggerSaves(s, reqBody, resp.body);
+  } catch { /* graceful degradation */ }
 
   // Thinking detection
   if (provider.tc && detectThinking(resp.body)) {
@@ -771,24 +1031,156 @@ async function handleChatCompletion(reqBody, clientRes) {
   const requestedMaxTokens = reqBody.max_tokens || 4096;
   const totalNeeded = estTokens + requestedMaxTokens;
 
+  // MemPalace: recall memories and inject into context
+  const mpSession = mempalace.getSession(reqBody.messages);
+  let memoryInjection = "";
+  try {
+    memoryInjection = await mempalace.recallMemories(mpSession, reqBody);
+  } catch { /* graceful degradation */ }
+  if (memoryInjection) reqBody._memoryInjection = memoryInjection;
+
+  // Save project context on first request of session
+  if (mpSession.requestCount === 1) {
+    const sysMsg = reqBody.messages?.find((m) => m.role === "system");
+    if (sysMsg) mempalace.saveProjectContext(mpSession, typeof sysMsg.content === "string" ? sysMsg.content : "");
+  }
+
+  // Detect "continua loop" — user retrying because previous response was useless
+  // Count recent continua/continue messages — if user sends 2+ in a row, provider is stalling
+  if (reqBody.messages?.length >= 3) {
+    const msgs = reqBody.messages;
+    let continuaCount = 0;
+    let shortAssistantCount = 0;
+    // Scan last 10 messages for stalling patterns
+    for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 10); i--) {
+      const m = msgs[i];
+      if (m.role === "user") {
+        const text = typeof m.content === "string" ? m.content.trim() : "";
+        if (/(?:continu[ea]|continue|go|do it|next|remember|recall|where were we|what were we)/i.test(text) && text.length < 50) {
+          continuaCount++;
+        }
+      }
+      if (m.role === "assistant" && !m.tool_calls?.length) {
+        const ac = typeof m.content === "string" ? m.content : "";
+        // Short response without tool calls = stalling
+        if (ac.length < 800) shortAssistantCount++;
+        // Fake execution (shell commands as text)
+        let fe = 0;
+        for (const pat of FAKE_EXEC_PATTERNS) { if (pat.test(ac)) fe++; }
+        if (fe >= 1) shortAssistantCount++;
+      }
+    }
+    // Stalling detected — check severity
+    if ((continuaCount >= 2 || shortAssistantCount >= 3) && continuaCount + shortAssistantCount >= 3) {
+      // Find stalling assistant messages
+      for (let i = msgs.length - 2; i >= Math.max(0, msgs.length - 8); i--) {
+        const m = msgs[i];
+        if (m.role === "assistant" && !m.tool_calls?.length) {
+          const aContent = typeof m.content === "string" ? m.content : "";
+          let fakeExec = 0;
+          for (const pat of FAKE_EXEC_PATTERNS) { if (pat.test(aContent)) fakeExec++; }
+          if (fakeExec >= 1 || aContent.length < 500) {
+            const topProviders = (requestedModel === "auto"
+              ? getProvidersForAuto(reqBody.messages, totalNeeded, reqBody)
+              : getProvidersForGroup(requestedModel, totalNeeded, reqBody)
+            ).slice(0, 3);
+            const banGroup = requestedModel === "auto" ? "auto" : requestedModel;
+
+            if (continuaCount >= 3) {
+              // 3+ continua = ban from group
+              for (const tp of topProviders) {
+                recordStalling(tp.name);
+                banFromGroup(tp.name, banGroup);
+                mempalace.saveStalling(tp.name, banGroup, "repeated stalling");
+              }
+              log(`STALL-BAN: ${continuaCount}x continua, banned ${topProviders.map((p) => p.name).join(", ")} from ${banGroup} (${groupBans[banGroup]?.size || 0} total banned)`);
+            } else {
+              // 2x continua = 5min cooldown only
+              for (const tp of topProviders) {
+                recordStalling(tp.name);
+                setCooldown(tp.name, 5 * 60_000);
+              }
+              log(`STALL-COOL: ${continuaCount}x continua, ${topProviders.map((p) => p.name).join(", ")} cooled 5min`);
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Proactive compaction: if context exceeds 80% of best available provider, compact preemptively
+  if (isGroup && reqBody.messages?.length > 6) {
+    const bestProviders = requestedModel === "auto"
+      ? getProvidersForAuto(reqBody.messages, 0, reqBody)
+      : getProvidersForGroup(requestedModel, 0, reqBody);
+    if (bestProviders.length > 0) {
+      const maxContext = Math.max(...bestProviders.map((p) => p.context));
+      const threshold = Math.floor(maxContext * 0.8);
+      if (totalNeeded > threshold) {
+        const targetTokens = Math.floor(maxContext * 0.6); // compact to 60%
+        try { await mempalace.saveCompactedContext(mpSession, reqBody.messages); } catch {}
+        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens);
+        if (compacted) {
+          reqBody.messages = compacted.messages;
+          const newEst = estimateTokens(reqBody.messages);
+          log(`PRE-COMPACT: ${estTokens}tok → ${newEst}tok (${compacted.removed} msgs saved to mempalace, threshold was ${threshold})`);
+        }
+      }
+    }
+  }
+
   if (isGroup) {
     // auto group: detect use case, try all providers with smart ordering
-    const providers = requestedModel === "auto"
+    let providers = requestedModel === "auto"
       ? getProvidersForAuto(reqBody.messages, totalNeeded, reqBody)
       : getProvidersForGroup(requestedModel, totalNeeded, reqBody);
 
+    // Smart compaction: if no providers fit, compact context and retry
+    if (providers.length === 0 && reqBody.messages?.length > 4) {
+      const allProviders = requestedModel === "auto"
+        ? getProvidersForAuto(reqBody.messages, 0, reqBody)
+        : getProvidersForGroup(requestedModel, 0, reqBody);
+
+      if (allProviders.length > 0) {
+        const maxContext = Math.max(...allProviders.map((p) => p.context));
+        const targetTokens = Math.floor(maxContext * 0.7); // aim for 70% of max context
+
+        // Save full context to MemPalace before compaction
+        try {
+          await mempalace.saveCompactedContext(mpSession, reqBody.messages);
+        } catch { /* best effort */ }
+
+        // Compact messages: keep system + first user + last N messages that fit
+        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens);
+        if (compacted) {
+          reqBody.messages = compacted.messages;
+          const newEstTokens = estimateTokens(reqBody.messages);
+          const newTotal = newEstTokens + requestedMaxTokens;
+          log(`COMPACT: ${estTokens}tok → ${newEstTokens}tok (removed ${compacted.removed} messages, saved to mempalace)`);
+
+          // Retry provider selection with compacted context
+          providers = requestedModel === "auto"
+            ? getProvidersForAuto(reqBody.messages, newTotal, reqBody)
+            : getProvidersForGroup(requestedModel, newTotal, reqBody);
+        }
+      }
+    }
+
     if (providers.length === 0) {
-      // Check if providers exist but context is too small
+      // Check if providers exist but context is too small even after compaction
       const allProviders = requestedModel === "auto"
         ? getProvidersForAuto(reqBody.messages, 0, reqBody)
         : getProvidersForGroup(requestedModel, 0, reqBody);
       if (allProviders.length > 0) {
         const maxContext = Math.max(...allProviders.map((p) => p.context));
+        const currentTokens = estimateTokens(reqBody.messages);
+        const currentTotal = currentTokens + requestedMaxTokens;
         // Return OpenAI-compatible context_length_exceeded error
-        // This triggers context compaction in Kilo Code, Roo Code, Cursor, etc.
+        // This triggers context compaction in IDE (Kilo Code, Roo Code, Cursor)
         const body = JSON.stringify({
           error: {
-            message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${totalNeeded} tokens (${estTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
+            message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${currentTotal} tokens (${currentTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
             type: "invalid_request_error",
             param: "messages",
             code: "context_length_exceeded",
@@ -970,6 +1362,7 @@ function handleHealth() {
   return {
     status: "ok",
     uptime: process.uptime(),
+    uptime_human: formatUptime(process.uptime()),
     providers_version: providersVersion,
     providers_source: fs.existsSync(PROVIDERS_FILE) ? "providers.json" : "seed",
     providers: {
@@ -983,6 +1376,7 @@ function handleHealth() {
     })),
     quota_disabled: Object.keys(quotaDisabled).length > 0 ? quotaDisabled : undefined,
     compat_overrides: Object.keys(providerCompat).length > 0 ? Object.keys(providerCompat).length : undefined,
+    mempalace: mempalace.mempalaceHealth(),
     scores_file: fs.existsSync(SCORES_FILE),
     discovery_file: fs.existsSync(DISCOVERY_FILE),
     providers_file: fs.existsSync(PROVIDERS_FILE),
@@ -1056,6 +1450,17 @@ function readBody(req) {
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const parts = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  parts.push(`${m}m`);
+  return parts.join(" ");
 }
 
 function log(msg) {

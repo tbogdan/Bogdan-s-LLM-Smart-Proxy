@@ -71,8 +71,8 @@ else
   echo ".env exists, skipping key setup."
 fi
 
-# Create data directory
-mkdir -p data
+# Create data and palace directories
+mkdir -p data palace
 
 echo ""
 echo "Building and starting containers..."

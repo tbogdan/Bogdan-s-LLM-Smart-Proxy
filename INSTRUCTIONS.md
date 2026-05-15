@@ -102,20 +102,43 @@ r = client.chat.completions.create(model="auto-coding", messages=[{"role":"user"
 
 ## Install Recommended Tools
 
-### MemPalace (persistent AI memory)
+### MemPalace (persistent AI memory — built into proxy)
+
+MemPalace runs as a Docker service alongside the proxy. It auto-saves and auto-recalls context, so LLMs never lose work.
+
+**Built-in features (automatic, no config needed):**
+- Auto-saves session progress, task state, architecture decisions, error resolutions, user preferences
+- Auto-recalls relevant memories and injects into system prompt on each request
+- Resumes context on "continue" — loads last task state and session progress
+- Smart context compaction — when context exceeds 80% of provider limit, saves middle to MemPalace and compacts
+- Recovery — compacted context recoverable via MemPalace recall
+
+**How it works:**
+1. Proxy tracks sessions by system prompt hash (each IDE/project = separate session)
+2. On each request, searches MemPalace for relevant memories (project status, preferences, past errors)
+3. Injects up to 2000 tokens of memory into system prompt before routing
+4. After response, saves task progress, architecture decisions, and corrections
+5. When context gets large (>80% of best provider), proactively compacts to 60%
+6. If all providers reject for context size, compacts + retries before returning error to IDE
+
+**Direct MCP access (optional — for local IDE integration too):**
 
 ```bash
-# Install package + MCP + skill + hooks
+# MemPalace MCP server available at port 8891
+# IDE agents can connect directly for manual memory operations
+# Add to your MCP config:
+{
+  "url": "http://YOUR_SERVER:8891/sse"
+}
+```
+
+**Standalone install (for local dev without proxy):**
+
+```bash
 pip install mempalace
 mempalace init .
 claude mcp add mempalace -- python -m mempalace.mcp_server
 claude plugin add mempalace
-
-# For DeerFlow/other agents — add MCP config:
-# command: python3 -m mempalace.mcp_server
-# env: MEMPALACE_DIR=/path/to/palace
-
-# Verify
 mempalace status
 ```
 
@@ -177,7 +200,7 @@ cp -r skills/autonomous-loop/ /path/to/deer-flow/skills/custom/
 Core rules:
 - Execute all tasks without stopping or asking
 - Save progress to MemPalace during work
-- Resume with "continua" — reads MemPalace, continues from saved state
+- Resume with "continue" — reads MemPalace, continues from saved state
 - On error: try alternative, continue. Never stop for one failure.
 - Long context: save to MemPalace, summarize, continue
 
@@ -196,11 +219,23 @@ seed-providers.json (source of truth)
 [LLM Proxy :18900] --fs.watch--> hot-reload on change
         |
         +-- /v1/chat/completions  --> group routing + failover
+        |       |
+        |       +-- recall memories from MemPalace (inject into system prompt)
+        |       +-- detect context size → proactive compaction if >80%
+        |       +-- route to best provider (context-aware, agent-aware)
+        |       +-- save session/tasks/errors/preferences to MemPalace (async)
+        |
         +-- /v1/models            --> list all (filterable by ?cap=X)
         +-- /v1/capabilities      --> capability counts
-        +-- /health               --> system status
+        +-- /health               --> system status + mempalace status
         +-- /scores               --> provider scoring
         +-- /discovery            --> scan results
+
+[MemPalace MCP :8891] <-- persistent memory (sessions, tasks, preferences, errors)
+        |
+        +-- auto-save: session summaries, task progress, architecture, corrections
+        +-- auto-recall: project context, task resume, error fixes, preferences
+        +-- context compaction: save middle → compact → recover on "continue"
 ```
 
 ## Troubleshooting
