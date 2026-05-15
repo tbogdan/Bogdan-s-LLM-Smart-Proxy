@@ -18,6 +18,7 @@ const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
 const REQUEST_TIMEOUT = 120_000; // 120s per provider attempt
 const COOLDOWN_MS = 1000; // per-provider cooldown on 429
+const QUOTA_DISABLED_FILE = path.join(DATA_DIR, "quota-disabled.json");
 const THINKING_PROBE_INTERVAL = 10 * 60_000; // 10 min
 
 // Ensure data dir
@@ -235,6 +236,46 @@ function isOnCooldown(name) {
   return Date.now() < (s.cooldown_until || 0);
 }
 
+// ---------------------------------------------------------------------------
+// Quota exhaustion detection (Alibaba "Free Quota Only" mode)
+// ---------------------------------------------------------------------------
+let quotaDisabled = {}; // { providerName: { time, reason } }
+
+function loadQuotaDisabled() {
+  try {
+    if (fs.existsSync(QUOTA_DISABLED_FILE)) {
+      quotaDisabled = JSON.parse(fs.readFileSync(QUOTA_DISABLED_FILE, "utf8"));
+    }
+  } catch { quotaDisabled = {}; }
+}
+
+function saveQuotaDisabled() {
+  try { fs.writeFileSync(QUOTA_DISABLED_FILE, JSON.stringify(quotaDisabled, null, 2)); } catch {}
+}
+
+function disableProviderQuota(name, reason) {
+  quotaDisabled[name] = { time: Date.now(), reason };
+  const provider = PROVIDERS.find((p) => p.name === name);
+  if (provider) provider.alive = false;
+  saveQuotaDisabled();
+  log(`QUOTA EXHAUSTED: ${name} disabled — ${reason}`);
+}
+
+function isQuotaDisabled(name) {
+  return !!quotaDisabled[name];
+}
+
+function isQuotaExhaustedError(statusCode, body) {
+  if (statusCode === 403 && body.includes("FreeTierOnly")) return true;
+  if (statusCode === 403 && body.includes("AllocationQuota")) return true;
+  if (statusCode === 429 && body.includes("Free allocated quota exceeded")) return true;
+  if (statusCode === 429 && body.includes("AllocationQuota")) return true;
+  if (statusCode === 400 && body.includes("Arrearage")) return true;
+  if (statusCode === 429 && body.includes("PrepaidBillOverdue")) return true;
+  if (statusCode === 429 && body.includes("PostpaidBillOverdue")) return true;
+  return false;
+}
+
 function recordThinkingOk(name) {
   const s = getScore(name);
   s.thinking_ok = (s.thinking_ok || 0) + 1;
@@ -374,9 +415,9 @@ function getProvidersForGroup(groupName) {
   } else {
     candidates = PROVIDERS.filter((p) => p.key && p.alive !== false && p.caps.includes(cap));
   }
-  // Sort by score descending, skip cooldowns
+  // Sort by score descending, skip cooldowns and quota-disabled
   return candidates
-    .filter((p) => !isOnCooldown(p.name))
+    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name))
     .sort((a, b) => providerScore(b) - providerScore(a));
 }
 
@@ -406,6 +447,9 @@ async function routeToProvider(provider, reqBody) {
   const latency = Date.now() - start;
 
   if (resp.status >= 400) {
+    if (isQuotaExhaustedError(resp.status, resp.body)) {
+      disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
+    }
     throw { status: resp.status, body: resp.body, latency };
   }
 
@@ -458,6 +502,9 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
       (err, statusCode) => {
         const latency = Date.now() - start;
         if (statusCode === 429) setCooldown(provider.name);
+        if (isQuotaExhaustedError(statusCode, err.message || "")) {
+          disableProviderQuota(provider.name, `HTTP ${statusCode}: quota/billing error`);
+        }
         recordFailure(provider.name, err.message);
         reject({ error: err, statusCode, headersSent, latency });
       }
@@ -626,6 +673,7 @@ function handleHealth() {
       name: g,
       available: getProvidersForGroup(g).length,
     })),
+    quota_disabled: Object.keys(quotaDisabled).length > 0 ? quotaDisabled : undefined,
     scores_file: fs.existsSync(SCORES_FILE),
     discovery_file: fs.existsSync(DISCOVERY_FILE),
     providers_file: fs.existsSync(PROVIDERS_FILE),
@@ -769,8 +817,15 @@ const server = http.createServer(async (req, res) => {
 // Startup
 // ---------------------------------------------------------------------------
 loadScores();
+loadQuotaDisabled();
 loadProviders();
 watchProvidersFile();
+
+// Re-apply quota disables to loaded providers
+for (const name of Object.keys(quotaDisabled)) {
+  const p = PROVIDERS.find((pr) => pr.name === name);
+  if (p) p.alive = false;
+}
 
 server.listen(PORT, () => {
   const active = PROVIDERS.filter((p) => p.key && p.alive !== false).length;

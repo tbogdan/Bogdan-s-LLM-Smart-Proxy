@@ -290,7 +290,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | SambaNova | https://cloud.sambanova.ai | Llama 70B, GPT-OSS 120B, DeepSeek V3.1, Maverick |
 | Cerebras | https://cloud.cerebras.ai | Qwen3 235B (fastest inference) |
 | NVIDIA | https://build.nvidia.com | Llama 70B, Nemotron 120B, DeepSeek V4 Flash |
-| Alibaba | https://dashscope.console.aliyun.com | Qwen Max, Qwen3 235B/32B, Qwen3 Coder |
+| Alibaba | https://dashscope.console.aliyun.com | Qwen Max, Qwen3 235B/32B, Qwen3 Coder ⚠️ |
 | Mistral | https://console.mistral.ai | Mistral Small, Medium |
 | DeepSeek | https://platform.deepseek.com | DeepSeek V3, V4 Flash |
 | SiliconFlow | https://cloud.siliconflow.cn | DeepSeek V4 Flash, Qwen3 8B |
@@ -299,6 +299,8 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | **Kilo** | **No key needed** | **8 models (anonymous access)** |
 | **OVH** | **No key needed** | **5 models (open endpoint)** |
 | **LLM7** | **No key needed** | **1 model (open endpoint)** |
+
+> ⚠️ **Alibaba free tier**: Each model gets 1M tokens free for 90 days. After that, requests are **charged silently** by default. To stay safe, enable **"Free Quota Only"** mode in the [Alibaba console](https://dashscope.console.aliyun.com) — the proxy will auto-detect the 403 error and disable the provider.
 
 ## Environment Variables
 
