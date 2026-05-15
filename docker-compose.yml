@@ -1,0 +1,17 @@
+services:
+  llm-proxy:
+    build: .
+    ports:
+      - "18900:18900"
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  llm-discovery:
+    build: .
+    command: ["node", "llm-discovery.js"]
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

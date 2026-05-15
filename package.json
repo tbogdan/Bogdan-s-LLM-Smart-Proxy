@@ -1,0 +1,11 @@
+{
+  "name": "llm-smart-proxy",
+  "version": "1.0.0",
+  "description": "Smart LLM proxy with 53 free models across 16 providers, auto-failover, capability detection, and smart routing",
+  "main": "llm-proxy.js",
+  "scripts": {
+    "start": "node llm-proxy.js",
+    "discovery": "node llm-discovery.js"
+  },
+  "license": "MIT"
+}
