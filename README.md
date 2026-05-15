@@ -103,6 +103,7 @@ Discovered models from the last auto-scan.
 
 | Group | Routes to | Description |
 |-------|-----------|-------------|
+| `auto` | All providers (smart) | Detects use case from message, routes to best match, tries all as fallback |
 | `auto-free` | All providers | Best available across all providers |
 | `auto-tools` | Providers with tool calling | Function calling / tool use |
 | `auto-coding` | Providers tagged "coding" | Code generation and editing |
@@ -123,7 +124,7 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | GitHub Copilot | Copilot-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
 | GitHub Copilot | Copilot-GPT5mini | gpt-5-mini | 128K | 1 | tools, coding, text, thinking | key |
 | GitHub Models | GitHubModels-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| GitHub Models | GitHubModels-GPT41 | gpt-4.1 | 128K | 1 | tools, coding, text, max | key |
+| GitHub Models | GitHubModels-GPT41 | gpt-4.1 | 8K | 1 | tools, coding, text | key |
 | Mistral | Mistral-Small | mistral-small-latest | 32K | 2 | tools, text | key |
 | Mistral | Mistral-Medium | mistral-medium-latest | 32K | 1 | tools, coding, text | key |
 | Groq | Groq-Llama70B | llama-3.3-70b-versatile | 131K | 2 | tools, text | key |

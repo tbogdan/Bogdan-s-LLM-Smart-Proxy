@@ -345,20 +345,131 @@ function streamRequest(urlStr, options, body, onData, onEnd, onError) {
 }
 
 // ---------------------------------------------------------------------------
+// Token estimation (~4 chars per token, rough but fast)
+// ---------------------------------------------------------------------------
+function estimateTokens(messages) {
+  let chars = 0;
+  for (const m of (messages || [])) {
+    if (typeof m.content === "string") chars += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part.text) chars += part.text.length;
+      }
+    }
+    if (m.reasoning_content) chars += m.reasoning_content.length;
+  }
+  return Math.ceil(chars / 4);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-detected provider incompatibilities (learned from errors)
+// ---------------------------------------------------------------------------
+const COMPAT_FILE = path.join(DATA_DIR, "compat.json");
+let providerCompat = {}; // { name: { no_reasoning: bool, no_extra_body: bool, max_tokens_cap: int } }
+
+function loadCompat() {
+  try {
+    if (fs.existsSync(COMPAT_FILE)) {
+      providerCompat = JSON.parse(fs.readFileSync(COMPAT_FILE, "utf8"));
+    }
+  } catch { providerCompat = {}; }
+}
+
+function saveCompat() {
+  try { fs.writeFileSync(COMPAT_FILE, JSON.stringify(providerCompat, null, 2)); } catch {}
+}
+
+function getCompat(name) {
+  if (!providerCompat[name]) providerCompat[name] = {};
+  return providerCompat[name];
+}
+
+function detectIncompatibility(providerName, statusCode, errorBody) {
+  const body = String(errorBody);
+  const c = getCompat(providerName);
+  let changed = false;
+
+  // reasoning_content rejected
+  if (body.includes("reasoning_content") && (statusCode === 400 || statusCode === 422)) {
+    if (!c.no_reasoning) {
+      c.no_reasoning = true;
+      changed = true;
+      log(`COMPAT: ${providerName} rejects reasoning_content — will strip on future requests`);
+    }
+  }
+
+  // extra_body / enable_thinking rejected
+  if ((body.includes("extra_body") || body.includes("enable_thinking")) && (statusCode === 400 || statusCode === 422)) {
+    if (!c.no_extra_body) {
+      c.no_extra_body = true;
+      changed = true;
+      log(`COMPAT: ${providerName} rejects extra_body — will strip on future requests`);
+    }
+  }
+
+  // max_tokens cap detected (e.g. "Range of max_tokens should be [1, 8192]")
+  const maxMatch = body.match(/max_tokens.*?\[1,\s*(\d+)\]/i) || body.match(/max_tokens.*?maximum.*?(\d+)/i) || body.match(/Max size:\s*(\d+)\s*tokens/i);
+  if (maxMatch && (statusCode === 400 || statusCode === 422)) {
+    const cap = parseInt(maxMatch[1], 10);
+    if (cap > 0 && (!c.max_tokens_cap || cap < c.max_tokens_cap)) {
+      c.max_tokens_cap = cap;
+      changed = true;
+      log(`COMPAT: ${providerName} max_tokens capped at ${cap}`);
+    }
+  }
+
+  // Context size too small (detect actual limit from error)
+  const ctxMatch = body.match(/Max size:\s*(\d+)\s*tokens/i) || body.match(/maximum context length.*?(\d+)/i) || body.match(/max.*?(\d+)\s*tokens/i);
+  if (ctxMatch && (statusCode === 400 || statusCode === 413)) {
+    const limit = parseInt(ctxMatch[1], 10);
+    if (limit > 0 && (!c.real_context || limit < c.real_context)) {
+      c.real_context = limit;
+      changed = true;
+      log(`COMPAT: ${providerName} real context limit detected: ${limit} tokens`);
+      // Update provider context in memory
+      const p = PROVIDERS.find((pr) => pr.name === providerName);
+      if (p && p.context > limit) p.context = limit;
+    }
+  }
+
+  if (changed) saveCompat();
+}
+
+// ---------------------------------------------------------------------------
 // Request transformation
 // ---------------------------------------------------------------------------
 function transformRequest(provider, reqBody) {
   const body = { ...reqBody };
   body.model = provider.model;
 
-  // Qwen3 models: add enable_thinking if thinking capable
-  if (provider.tc && /qwen3|qwq/i.test(provider.model)) {
+  const compat = getCompat(provider.name);
+
+  // Qwen3 models: add enable_thinking (unless provider rejects it)
+  if (provider.tc && /qwen3|qwq/i.test(provider.model) && !compat.no_extra_body) {
     if (!body.extra_body) body.extra_body = {};
     body.extra_body.enable_thinking = true;
   }
 
-  // Pass through reasoning_effort if present
-  // Some providers use it natively
+  // Strip extra_body for providers that reject it (auto-learned)
+  if (body.extra_body && compat.no_extra_body) {
+    delete body.extra_body;
+  }
+
+  // Strip reasoning_content from messages (auto-learned)
+  if (body.messages && compat.no_reasoning) {
+    body.messages = body.messages.map((m) => {
+      if (m.reasoning_content) {
+        const { reasoning_content, ...rest } = m;
+        return rest;
+      }
+      return m;
+    });
+  }
+
+  // Cap max_tokens (auto-learned from provider errors)
+  if (compat.max_tokens_cap && body.max_tokens && body.max_tokens > compat.max_tokens_cap) {
+    body.max_tokens = compat.max_tokens_cap;
+  }
 
   return body;
 }
@@ -413,9 +524,42 @@ function buildHeaders(provider, extraHeaders) {
 }
 
 // ---------------------------------------------------------------------------
+// Use-case detection from messages
+// ---------------------------------------------------------------------------
+function detectUseCase(messages) {
+  const caps = new Set();
+  const last = messages?.[messages.length - 1];
+  const content = (typeof last?.content === "string" ? last.content : "").toLowerCase();
+
+  // Images/vision
+  for (const m of (messages || [])) {
+    if (Array.isArray(m.content) && m.content.some((p) => p.type === "image_url" || p.type === "image")) {
+      caps.add("images");
+    }
+  }
+
+  // Coding signals
+  if (/\b(code|function|class|implement|refactor|debug|fix bug|write a?\s*(script|program|module)|```|def |const |import |require\()\b/i.test(content)) {
+    caps.add("coding");
+  }
+
+  // Thinking/reasoning signals
+  if (/\b(think|reason|step by step|analyze|explain why|solve|prove|math|calculate)\b/i.test(content)) {
+    caps.add("thinking");
+  }
+
+  // Tool use signals
+  if (/\b(tool|function.call|search|browse|execute)\b/i.test(content)) {
+    caps.add("tools");
+  }
+
+  return caps;
+}
+
+// ---------------------------------------------------------------------------
 // Provider selection for groups
 // ---------------------------------------------------------------------------
-function getProvidersForGroup(groupName) {
+function getProvidersForGroup(groupName, estimatedTokens) {
   const cap = GROUPS[groupName];
   let candidates;
   if (cap === null || cap === undefined) {
@@ -423,10 +567,37 @@ function getProvidersForGroup(groupName) {
   } else {
     candidates = PROVIDERS.filter((p) => p.key && p.alive !== false && p.caps.includes(cap));
   }
+  // Filter by context size if we have a token estimate
+  if (estimatedTokens > 0) {
+    candidates = candidates.filter((p) => p.context >= estimatedTokens);
+  }
   // Sort by score descending, skip cooldowns and quota-disabled
   return candidates
     .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name))
     .sort((a, b) => providerScore(b) - providerScore(a));
+}
+
+// Get providers for auto group — detect use case, prefer matching, but include all as fallback
+function getProvidersForAuto(messages, estimatedTokens) {
+  const detectedCaps = detectUseCase(messages);
+  const all = PROVIDERS.filter((p) => p.key && p.alive !== false && p.context >= estimatedTokens)
+    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+
+  if (detectedCaps.size === 0) {
+    // No specific use case — return all sorted by score
+    return all.sort((a, b) => providerScore(b) - providerScore(a));
+  }
+
+  // Score providers: bonus for each matching detected capability
+  const scored = all.map((p) => {
+    let bonus = 0;
+    for (const cap of detectedCaps) {
+      if (p.caps.includes(cap)) bonus += 0.3;
+    }
+    return { provider: p, score: providerScore(p) + bonus };
+  });
+
+  return scored.sort((a, b) => b.score - a.score).map((s) => s.provider);
 }
 
 function findProviderByModel(model) {
@@ -458,6 +629,7 @@ async function routeToProvider(provider, reqBody) {
     if (isQuotaExhaustedError(resp.status, resp.body)) {
       disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
     }
+    detectIncompatibility(provider.name, resp.status, resp.body);
     throw { status: resp.status, body: resp.body, latency };
   }
 
@@ -513,6 +685,7 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
         if (isQuotaExhaustedError(statusCode, err.message || "")) {
           disableProviderQuota(provider.name, `HTTP ${statusCode}: quota/billing error`);
         }
+        detectIncompatibility(provider.name, statusCode, err.message || "");
         recordFailure(provider.name, err.message);
         reject({ error: err, statusCode, headersSent, latency });
       }
@@ -526,11 +699,33 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
 async function handleChatCompletion(reqBody, clientRes) {
   const requestedModel = reqBody.model || "auto-free";
   const isStreaming = reqBody.stream === true;
-  const isGroup = requestedModel in GROUPS;
+  const isGroup = requestedModel in GROUPS || requestedModel === "auto";
+  const estTokens = estimateTokens(reqBody.messages);
+  const requestedMaxTokens = reqBody.max_tokens || 4096;
+  const totalNeeded = estTokens + requestedMaxTokens;
 
   if (isGroup) {
-    const providers = getProvidersForGroup(requestedModel);
+    // auto group: detect use case, try all providers with smart ordering
+    const providers = requestedModel === "auto"
+      ? getProvidersForAuto(reqBody.messages, totalNeeded)
+      : getProvidersForGroup(requestedModel, totalNeeded);
+
     if (providers.length === 0) {
+      // Check if providers exist but context is too small
+      const allProviders = requestedModel === "auto"
+        ? getProvidersForAuto(reqBody.messages, 0)
+        : getProvidersForGroup(requestedModel, 0);
+      if (allProviders.length > 0) {
+        const maxContext = Math.max(...allProviders.map((p) => p.context));
+        return sendError(clientRes, 413, "Context too large for available providers", {
+          type: "context_too_large",
+          estimated_tokens: estTokens,
+          max_tokens_requested: requestedMaxTokens,
+          total_needed: totalNeeded,
+          max_available_context: maxContext,
+          suggestion: "Reduce conversation history or max_tokens",
+        });
+      }
       return sendError(clientRes, 503, "No providers available for group: " + requestedModel);
     }
 
@@ -629,6 +824,21 @@ function handleModels(query) {
     provider_count: getProvidersForGroup(g).length,
   }));
 
+  // Add auto group (smart use-case detection)
+  groups.unshift({
+    id: "auto",
+    object: "model",
+    created: 0,
+    owned_by: "llm-proxy",
+    capabilities: ["all", "auto-detect"],
+    context_length: Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => p.context), 0),
+    tier: 0,
+    thinking_capable: true,
+    is_group: true,
+    provider_count: PROVIDERS.filter((p) => p.key && p.alive !== false).length,
+    description: "Auto-detects use case (coding, thinking, images, tools) and routes to best provider with full fallback",
+  });
+
   return { object: "list", data: [...groups, ...models] };
 }
 
@@ -682,6 +892,7 @@ function handleHealth() {
       available: getProvidersForGroup(g).length,
     })),
     quota_disabled: Object.keys(quotaDisabled).length > 0 ? quotaDisabled : undefined,
+    compat_overrides: Object.keys(providerCompat).length > 0 ? Object.keys(providerCompat).length : undefined,
     scores_file: fs.existsSync(SCORES_FILE),
     discovery_file: fs.existsSync(DISCOVERY_FILE),
     providers_file: fs.existsSync(PROVIDERS_FILE),
@@ -784,7 +995,8 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch {
         return sendError(res, 400, "Invalid JSON body");
       }
-      log(`Request: model=${parsed.model || "auto-free"} stream=${!!parsed.stream} messages=${parsed.messages?.length || 0}`);
+      const est = estimateTokens(parsed.messages);
+      log(`Request: model=${parsed.model || "auto-free"} stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok`);
       return await handleChatCompletion(parsed, res);
     }
 
@@ -826,13 +1038,20 @@ const server = http.createServer(async (req, res) => {
 // ---------------------------------------------------------------------------
 loadScores();
 loadQuotaDisabled();
+loadCompat();
 loadProviders();
 watchProvidersFile();
 
-// Re-apply quota disables to loaded providers
+// Re-apply quota disables and learned context limits to loaded providers
 for (const name of Object.keys(quotaDisabled)) {
   const p = PROVIDERS.find((pr) => pr.name === name);
   if (p) p.alive = false;
+}
+for (const [name, c] of Object.entries(providerCompat)) {
+  if (c.real_context) {
+    const p = PROVIDERS.find((pr) => pr.name === name);
+    if (p && p.context > c.real_context) p.context = c.real_context;
+  }
 }
 
 server.listen(PORT, () => {

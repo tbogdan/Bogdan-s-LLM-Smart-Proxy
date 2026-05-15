@@ -57,7 +57,7 @@
       "url": "https://models.inference.ai.azure.com/chat/completions",
       "key_env": "COPILOT_TOKEN",
       "model": "gpt-4.1",
-      "context": 128000,
+      "context": 8000,
       "tier": 1,
       "tc": false,
       "caps": [
