@@ -32,7 +32,7 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 | Mistral | https://console.mistral.ai |
 | DeepSeek | https://platform.deepseek.com |
 | SiliconFlow | https://cloud.siliconflow.cn |
-| Cloudflare | https://dash.cloudflare.com |
+| Cloudflare | https://dash.cloudflare.com (also need Account ID) |
 | BigModel | https://open.bigmodel.cn |
 
 No keys needed for: **Kilo** (anonymous), **OVH**, **LLM7**

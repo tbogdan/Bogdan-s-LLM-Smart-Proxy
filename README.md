@@ -279,7 +279,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 
 ## Get Free API Keys
 
-14 models work with zero keys (Kilo, OVH, LLM7). Add more for wider coverage:
+14 models work with zero keys (Kilo, OVH, LLM7). Add keys for wider coverage:
 
 | Provider | Get free key at | Models |
 |----------|----------------|--------|
@@ -314,6 +314,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `GEMINI_API_KEY` | Google Gemini API key | `AIzaxxxx` |
 | `OPENROUTER_API_KEY` | OpenRouter API key | `sk-or-v1-xxxx` |
 | `CLOUDFLARE_API_KEY` | Cloudflare Workers AI token | `cfut_xxxx` |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (required for Workers AI) | `e0c9xxxx` |
 | `SILICONFLOW_API_KEY` | SiliconFlow API key | `sk-xxxx` |
 | `BIGMODEL_API_KEY` | BigModel (GLM) API key | `xxx` |
 | `DEEPSEEK_API_KEY` | DeepSeek API key | `sk-xxxx` |

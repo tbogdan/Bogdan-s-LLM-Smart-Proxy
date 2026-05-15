@@ -527,6 +527,20 @@
       "headers": {}
     },
     {
+      "name": "BigModel-GLM4",
+      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "key_env": "BIGMODEL_API_KEY",
+      "model": "glm-4-flash-250414",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
       "name": "SiliconFlow-DSV4Flash",
       "url": "https://api.siliconflow.cn/v1/chat/completions",
       "key_env": "SILICONFLOW_API_KEY",
@@ -558,16 +572,34 @@
       "headers": {}
     },
     {
-      "name": "BigModel-GLM4",
-      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-      "key_env": "BIGMODEL_API_KEY",
-      "model": "glm-4-flash-250414",
+      "name": "DeepSeek-V4Flash",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash",
       "context": 131072,
-      "tier": 2,
-      "tc": false,
+      "tier": 1,
+      "tc": true,
       "caps": [
         "tools",
-        "text"
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "DeepSeek-V3",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
       ],
       "headers": {}
     },
@@ -742,38 +774,6 @@
       "kilo": true,
       "default_key": "anonymous",
       "no_auth": true
-    },
-    {
-      "name": "DeepSeek-V4Flash",
-      "url": "https://api.deepseek.com/v1/chat/completions",
-      "key_env": "DEEPSEEK_API_KEY",
-      "model": "deepseek-v4-flash",
-      "context": 131072,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "tools",
-        "coding",
-        "text",
-        "thinking"
-      ],
-      "headers": {}
-    },
-    {
-      "name": "DeepSeek-V3",
-      "url": "https://api.deepseek.com/v1/chat/completions",
-      "key_env": "DEEPSEEK_API_KEY",
-      "model": "deepseek-chat",
-      "context": 131072,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "tools",
-        "coding",
-        "text",
-        "thinking"
-      ],
-      "headers": {}
     },
     {
       "name": "Alibaba-QwenMax",

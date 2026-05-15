@@ -44,10 +44,11 @@ if [ ! -f .env ]; then
       ["COPILOT_TOKEN"]="GitHub Copilot (gho_...) — needs Copilot subscription"
       ["SILICONFLOW_API_KEY"]="SiliconFlow (sk-...) — free at siliconflow.cn"
       ["CLOUDFLARE_API_KEY"]="Cloudflare Workers AI (cfut_...) — free at dash.cloudflare.com"
+      ["CLOUDFLARE_ACCOUNT_ID"]="Cloudflare Account ID — find at dash.cloudflare.com (required if using Cloudflare)"
       ["BIGMODEL_API_KEY"]="BigModel/GLM — free at open.bigmodel.cn"
     )
 
-    KEY_ORDER=(GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY BIGMODEL_API_KEY)
+    KEY_ORDER=(GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID BIGMODEL_API_KEY)
 
     for KEY in "${KEY_ORDER[@]}"; do
       read -p "${KEY_NAMES[$KEY]}: " VALUE
