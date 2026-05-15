@@ -365,55 +365,69 @@ function saveProjectContext(session, systemContent) {
   mpcSave(`${session.projectName} context — ${new Date().toISOString().split("T")[0]}`, summary, "projects");
 }
 
-// Save full context before compaction — for recovery
+// Save full context before compaction — categorize and return references
 async function saveCompactedContext(session, messages) {
-  if (!MEMPALACE_ENABLED || !mpcAvailable) return;
+  if (!MEMPALACE_ENABLED || !mpcAvailable) return [];
   const project = session.projectName;
+  const date = new Date().toISOString().split("T")[0];
+  const refs = []; // {title, room, summary} — returned for inclusion in compacted summary
 
-  // Save key messages: task definitions, decisions, tool results
-  const important = (messages || []).filter((m) => {
-    if (m.role === "system") return false; // system prompt saved separately
-    const text = typeof m.content === "string" ? m.content : "";
-    // Keep messages with tool calls, code blocks, errors, decisions
-    if (m.tool_calls?.length > 0) return true;
-    if (m.role === "tool") return true;
-    if (/```|created|fixed|error|bug|import|schema|deploy/i.test(text)) return true;
-    if (text.length > 200) return true; // substantial messages
-    return false;
-  });
+  // Categorize messages
+  const categories = {
+    code: [],      // code blocks, file operations
+    errors: [],    // errors, bugs, fixes
+    tools: [],     // tool calls and results
+    tasks: [],     // task progress [1/N]
+    decisions: [], // architecture, tech choices
+    other: [],     // everything else substantial
+  };
 
-  // Chunk into max 2000 char pieces for palace entries
-  const chunks = [];
-  let current = "";
-  for (const m of important) {
+  for (const m of (messages || [])) {
+    if (m.role === "system") continue;
     const text = typeof m.content === "string" ? m.content : "";
     const toolInfo = m.tool_calls ? ` [tools: ${m.tool_calls.map((t) => t.function?.name).join(",")}]` : "";
-    const line = `${m.role}: ${text.substring(0, 150)}${toolInfo}\n`;
-    if (current.length + line.length > 2000) {
-      chunks.push(current);
-      current = line;
-    } else {
-      current += line;
+    const line = `${m.role}: ${text.substring(0, 200)}${toolInfo}`;
+
+    if (m.tool_calls?.length > 0 || m.role === "tool") {
+      categories.tools.push(line);
+    } else if (/\[\d+\/\d+\]|TODO|FIXME|step \d/i.test(text)) {
+      categories.tasks.push(line);
+    } else if (/error|bug|fix|fail|crash|exception|TypeError|Cannot/i.test(text)) {
+      categories.errors.push(line);
+    } else if (/```|function |class |import |const |def |create|modify|edit/i.test(text)) {
+      categories.code.push(line);
+    } else if (/chose|decided|using|switched|architecture|schema|deploy|docker/i.test(text)) {
+      categories.decisions.push(line);
+    } else if (text.length > 100) {
+      categories.other.push(line);
     }
   }
-  if (current) chunks.push(current);
 
-  // Save each chunk
-  for (let i = 0; i < Math.min(chunks.length, 5); i++) { // max 5 chunks
-    mpcSave(
-      `${project} compacted ${new Date().toISOString().split("T")[0]} part${i + 1}`,
-      chunks[i],
-      "sessions"
-    );
+  // Save each non-empty category to appropriate room
+  const roomMap = {
+    code: "sessions",
+    errors: "problems",
+    tools: "sessions",
+    tasks: "tasks",
+    decisions: "architecture",
+    other: "sessions",
+  };
+
+  for (const [cat, lines] of Object.entries(categories)) {
+    if (lines.length === 0) continue;
+    const content = lines.join("\n").substring(0, 2000);
+    const title = `${project} ${cat} — ${date}`;
+    const room = roomMap[cat];
+    mpcSave(title, content, room);
+    refs.push({
+      title,
+      room,
+      summary: `${lines.length} ${cat} entries`,
+      preview: lines[0].substring(0, 80),
+    });
   }
 
-  // Save task state if detected
-  const taskMsgs = (messages || []).filter((m) => /\[\d+\/\d+\]/.test(typeof m.content === "string" ? m.content : ""));
-  if (taskMsgs.length > 0) {
-    const lastTask = taskMsgs[taskMsgs.length - 1];
-    const taskText = typeof lastTask.content === "string" ? lastTask.content.substring(0, 500) : "";
-    mpcSave(`${project} tasks — ${new Date().toISOString().split("T")[0]}`, taskText, "tasks");
-  }
+  return refs;
 }
 
 // ---------------------------------------------------------------------------

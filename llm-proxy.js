@@ -366,38 +366,43 @@ function estimateTokens(messages) {
 // ---------------------------------------------------------------------------
 // Smart context compaction — save middle to MemPalace, keep edges
 // ---------------------------------------------------------------------------
-function compactMessages(messages, targetTokens, maxOutputTokens) {
+function compactMessages(messages, targetTokens, maxOutputTokens, mempalaceRefs) {
   if (!messages || messages.length < 4) return null;
 
-  // Keep: system messages, first user message (task definition), last 4 messages (recent context)
   const system = messages.filter((m) => m.role === "system");
   const nonSystem = messages.filter((m) => m.role !== "system");
-  if (nonSystem.length < 6) return null; // not enough to compact
+  if (nonSystem.length < 6) return null;
 
-  const firstUser = nonSystem[0]; // original task
-  const lastN = nonSystem.slice(-4); // recent conversation
-  const middle = nonSystem.slice(1, -4); // everything else = compactable
+  const firstUser = nonSystem[0];
+  const lastN = nonSystem.slice(-4);
+  const middle = nonSystem.slice(1, -4);
 
   if (middle.length === 0) return null;
 
-  // Build summary of middle section
-  const middleSummary = middle.map((m) => {
-    const text = typeof m.content === "string" ? m.content : "";
-    const toolInfo = m.tool_calls?.length ? ` [${m.tool_calls.length} tool calls]` : "";
-    const role = m.role;
-    return `${role}: ${text.substring(0, 80).replace(/\n/g, " ")}${toolInfo}`;
-  }).join("\n");
+  // Build summary with MemPalace references
+  let summaryText = `[CONTEXT COMPACTED — ${middle.length} messages saved to memory]\n`;
 
-  // Create compacted message array
-  const summaryMsg = {
-    role: "assistant",
-    content: `[CONTEXT COMPACTED — ${middle.length} messages saved to memory. Summary of removed messages:\n${middleSummary.substring(0, 1000)}\nUse memory recall for full details. Continue from the most recent context below.]`,
-  };
+  if (mempalaceRefs?.length > 0) {
+    summaryText += "Saved to MemPalace (use memory recall to load details):\n";
+    for (const ref of mempalaceRefs) {
+      summaryText += `  → ${ref.title} [room: ${ref.room}] — ${ref.summary} (${ref.preview})\n`;
+    }
+  } else {
+    // Fallback inline summary if no refs
+    const middleSummary = middle.map((m) => {
+      const text = typeof m.content === "string" ? m.content : "";
+      const toolInfo = m.tool_calls?.length ? ` [${m.tool_calls.length} tool calls]` : "";
+      return `${m.role}: ${text.substring(0, 80).replace(/\n/g, " ")}${toolInfo}`;
+    }).join("\n");
+    summaryText += middleSummary.substring(0, 800) + "\n";
+  }
 
+  summaryText += "Continue from the most recent context below.";
+
+  const summaryMsg = { role: "assistant", content: summaryText };
   const compacted = [...system, firstUser, summaryMsg, ...lastN];
   const newTokens = estimateTokens(compacted);
 
-  // If still too big, be more aggressive — keep only last 2
   if (newTokens + maxOutputTokens > targetTokens) {
     const lastTwo = nonSystem.slice(-2);
     const aggressiveCompacted = [...system, firstUser, summaryMsg, ...lastTwo];
@@ -1121,9 +1126,10 @@ async function handleChatCompletion(reqBody, clientRes) {
       const maxContext = Math.max(...bestProviders.map((p) => p.context));
       const threshold = Math.floor(maxContext * 0.8);
       if (totalNeeded > threshold) {
-        const targetTokens = Math.floor(maxContext * 0.6); // compact to 60%
-        try { await mempalace.saveCompactedContext(mpSession, reqBody.messages); } catch {}
-        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens);
+        const targetTokens = Math.floor(maxContext * 0.6);
+        let mpRefs = [];
+        try { mpRefs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
+        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs);
         if (compacted) {
           reqBody.messages = compacted.messages;
           const newEst = estimateTokens(reqBody.messages);
@@ -1150,12 +1156,11 @@ async function handleChatCompletion(reqBody, clientRes) {
         const targetTokens = Math.floor(maxContext * 0.7); // aim for 70% of max context
 
         // Save full context to MemPalace before compaction
-        try {
-          await mempalace.saveCompactedContext(mpSession, reqBody.messages);
-        } catch { /* best effort */ }
+        let mpRefs2 = [];
+        try { mpRefs2 = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
 
         // Compact messages: keep system + first user + last N messages that fit
-        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens);
+        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs2);
         if (compacted) {
           reqBody.messages = compacted.messages;
           const newEstTokens = estimateTokens(reqBody.messages);
