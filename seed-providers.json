@@ -16,8 +16,7 @@
         "text",
         "images"
       ],
-      "headers": {},
-      "auth_style": "token"
+      "headers": {}
     },
     {
       "name": "Copilot-GPT5mini",
@@ -33,8 +32,7 @@
         "text",
         "thinking"
       ],
-      "headers": {},
-      "auth_style": "token"
+      "headers": {}
     },
     {
       "name": "GitHubModels-GPT4o",

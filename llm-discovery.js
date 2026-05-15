@@ -438,8 +438,28 @@ function writeProvidersFile(seed, discoveredProviders) {
 // ---------------------------------------------------------------------------
 // Test seed providers for alive status
 // ---------------------------------------------------------------------------
+function loadProvidersFromFile() {
+  try {
+    if (fs.existsSync(PROVIDERS_FILE)) {
+      return JSON.parse(fs.readFileSync(PROVIDERS_FILE, "utf8"));
+    }
+  } catch {}
+  return null;
+}
+
 async function testSeedProviders(seed) {
   const results = [];
+  const RETEST_OK_MS = 3.5 * 24 * 60 * 60_000; // retest alive providers every 3.5 days
+  const RETEST_FAIL_MS = 6 * 60 * 60_000; // retest dead providers every 6h
+
+  // Load existing test results from providers.json
+  const existingConfig = loadProvidersFromFile();
+  const existingProviders = new Map();
+  if (existingConfig?.providers) {
+    for (const p of existingConfig.providers) {
+      if (p.last_tested) existingProviders.set(p.name, p);
+    }
+  }
 
   for (const sp of (seed.providers || [])) {
     const key = (sp.key_env ? process.env[sp.key_env] : null) || sp.default_key || "";
@@ -451,6 +471,22 @@ async function testSeedProviders(seed) {
         reason: "no_key",
       });
       continue;
+    }
+
+    // Skip if recently tested — alive <3,5d, dead <6h
+    const existing = existingProviders.get(sp.name);
+    if (existing?.last_tested) {
+      const age = Date.now() - new Date(existing.last_tested).getTime();
+      if (existing.alive && age < RETEST_OK_MS) {
+        results.push({ name: sp.name, alive: true, last_tested: existing.last_tested });
+        log(`  SKIP:  ${sp.name} (alive, tested ${Math.round(age / 3600000)}h ago)`);
+        continue;
+      }
+      if (!existing.alive && age < RETEST_FAIL_MS) {
+        results.push({ name: sp.name, alive: false, last_tested: existing.last_tested });
+        log(`  SKIP:  ${sp.name} (dead, tested ${Math.round(age / 3600000)}h ago)`);
+        continue;
+      }
     }
 
     // Build headers for test
