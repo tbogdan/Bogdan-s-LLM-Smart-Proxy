@@ -42,7 +42,7 @@ if [ ! -f .env ]; then
       ["MISTRAL_API_KEY"]="Mistral — free at console.mistral.ai"
       ["DEEPSEEK_API_KEY"]="DeepSeek (sk-...) — free at platform.deepseek.com"
       ["COPILOT_TOKEN"]="GitHub Copilot (gho_...) — needs Copilot subscription"
-      ["SILICONFLOW_API_KEY"]="SiliconFlow (sk-...) — free at siliconflow.cn"
+      ["SILICONFLOW_API_KEY"]="SiliconFlow (sk-...) — free at siliconflow.com"
       ["CLOUDFLARE_API_KEY"]="Cloudflare Workers AI (cfut_...) — free at dash.cloudflare.com"
       ["CLOUDFLARE_ACCOUNT_ID"]="Cloudflare Account ID — find at dash.cloudflare.com (required if using Cloudflare)"
       ["COHERE_API_KEY"]="Cohere (trial key) — free at dashboard.cohere.com"

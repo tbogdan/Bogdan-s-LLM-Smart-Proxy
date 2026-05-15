@@ -302,7 +302,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | Alibaba | https://dashscope.console.aliyun.com | Qwen Max, Qwen3 235B/32B, Qwen3 Coder ⚠️ |
 | Mistral | https://console.mistral.ai | Mistral Small, Medium |
 | DeepSeek | https://platform.deepseek.com | DeepSeek V3, V4 Flash |
-| SiliconFlow | https://cloud.siliconflow.cn | DeepSeek V4 Flash, Qwen3 8B |
+| SiliconFlow | https://cloud.siliconflow.com | DeepSeek V4 Flash, Qwen3 8B |
 | Cohere | https://dashboard.cohere.com | Command A 111B, Command R+, Command R7B |
 | Hugging Face | https://huggingface.co/settings/tokens | GPT-OSS 120B, Qwen3 Coder 480B, DeepSeek R1 |
 | Ollama Cloud | https://ollama.com | GPT-OSS 120B, Qwen3 Coder, DeepSeek V3.1 |

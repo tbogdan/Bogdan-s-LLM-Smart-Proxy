@@ -188,8 +188,8 @@ function getEndpoints() {
   if (process.env.SILICONFLOW_API_KEY) {
     endpoints.push({
       name: "SiliconFlow",
-      modelsUrl: "https://api.siliconflow.cn/v1/models",
-      chatUrl: "https://api.siliconflow.cn/v1/chat/completions",
+      modelsUrl: "https://api.siliconflow.com/v1/models",
+      chatUrl: "https://api.siliconflow.com/v1/chat/completions",
       headers: { Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}` },
       key_env: "SILICONFLOW_API_KEY",
     });

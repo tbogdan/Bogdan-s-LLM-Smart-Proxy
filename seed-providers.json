@@ -542,7 +542,7 @@
     },
     {
       "name": "SiliconFlow-DSV4Flash",
-      "url": "https://api.siliconflow.cn/v1/chat/completions",
+      "url": "https://api.siliconflow.com/v1/chat/completions",
       "key_env": "SILICONFLOW_API_KEY",
       "model": "deepseek-ai/DeepSeek-V4-Flash",
       "context": 131072,
@@ -558,7 +558,7 @@
     },
     {
       "name": "SiliconFlow-Qwen8B",
-      "url": "https://api.siliconflow.cn/v1/chat/completions",
+      "url": "https://api.siliconflow.com/v1/chat/completions",
       "key_env": "SILICONFLOW_API_KEY",
       "model": "Qwen/Qwen3-8B",
       "context": 32768,

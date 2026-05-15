@@ -31,7 +31,7 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 | Alibaba | https://dashscope.console.aliyun.com |
 | Mistral | https://console.mistral.ai |
 | DeepSeek | https://platform.deepseek.com |
-| SiliconFlow | https://cloud.siliconflow.cn |
+| SiliconFlow | https://cloud.siliconflow.com |
 | Cohere | https://dashboard.cohere.com |
 | Hugging Face | https://huggingface.co/settings/tokens |
 | Ollama Cloud | https://ollama.com |
