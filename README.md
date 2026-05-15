@@ -185,13 +185,25 @@ Groups automatically route to the best-scoring provider that matches the capabil
 
 ## How Routing Works
 
-1. Request arrives with `model: "auto-coding"`
-2. Proxy filters providers that have the `coding` capability
-3. Providers are sorted by score (success rate 50% + latency 30% + tier 20%)
-4. Request is sent to the highest-scoring provider
-5. If it fails (429/502/timeout), the proxy immediately tries the next provider
-6. Per-provider 1-second cooldown on 429 (not global)
-7. Error is returned to client only if ALL providers in the group fail
+1. Request arrives (e.g. `model: "auto"` or `model: "auto-coding"`)
+2. Proxy detects use case from messages: tools, coding, thinking, images, agent/IDE mode
+3. Recalls relevant memories from MemPalace (project context, preferences, past errors)
+4. Injects core instructions + recalled memories into system prompt
+5. Estimates token count, checks if context exceeds 80% of best provider → proactive compaction
+6. Filters providers by: group capability, context size, cooldown, bans, quota
+7. Scores and ranks providers:
+   - Base score: success rate (50%) + latency (30%) + tier (20%)
+   - Smartness bonus: more capabilities, thinking, coding, larger context, known strong models
+   - Agent bonus: tier 1 preferred, tools required, small models penalized
+   - Compat penalty: auto-learned incompatibilities (reasoning_content, extra_body, max_tokens, tools limit)
+   - Stalling penalty: -0.05 per stalling incident
+8. Transforms request per provider: strips incompatible fields, caps max_tokens/tools, adds thinking params
+9. Routes to highest-scoring provider
+10. On failure: auto-learns incompatibility, retries next provider (30s cooldown on 429)
+11. On stalling (2x "continue" = 5min cooldown, 3x = ban from group)
+12. If context too large: proxy saves full context to MemPalace, compacts messages (keeps system + first task + last 4 messages + summary), retries with smaller context
+13. If still too large after proxy compaction: returns `context_length_exceeded` to trigger IDE-side compaction
+14. Saves session progress, task state, errors, preferences to MemPalace (async) — recoverable on "continue"
 
 ## Adding New Providers
 

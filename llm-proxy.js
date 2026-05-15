@@ -18,7 +18,7 @@ const DISCOVERY_FILE = path.join(DATA_DIR, "discovery.json");
 const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
 const REQUEST_TIMEOUT = 120_000; // 120s per provider attempt
-const COOLDOWN_MS = 1000; // per-provider cooldown on 429
+const COOLDOWN_MS = 30_000; // 30s per-provider cooldown on 429
 const QUOTA_DISABLED_FILE = path.join(DATA_DIR, "quota-disabled.json");
 const THINKING_PROBE_INTERVAL = 10 * 60_000; // 10 min
 
