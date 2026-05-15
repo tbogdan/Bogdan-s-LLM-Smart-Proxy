@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 52 free LLM models across 16 providers with automatic failover, capability-based routing, and smart scoring.
+A zero-dependency Node.js proxy that routes requests to 61 free LLM models across 19 providers with automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **52 free LLM models across 16 providers** with automatic failover on errors
+- **61 free LLM models across 19 providers** with automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
@@ -173,6 +173,15 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | Alibaba | Alibaba-Qwen3-235B | qwen3-235b-a22b | 131K | 1 | tools, coding, text, max, thinking | key |
 | Alibaba | Alibaba-Qwen3-32B | qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
 | Alibaba | Alibaba-Qwen3Coder | qwen3-coder-plus | 131K | 1 | tools, coding, max, thinking | key |
+| Cohere | Cohere-CommandA | command-a-03-2025 | 131K | 1 | tools, coding, text | key |
+| Cohere | Cohere-CommandRPlus | command-r-plus | 131K | 1 | tools, coding, text | key |
+| Cohere | Cohere-CommandR7B | command-r7b | 131K | 2 | tools, text | key |
+| Ollama Cloud | Ollama-GPTOSS120B | gpt-oss:120b | 131K | 1 | tools, coding, text, thinking | key |
+| Ollama Cloud | Ollama-Qwen3Coder | qwen3-coder:480b | 131K | 1 | tools, coding, text, max, thinking | key |
+| Ollama Cloud | Ollama-DSV31 | deepseek-v3.1:671b | 131K | 1 | tools, coding, text, thinking | key |
+| Hugging Face | HF-GPTOSS120B | openai/gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
+| Hugging Face | HF-Qwen3Coder | Qwen3-Coder-480B | 131K | 1 | tools, coding, text, max, thinking | key |
+| Hugging Face | HF-DeepSeekR1 | DeepSeek-R1 | 131K | 1 | tools, coding, text, thinking | key |
 
 ## How Routing Works
 
@@ -294,6 +303,9 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | Mistral | https://console.mistral.ai | Mistral Small, Medium |
 | DeepSeek | https://platform.deepseek.com | DeepSeek V3, V4 Flash |
 | SiliconFlow | https://cloud.siliconflow.cn | DeepSeek V4 Flash, Qwen3 8B |
+| Cohere | https://dashboard.cohere.com | Command A 111B, Command R+, Command R7B |
+| Hugging Face | https://huggingface.co/settings/tokens | GPT-OSS 120B, Qwen3 Coder 480B, DeepSeek R1 |
+| Ollama Cloud | https://ollama.com | GPT-OSS 120B, Qwen3 Coder, DeepSeek V3.1 |
 | Cloudflare | https://dash.cloudflare.com | Llama 70B |
 | BigModel | https://open.bigmodel.cn | GLM-4 Flash |
 | **Kilo** | **No key needed** | **8 models (anonymous access)** |
@@ -319,9 +331,12 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `SILICONFLOW_API_KEY` | SiliconFlow API key | `sk-xxxx` |
 | `BIGMODEL_API_KEY` | BigModel (GLM) API key | `xxx` |
 | `DEEPSEEK_API_KEY` | DeepSeek API key | `sk-xxxx` |
+| `COHERE_API_KEY` | Cohere API key | `xxx` |
+| `HF_TOKEN` | Hugging Face token | `hf_xxxx` |
+| `OLLAMA_API_KEY` | Ollama Cloud API key | `xxx` |
 | `KILO_TOKEN` | Kilo Code token (optional, uses anonymous by default) | `anonymous` |
 | `ALIBABA_API_KEY` | Alibaba DashScope API key | `sk-xxxx` |
-| `LLM7_API_KEY` | LLM7 (no key needed, works without) | |
+| `LLM7_API_KEY` | LLM7 (optional, works without — key gives higher limits) | |
 | `OVH_API_KEY` | OVH AI (no key needed, works without) | |
 | `LLM_PROXY_PORT` | Proxy port (default: 18900) | `18900` |
 | `DATA_DIR` | Data directory (default: /data) | `/data` |

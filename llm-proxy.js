@@ -784,14 +784,19 @@ async function handleChatCompletion(reqBody, clientRes) {
         : getProvidersForGroup(requestedModel, 0, reqBody);
       if (allProviders.length > 0) {
         const maxContext = Math.max(...allProviders.map((p) => p.context));
-        return sendError(clientRes, 413, "Context too large for available providers", {
-          type: "context_too_large",
-          estimated_tokens: estTokens,
-          max_tokens_requested: requestedMaxTokens,
-          total_needed: totalNeeded,
-          max_available_context: maxContext,
-          suggestion: "Reduce conversation history or max_tokens",
+        // Return OpenAI-compatible context_length_exceeded error
+        // This triggers context compaction in Kilo Code, Roo Code, Cursor, etc.
+        const body = JSON.stringify({
+          error: {
+            message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${totalNeeded} tokens (${estTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
+            type: "invalid_request_error",
+            param: "messages",
+            code: "context_length_exceeded",
+          },
         });
+        clientRes.writeHead(400, { "Content-Type": "application/json" });
+        clientRes.end(body);
+        return;
       }
       return sendError(clientRes, 503, "No providers available for group: " + requestedModel);
     }
@@ -827,6 +832,24 @@ async function handleChatCompletion(reqBody, clientRes) {
     }
 
     // ALL providers in group failed
+    // Check if context overflow was the dominant error — return context_length_exceeded to trigger compaction
+    const contextErrors = errors.filter((e) =>
+      /context.length|too.long|token.*exceed|max.size.*token|too.large/i.test(e.error)
+    );
+    if (contextErrors.length > errors.length / 2) {
+      const maxContext = Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => p.context), 0);
+      const body = JSON.stringify({
+        error: {
+          message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${totalNeeded} tokens (${estTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
+          type: "invalid_request_error",
+          param: "messages",
+          code: "context_length_exceeded",
+        },
+      });
+      clientRes.writeHead(400, { "Content-Type": "application/json" });
+      clientRes.end(body);
+      return;
+    }
     return sendError(clientRes, 503, "All providers in group failed", { group: requestedModel, attempts: errors });
   }
 

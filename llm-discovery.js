@@ -228,6 +228,28 @@ function getEndpoints() {
     });
   }
 
+  // Cohere
+  if (process.env.COHERE_API_KEY) {
+    endpoints.push({
+      name: "Cohere",
+      modelsUrl: "https://api.cohere.ai/compatibility/v1/models",
+      chatUrl: "https://api.cohere.ai/compatibility/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` },
+      key_env: "COHERE_API_KEY",
+    });
+  }
+
+  // Hugging Face
+  if (process.env.HF_TOKEN) {
+    endpoints.push({
+      name: "HuggingFace",
+      modelsUrl: "https://router.huggingface.co/v1/models",
+      chatUrl: "https://router.huggingface.co/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` },
+      key_env: "HF_TOKEN",
+    });
+  }
+
   return endpoints;
 }
 

@@ -32,6 +32,9 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 | Mistral | https://console.mistral.ai |
 | DeepSeek | https://platform.deepseek.com |
 | SiliconFlow | https://cloud.siliconflow.cn |
+| Cohere | https://dashboard.cohere.com |
+| Hugging Face | https://huggingface.co/settings/tokens |
+| Ollama Cloud | https://ollama.com |
 | Cloudflare | https://dash.cloudflare.com (also need Account ID) |
 | BigModel | https://open.bigmodel.cn |
 
