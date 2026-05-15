@@ -116,61 +116,63 @@ Groups automatically route to the best-scoring provider that matches the capabil
 
 ## Provider List
 
-| Provider | Model | Context | Tier | Capabilities | Auth |
-|----------|-------|---------|------|-------------|------|
-| Copilot-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| Copilot-GPT5mini | gpt-5-mini | 128K | 1 | tools, coding, text, thinking | key |
-| GitHubModels-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| GitHubModels-GPT41 | gpt-4.1 | 128K | 1 | tools, coding, text, max | key |
-| Mistral-Small | mistral-small-latest | 32K | 2 | tools, text | key |
-| Mistral-Medium | mistral-medium-latest | 32K | 1 | tools, coding, text | key |
-| Groq-Llama70B | llama-3.3-70b-versatile | 131K | 2 | tools, text | key |
-| Groq-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| Groq-Qwen332B | qwen-qwq-32b | 131K | 2 | tools, coding, text, thinking | key |
-| Groq-Llama4Scout | llama-4-scout-17b-16e | 131K | 2 | tools, text, images | key |
-| Groq-Kimi262K | kimi-k2-instruct | 262K | 1 | tools, coding, text, max, thinking | key |
-| Cerebras-Qwen235B | qwen-3-235b-a22b | 8K | 2 | tools, coding, text, thinking | key |
-| SambaNova-Llama70B | Meta-Llama-3.3-70B | 131K | 2 | tools, text | key |
-| SambaNova-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| SambaNova-DSV31 | DeepSeek-V3-0324 | 131K | 1 | tools, coding, text, thinking | key |
-| SambaNova-Maverick | Llama-4-Maverick-17B | 131K | 2 | tools, text, images | key |
-| NVIDIA-Llama70B | llama-3.3-70b-instruct | 131K | 2 | tools, text | key |
-| NVIDIA-Nemotron120B | nemotron-super-49b-v1 | 131K | 1 | tools, coding, text, max | key |
-| NVIDIA-DSV4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
-| Gemini-2.5-Flash | gemini-2.5-flash | 1M | 1 | tools, coding, text, images, video, thinking | key |
-| Gemini-2.5-Pro | gemini-2.5-pro | 1M | 1 | tools, coding, text, images, video, max, thinking | key |
-| Gemini-3-Flash | gemini-3.0-flash-preview | 1M | 1 | tools, coding, text, images, video | key |
-| **LLM7-Auto** | llm7/auto | 131K | 1 | tools, coding, text, thinking | **none** |
-| **OVH-Llama70B** | Meta-Llama-3_3-70B | 131K | 2 | tools, text | **none** |
-| **OVH-Qwen332B** | Qwen3-32B | 131K | 2 | tools, coding, text, thinking | **none** |
-| **OVH-Qwen3Coder** | Qwen3-Coder-30B | 131K | 1 | tools, coding, text, thinking | **none** |
-| **OVH-GPTOSS120B** | gpt-oss-120b | 131K | 1 | tools, coding, text, max, thinking | **none** |
-| **OVH-MistralSmall** | Mistral-Small-3.2-24B | 131K | 2 | tools, text | **none** |
-| OR-Qwen3Coder | qwen3-coder-plus:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OR-GPTOSS120B | gpt-oss-120b:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OR-Nemotron120B | nemotron-super-49b:free | 131K | 1 | tools, coding, text, max | key |
-| OpenRouter-Free | openrouter/auto | 131K | 2 | tools, text | key |
-| OR-MiniMaxM25 | minimax-m1-80k:free | 65K | 2 | tools, text | key |
-| Cloudflare-Llama70B | llama-3.3-70b-fp8-fast | 131K | 2 | tools, text | key |
-| SiliconFlow-DSV4Flash | DeepSeek-V4-Flash | 131K | 1 | tools, coding, text, thinking | key |
-| SiliconFlow-Qwen8B | Qwen3-8B | 32K | 3 | tools, text, thinking | key |
-| BigModel-GLM4 | glm-4-flash | 131K | 2 | tools, text | key |
-| **Kilo-DSV4Flash** | deepseek-v4-flash:free | 256K | 2 | tools, coding, text, thinking | **none** |
-| **Kilo-Nemotron120B** | nemotron-120b:free | 262K | 2 | tools, coding, text, max | **none** |
-| **Kilo-NemotronReasoning** | nemotron-30b-reasoning:free | 256K | 2 | tools, text, thinking | **none** |
-| **Kilo-Ring1T** | ring-2.6-1t:free | 262K | 2 | tools, coding, text, max | **none** |
-| **Kilo-LagunaM1** | laguna-m.1:free | 131K | 2 | coding | **none** |
-| **Kilo-LagunaXS2** | laguna-xs.2:free | 131K | 3 | coding | **none** |
-| **Kilo-Cobuddy** | cobuddy:free | 131K | 3 | tools, text | **none** |
-| **Kilo-Auto** | openrouter/free | 131K | 3 | text | **none** |
-| DeepSeek-V4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
-| DeepSeek-V3 | deepseek-chat | 131K | 1 | tools, coding, text, thinking | key |
-| Alibaba-QwenMax | qwen-max | 131K | 1 | tools, coding, text, max, thinking | key |
-| Alibaba-QwenPlus | qwen-plus | 131K | 2 | tools, coding, text, thinking | key |
-| Alibaba-QwenTurbo | qwen-turbo | 131K | 2 | tools, text | key |
-| Alibaba-Qwen3-235B | qwen3-235b-a22b | 131K | 1 | tools, coding, text, max, thinking | key |
-| Alibaba-Qwen3-32B | qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
-| Alibaba-Qwen3Coder | qwen3-coder-plus | 131K | 1 | tools, coding, max, thinking | key |
+"Provider" = API service where you create account and get key. "Name" = proxy identifier you can use in `model` field.
+
+| Provider | Name | Model | Context | Tier | Capabilities | Auth |
+|----------|------|-------|---------|------|-------------|------|
+| GitHub Copilot | Copilot-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
+| GitHub Copilot | Copilot-GPT5mini | gpt-5-mini | 128K | 1 | tools, coding, text, thinking | key |
+| GitHub Models | GitHubModels-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
+| GitHub Models | GitHubModels-GPT41 | gpt-4.1 | 128K | 1 | tools, coding, text, max | key |
+| Mistral | Mistral-Small | mistral-small-latest | 32K | 2 | tools, text | key |
+| Mistral | Mistral-Medium | mistral-medium-latest | 32K | 1 | tools, coding, text | key |
+| Groq | Groq-Llama70B | llama-3.3-70b-versatile | 131K | 2 | tools, text | key |
+| Groq | Groq-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
+| Groq | Groq-Qwen332B | qwen-qwq-32b | 131K | 2 | tools, coding, text, thinking | key |
+| Groq | Groq-Llama4Scout | llama-4-scout-17b-16e | 131K | 2 | tools, text, images | key |
+| Groq | Groq-Kimi262K | kimi-k2-instruct | 262K | 1 | tools, coding, text, max, thinking | key |
+| Cerebras | Cerebras-Qwen235B | qwen-3-235b-a22b | 8K | 2 | tools, coding, text, thinking | key |
+| SambaNova | SambaNova-Llama70B | Meta-Llama-3.3-70B | 131K | 2 | tools, text | key |
+| SambaNova | SambaNova-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
+| SambaNova | SambaNova-DSV31 | DeepSeek-V3-0324 | 131K | 1 | tools, coding, text, thinking | key |
+| SambaNova | SambaNova-Maverick | Llama-4-Maverick-17B | 131K | 2 | tools, text, images | key |
+| NVIDIA | NVIDIA-Llama70B | llama-3.3-70b-instruct | 131K | 2 | tools, text | key |
+| NVIDIA | NVIDIA-Nemotron120B | nemotron-super-49b-v1 | 131K | 1 | tools, coding, text, max | key |
+| NVIDIA | NVIDIA-DSV4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
+| Gemini | Gemini-2.5-Flash | gemini-2.5-flash | 1M | 1 | tools, coding, text, images, video, thinking | key |
+| Gemini | Gemini-2.5-Pro | gemini-2.5-pro | 1M | 1 | tools, coding, text, images, video, max, thinking | key |
+| Gemini | Gemini-3-Flash | gemini-3.0-flash-preview | 1M | 1 | tools, coding, text, images, video | key |
+| **LLM7** | **LLM7-Auto** | llm7/auto | 131K | 1 | tools, coding, text, thinking | **none** |
+| **OVH** | **OVH-Llama70B** | Meta-Llama-3_3-70B | 131K | 2 | tools, text | **none** |
+| **OVH** | **OVH-Qwen332B** | Qwen3-32B | 131K | 2 | tools, coding, text, thinking | **none** |
+| **OVH** | **OVH-Qwen3Coder** | Qwen3-Coder-30B | 131K | 1 | tools, coding, text, thinking | **none** |
+| **OVH** | **OVH-GPTOSS120B** | gpt-oss-120b | 131K | 1 | tools, coding, text, max, thinking | **none** |
+| **OVH** | **OVH-MistralSmall** | Mistral-Small-3.2-24B | 131K | 2 | tools, text | **none** |
+| OpenRouter | OR-Qwen3Coder | qwen3-coder-plus:free | 131K | 1 | tools, coding, text, max, thinking | key |
+| OpenRouter | OR-GPTOSS120B | gpt-oss-120b:free | 131K | 1 | tools, coding, text, max, thinking | key |
+| OpenRouter | OR-Nemotron120B | nemotron-super-49b:free | 131K | 1 | tools, coding, text, max | key |
+| OpenRouter | OpenRouter-Free | openrouter/auto | 131K | 2 | tools, text | key |
+| OpenRouter | OR-MiniMaxM25 | minimax-m1-80k:free | 65K | 2 | tools, text | key |
+| Cloudflare | Cloudflare-Llama70B | llama-3.3-70b-fp8-fast | 131K | 2 | tools, text | key |
+| SiliconFlow | SiliconFlow-DSV4Flash | DeepSeek-V4-Flash | 131K | 1 | tools, coding, text, thinking | key |
+| SiliconFlow | SiliconFlow-Qwen8B | Qwen3-8B | 32K | 3 | tools, text, thinking | key |
+| BigModel | BigModel-GLM4 | glm-4-flash | 131K | 2 | tools, text | key |
+| **Kilo** | **Kilo-DSV4Flash** | deepseek-v4-flash:free | 256K | 2 | tools, coding, text, thinking | **none** |
+| **Kilo** | **Kilo-Nemotron120B** | nemotron-120b:free | 262K | 2 | tools, coding, text, max | **none** |
+| **Kilo** | **Kilo-NemotronReasoning** | nemotron-30b-reasoning:free | 256K | 2 | tools, text, thinking | **none** |
+| **Kilo** | **Kilo-Ring1T** | ring-2.6-1t:free | 262K | 2 | tools, coding, text, max | **none** |
+| **Kilo** | **Kilo-LagunaM1** | laguna-m.1:free | 131K | 2 | coding | **none** |
+| **Kilo** | **Kilo-LagunaXS2** | laguna-xs.2:free | 131K | 3 | coding | **none** |
+| **Kilo** | **Kilo-Cobuddy** | cobuddy:free | 131K | 3 | tools, text | **none** |
+| **Kilo** | **Kilo-Auto** | openrouter/free | 131K | 3 | text | **none** |
+| DeepSeek | DeepSeek-V4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
+| DeepSeek | DeepSeek-V3 | deepseek-chat | 131K | 1 | tools, coding, text, thinking | key |
+| Alibaba | Alibaba-QwenMax | qwen-max | 131K | 1 | tools, coding, text, max, thinking | key |
+| Alibaba | Alibaba-QwenPlus | qwen-plus | 131K | 2 | tools, coding, text, thinking | key |
+| Alibaba | Alibaba-QwenTurbo | qwen-turbo | 131K | 2 | tools, text | key |
+| Alibaba | Alibaba-Qwen3-235B | qwen3-235b-a22b | 131K | 1 | tools, coding, text, max, thinking | key |
+| Alibaba | Alibaba-Qwen3-32B | qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
+| Alibaba | Alibaba-Qwen3Coder | qwen3-coder-plus | 131K | 1 | tools, coding, max, thinking | key |
 
 ## How Routing Works
 
