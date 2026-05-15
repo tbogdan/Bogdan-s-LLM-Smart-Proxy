@@ -846,6 +846,14 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
       else bonus -= 0.3; // penalize but still include as fallback
     }
 
+    // Group-specific hard requirements: coding/max need tools+thinking
+    if (cap === "coding" || cap === "max") {
+      if (p.caps.includes("tools")) bonus += 0.3;
+      else bonus -= 0.5;
+      if (p.tc || p.caps.includes("thinking")) bonus += 0.2;
+      else bonus -= 0.3;
+    }
+
     // Detected use-case bonus (from message analysis)
     for (const dc of detectedCaps) {
       if (p.caps.includes(dc)) bonus += 0.2;
