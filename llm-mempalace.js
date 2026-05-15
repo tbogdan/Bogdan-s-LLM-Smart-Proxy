@@ -252,12 +252,18 @@ async function recallMemories(session, reqBody) {
   const project = session.projectName;
 
   if (session.isNew) {
-    const [ctx, prefs] = await Promise.all([
-      mpcSearch(`${project} status`, "sessions"),
+    const [lastSession, tasks, prefs, arch, problems] = await Promise.all([
+      mpcSearch(`${project} session`, "sessions"),
+      mpcSearch(`${project} tasks`, "tasks"),
       mpcSearch(`${project} preferences`, "preferences"),
+      mpcSearch(`${project} architecture`, "architecture"),
+      mpcSearch(`${project} problems`, "problems"),
     ]);
-    if (ctx) parts.push(`Session: ${ctx}`);
+    if (lastSession) parts.push(`Last session: ${lastSession}`);
+    if (tasks) parts.push(`Tasks: ${tasks}`);
     if (prefs) parts.push(`Preferences: ${prefs}`);
+    if (arch) parts.push(`Architecture: ${arch}`);
+    if (problems) parts.push(`Known issues: ${problems}`);
     session.isNew = false;
   }
 
@@ -315,8 +321,23 @@ function triggerSaves(session, reqBody, responseBody) {
   }
 
   if (session.requestCount % SAVE_INTERVAL_REQS === 0 || now - session.lastSave > SAVE_INTERVAL_MS) {
-    const summary = session.recentResponses.slice(-10).join(" | ").substring(0, 500);
-    mpcSave(`${project} session ${new Date().toISOString().split("T")[0]}`, summary, "sessions");
+    const date = new Date().toISOString().split("T")[0];
+    const actionSummary = session.recentResponses.slice(-10).join(" | ").substring(0, 400);
+    const taskSummary = session.recentTasks.length > 0 ? `\n\nTasks: ${session.recentTasks.join(", ")}` : "";
+
+    // Structured summary with MemPalace references
+    const structured = [
+      `## Summary\n${actionSummary}`,
+      taskSummary,
+      `\n\n## References`,
+      `→ ${project} code — ${date} [room: sessions] — implementations and file changes`,
+      `→ ${project} tasks — ${date} [room: tasks] — task progress`,
+      `→ ${project} arch — ${date} [room: architecture] — tech decisions`,
+      `→ ${project} problems — ${date} [room: problems] — errors and fixes`,
+      `→ ${project} preferences [room: preferences] — user corrections`,
+    ].join("\n").substring(0, 800);
+
+    mpcSave(`${project} session ${date}`, structured, "sessions");
     session.lastSave = now;
     session.recentResponses = [];
   }

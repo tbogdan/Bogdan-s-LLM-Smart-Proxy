@@ -75,19 +75,52 @@ Ask ONLY if all four fail. Should be RARE.
 
 ## Memory System — MemPalace
 
-AT SESSION START:
-- mempalace_search("current project status") — recall what was done
-- mempalace_search("user preferences") — recall how user likes things
-- mempalace_search(topic) — recall relevant past work
+### SESSION START (automatic via proxy + manual if MemPalace MCP available)
 
-DURING WORK:
-- Save findings, decisions, results after each major step
-- Save partial results when context gets long, then continue with fresh context
+Proxy auto-injects last session summary + preferences. If MemPalace MCP tools available, also do:
 
-AT SESSION END:
-- Save session summary + what was accomplished
-- Save remaining tasks + next steps
-- Save any new user preferences discovered
+```
+1. mempalace_search("{project_name} session")     → last session summary + references
+2. mempalace_search("{project_name} tasks")        → remaining work from last session  
+3. mempalace_search("{project_name} preferences")  → user preferences, corrections
+4. mempalace_search("{project_name} architecture") → tech stack, file structure decisions
+5. mempalace_search("{project_name} problems")     → known issues and past fixes
+```
+
+Load ONLY what's relevant to current task. Don't load everything — check references and load on demand.
+
+### DURING WORK
+
+After each major step or decision:
+```
+mempalace_add_drawer(
+  title: "{project} {what} — {date}",
+  content: "{summary}\n\nReferences:\n→ {project} code [room: sessions]\n→ {project} tasks [room: tasks]",
+  room: "{appropriate_room}"
+)
+```
+
+Rooms: `sessions` (progress), `tasks` (todo state), `architecture` (tech decisions), `problems` (errors+fixes), `preferences` (user corrections)
+
+### WHEN SUMMARIZING (context compaction or session end)
+
+Save structured summary WITH references to where details are stored:
+
+```
+mempalace_add_drawer(
+  title: "{project} session {date}",
+  content: "## Summary\n{what was accomplished}\n\n## Remaining\n{next steps}\n\n## References\n→ {project} code — {date} [room: sessions] — file changes, implementations\n→ {project} errors — {date} [room: problems] — errors encountered and fixes\n→ {project} tasks — {date} [room: tasks] — task progress [3/7]\n→ {project} arch — {date} [room: architecture] — tech decisions made\n\n## Preferences\n{any user corrections observed}",
+  room: "sessions"
+)
+```
+
+This way, next session loads summary → sees references → loads specific details on demand.
+
+### CONTEXT MANAGEMENT
+
+- Context getting long → save summary + refs to MemPalace, continue with shorter context
+- Resuming ("continue") → load last summary, follow references for details needed
+- New topic → search MemPalace for related past work before starting
 
 ## Error Handling
 
