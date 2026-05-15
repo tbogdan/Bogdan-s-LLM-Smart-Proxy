@@ -48,12 +48,20 @@ function loadSeedProviders() {
 // ---------------------------------------------------------------------------
 // Hydrate seed format into runtime provider objects
 // ---------------------------------------------------------------------------
+function resolveUrl(url) {
+  // Cloudflare: replace /accounts/me/ with actual account ID
+  if (url.includes("cloudflare.com") && url.includes("/accounts/me/") && process.env.CLOUDFLARE_ACCOUNT_ID) {
+    return url.replace("/accounts/me/", `/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/`);
+  }
+  return url;
+}
+
 function hydrateSeedProviders(config) {
   const providers = [];
   for (const p of (config.providers || [])) {
     providers.push({
       name: p.name,
-      url: p.url,
+      url: resolveUrl(p.url),
       key: (p.key_env ? process.env[p.key_env] : null) || p.default_key || (p.no_auth ? "anonymous" : ""),
       key_env: p.key_env || "",
       no_auth: !!p.no_auth,
@@ -106,7 +114,7 @@ function hydrateProvidersFile(config) {
   for (const p of (config.providers || [])) {
     providers.push({
       name: p.name,
-      url: p.url,
+      url: resolveUrl(p.url),
       key: (p.key_env ? process.env[p.key_env] : null) || p.default_key || (p.no_auth ? "anonymous" : ""),
       key_env: p.key_env || "",
       no_auth: !!p.no_auth,

@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 53 free LLM models across 16 providers with automatic failover, capability-based routing, and smart scoring.
+A zero-dependency Node.js proxy that routes requests to 52 free LLM models across 16 providers with automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **53 free LLM models across 16 providers** with automatic failover on errors
+- **52 free LLM models across 16 providers** with automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
@@ -127,32 +127,31 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | Mistral | Mistral-Small | mistral-small-latest | 32K | 2 | tools, text | key |
 | Mistral | Mistral-Medium | mistral-medium-latest | 32K | 1 | tools, coding, text | key |
 | Groq | Groq-Llama70B | llama-3.3-70b-versatile | 131K | 2 | tools, text | key |
-| Groq | Groq-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| Groq | Groq-Qwen332B | qwen-qwq-32b | 131K | 2 | tools, coding, text, thinking | key |
+| Groq | Groq-GPTOSS120B | openai/gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
+| Groq | Groq-Qwen332B | qwen/qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
 | Groq | Groq-Llama4Scout | llama-4-scout-17b-16e | 131K | 2 | tools, text, images | key |
-| Groq | Groq-Kimi262K | kimi-k2-instruct | 262K | 1 | tools, coding, text, max, thinking | key |
-| Cerebras | Cerebras-Qwen235B | qwen-3-235b-a22b | 8K | 2 | tools, coding, text, thinking | key |
-| SambaNova | SambaNova-Llama70B | Meta-Llama-3.3-70B | 131K | 2 | tools, text | key |
+| Cerebras | Cerebras-Qwen235B | qwen-3-235b-a22b-instruct-2507 | 8K | 2 | tools, coding, text, thinking | key |
+| SambaNova | SambaNova-Llama70B | Meta-Llama-3.3-70B-Instruct | 131K | 2 | tools, text | key |
 | SambaNova | SambaNova-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| SambaNova | SambaNova-DSV31 | DeepSeek-V3-0324 | 131K | 1 | tools, coding, text, thinking | key |
+| SambaNova | SambaNova-DSV32 | DeepSeek-V3.2 | 131K | 1 | tools, coding, text, thinking | key |
 | SambaNova | SambaNova-Maverick | Llama-4-Maverick-17B | 131K | 2 | tools, text, images | key |
 | NVIDIA | NVIDIA-Llama70B | llama-3.3-70b-instruct | 131K | 2 | tools, text | key |
 | NVIDIA | NVIDIA-Nemotron120B | nemotron-super-49b-v1 | 131K | 1 | tools, coding, text, max | key |
-| NVIDIA | NVIDIA-DSV4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
+| NVIDIA | NVIDIA-DSV4Flash | deepseek-ai/deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
 | Gemini | Gemini-2.5-Flash | gemini-2.5-flash | 1M | 1 | tools, coding, text, images, video, thinking | key |
 | Gemini | Gemini-2.5-Pro | gemini-2.5-pro | 1M | 1 | tools, coding, text, images, video, max, thinking | key |
-| Gemini | Gemini-3-Flash | gemini-3.0-flash-preview | 1M | 1 | tools, coding, text, images, video | key |
+| Gemini | Gemini-3-Flash | gemini-3-flash-preview | 1M | 1 | tools, coding, text, images, video | key |
 | **LLM7** | **LLM7-Auto** | llm7/auto | 131K | 1 | tools, coding, text, thinking | **none** |
 | **OVH** | **OVH-Llama70B** | Meta-Llama-3_3-70B | 131K | 2 | tools, text | **none** |
 | **OVH** | **OVH-Qwen332B** | Qwen3-32B | 131K | 2 | tools, coding, text, thinking | **none** |
 | **OVH** | **OVH-Qwen3Coder** | Qwen3-Coder-30B | 131K | 1 | tools, coding, text, thinking | **none** |
 | **OVH** | **OVH-GPTOSS120B** | gpt-oss-120b | 131K | 1 | tools, coding, text, max, thinking | **none** |
 | **OVH** | **OVH-MistralSmall** | Mistral-Small-3.2-24B | 131K | 2 | tools, text | **none** |
-| OpenRouter | OR-Qwen3Coder | qwen3-coder-plus:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OpenRouter | OR-GPTOSS120B | gpt-oss-120b:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OpenRouter | OR-Nemotron120B | nemotron-super-49b:free | 131K | 1 | tools, coding, text, max | key |
+| OpenRouter | OR-Qwen3Coder | qwen/qwen3-coder:free | 131K | 1 | tools, coding, text, max, thinking | key |
+| OpenRouter | OR-GPTOSS120B | openai/gpt-oss-120b:free | 131K | 1 | tools, coding, text, max, thinking | key |
+| OpenRouter | OR-Nemotron120B | nvidia/nemotron-3-super-120b-a12b:free | 131K | 1 | tools, coding, text, max | key |
 | OpenRouter | OpenRouter-Free | openrouter/auto | 131K | 2 | tools, text | key |
-| OpenRouter | OR-MiniMaxM25 | minimax-m1-80k:free | 65K | 2 | tools, text | key |
+| OpenRouter | OR-MiniMaxM25 | minimax/minimax-m2.5:free | 131K | 2 | tools, text | key |
 | Cloudflare | Cloudflare-Llama70B | llama-3.3-70b-fp8-fast | 131K | 2 | tools, text | key |
 | SiliconFlow | SiliconFlow-DSV4Flash | DeepSeek-V4-Flash | 131K | 1 | tools, coding, text, thinking | key |
 | SiliconFlow | SiliconFlow-Qwen8B | Qwen3-8B | 32K | 3 | tools, text, thinking | key |
@@ -284,10 +283,10 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 
 | Provider | Get free key at | Models |
 |----------|----------------|--------|
-| Groq | https://console.groq.com | Llama 70B, GPT-OSS 120B, Qwen3 32B, Kimi 262K |
+| Groq | https://console.groq.com | Llama 70B, GPT-OSS 120B, Qwen3 32B, Llama 4 Scout |
 | Gemini | https://aistudio.google.com | Gemini 2.5 Flash/Pro, Gemini 3 Flash |
 | OpenRouter | https://openrouter.ai/keys | 20+ free models (Qwen3 Coder, GPT-OSS, Nemotron) |
-| SambaNova | https://cloud.sambanova.ai | Llama 70B, GPT-OSS 120B, DeepSeek V3.1, Maverick |
+| SambaNova | https://cloud.sambanova.ai | Llama 70B, GPT-OSS 120B, DeepSeek V3.2, Maverick |
 | Cerebras | https://cloud.cerebras.ai | Qwen3 235B (fastest inference) |
 | NVIDIA | https://build.nvidia.com | Llama 70B, Nemotron 120B, DeepSeek V4 Flash |
 | Alibaba | https://dashscope.console.aliyun.com | Qwen Max, Qwen3 235B/32B, Qwen3 Coder ⚠️ |

@@ -26,6 +26,16 @@ const THINKING_PATTERNS = [
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 // ---------------------------------------------------------------------------
+// URL resolution (e.g. Cloudflare accounts/me → actual account ID)
+// ---------------------------------------------------------------------------
+function resolveUrl(url) {
+  if (url.includes("cloudflare.com") && url.includes("/accounts/me/") && process.env.CLOUDFLARE_ACCOUNT_ID) {
+    return url.replace("/accounts/me/", `/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/`);
+  }
+  return url;
+}
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 function fetchJSON(urlStr, headers = {}) {
@@ -336,7 +346,13 @@ async function testContextSize(chatUrl, headers, model) {
 function loadDiscovery() {
   try {
     if (fs.existsSync(DISCOVERY_FILE)) {
-      return JSON.parse(fs.readFileSync(DISCOVERY_FILE, "utf8"));
+      const data = JSON.parse(fs.readFileSync(DISCOVERY_FILE, "utf8"));
+      // Handle old format or missing models array
+      if (!Array.isArray(data.models)) {
+        log("discovery.json has old/incompatible format, resetting");
+        return { models: [], last_scan: null, scan_count: 0 };
+      }
+      return data;
     }
   } catch {}
   return { models: [], last_scan: null, scan_count: 0 };
@@ -404,8 +420,8 @@ async function testSeedProviders(seed) {
   const results = [];
 
   for (const sp of (seed.providers || [])) {
-    const key = process.env[sp.key_env] || "";
-    if (!key) {
+    const key = (sp.key_env ? process.env[sp.key_env] : null) || sp.default_key || "";
+    if (!key && !sp.no_auth) {
       results.push({
         name: sp.name,
         alive: false,
@@ -417,13 +433,15 @@ async function testSeedProviders(seed) {
 
     // Build headers for test
     const headers = { ...(sp.headers || {}) };
-    if (sp.auth_style === "token") {
-      headers["Authorization"] = `token ${key}`;
-    } else {
-      headers["Authorization"] = `Bearer ${key}`;
+    if (key && !(sp.no_auth && key === "anonymous" && !sp.kilo)) {
+      if (sp.auth_style === "token") {
+        headers["Authorization"] = `token ${key}`;
+      } else {
+        headers["Authorization"] = `Bearer ${key}`;
+      }
     }
 
-    const chatOk = await testChat(sp.url, headers, sp.model);
+    const chatOk = await testChat(resolveUrl(sp.url), headers, sp.model);
 
     results.push({
       name: sp.name,
