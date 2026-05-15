@@ -526,74 +526,141 @@ function buildHeaders(provider, extraHeaders) {
 // ---------------------------------------------------------------------------
 // Use-case detection from messages
 // ---------------------------------------------------------------------------
-function detectUseCase(messages) {
+function detectUseCase(messages, reqBody) {
   const caps = new Set();
+  let isAgent = false;
   const last = messages?.[messages.length - 1];
-  const content = (typeof last?.content === "string" ? last.content : "").toLowerCase();
+  const lastContent = (typeof last?.content === "string" ? last.content : "").toLowerCase();
 
-  // Images/vision
+  // Tool definitions in request = IDE/agent → need tools + coding, tier 1
+  if (reqBody?.tools?.length > 0 || reqBody?.functions?.length > 0) {
+    caps.add("tools");
+    caps.add("coding");
+    isAgent = true;
+  }
+
+  // System prompt patterns for IDEs/agents
+  const system = (messages || []).find((m) => m.role === "system");
+  const sysContent = (typeof system?.content === "string" ? system.content : "").toLowerCase();
+  if (/\b(claude code|cursor|copilot|cline|kilo.code|continue\.dev|aider|opencode)\b/i.test(sysContent)) {
+    caps.add("tools");
+    caps.add("coding");
+    isAgent = true;
+  }
+  if (/\b(you are .*(assistant|agent|developer|engineer)|software engineering|codebase)\b/i.test(sysContent)) {
+    caps.add("coding");
+    isAgent = true;
+  }
+
+  // Tool calls in assistant messages = ongoing agent conversation
   for (const m of (messages || [])) {
+    if (m.role === "assistant" && m.tool_calls?.length > 0) {
+      caps.add("tools");
+      caps.add("coding");
+      isAgent = true;
+    }
+    if (m.role === "tool") {
+      caps.add("tools");
+      isAgent = true;
+    }
+    // Images
     if (Array.isArray(m.content) && m.content.some((p) => p.type === "image_url" || p.type === "image")) {
       caps.add("images");
     }
   }
 
-  // Coding signals
-  if (/\b(code|function|class|implement|refactor|debug|fix bug|write a?\s*(script|program|module)|```|def |const |import |require\()\b/i.test(content)) {
+  // Coding signals in last message
+  if (/\b(code|function|class|implement|refactor|debug|fix|write.*script|```|def |const |import |require\(|component|endpoint|api|test|error|bug|tsx?|jsx?|\.py|\.js)\b/i.test(lastContent)) {
     caps.add("coding");
   }
 
   // Thinking/reasoning signals
-  if (/\b(think|reason|step by step|analyze|explain why|solve|prove|math|calculate)\b/i.test(content)) {
+  if (/\b(think|reason|step by step|analyze|explain why|solve|prove|math|calculate)\b/i.test(lastContent)) {
     caps.add("thinking");
   }
 
-  // Tool use signals
-  if (/\b(tool|function.call|search|browse|execute)\b/i.test(content)) {
-    caps.add("tools");
-  }
-
-  return caps;
+  return { caps, isAgent };
 }
 
 // ---------------------------------------------------------------------------
-// Provider selection for groups
+// Provider selection — unified for all groups with smart fallback
 // ---------------------------------------------------------------------------
-function getProvidersForGroup(groupName, estimatedTokens) {
+function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
   const cap = GROUPS[groupName];
-  let candidates;
-  if (cap === null || cap === undefined) {
-    candidates = PROVIDERS.filter((p) => p.key && p.alive !== false);
-  } else {
-    candidates = PROVIDERS.filter((p) => p.key && p.alive !== false && p.caps.includes(cap));
-  }
-  // Filter by context size if we have a token estimate
-  if (estimatedTokens > 0) {
-    candidates = candidates.filter((p) => p.context >= estimatedTokens);
-  }
-  // Sort by score descending, skip cooldowns and quota-disabled
-  return candidates
-    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name))
-    .sort((a, b) => providerScore(b) - providerScore(a));
+  const { caps: detectedCaps, isAgent } = detectUseCase(reqBody?.messages, reqBody);
+
+  // All alive providers with enough context
+  const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
+    .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+  const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
+
+  // Does request carry reasoning_content or need thinking?
+  const hasReasoning = (reqBody?.messages || []).some((m) => m.reasoning_content);
+  const needsThinking = cap === "thinking" || detectedCaps.has("thinking");
+  const needsTools = cap === "tools" || detectedCaps.has("tools") || isAgent;
+
+  // Score each provider: base score + group match + detected caps + agent boost + compat
+  const scored = withContext.map((p) => {
+    let bonus = 0;
+    const compat = getCompat(p.name);
+
+    // Group capability match: strong bonus for matching, but don't exclude non-matching
+    if (cap !== null && cap !== undefined) {
+      if (p.caps.includes(cap)) bonus += 0.6;
+      else bonus -= 0.3; // penalize but still include as fallback
+    }
+
+    // Detected use-case bonus (from message analysis)
+    for (const dc of detectedCaps) {
+      if (p.caps.includes(dc)) bonus += 0.2;
+    }
+
+    // Agent/IDE mode: prefer tier 1, require tools
+    if (isAgent) {
+      if (p.tier === 1) bonus += 0.4;
+      if (p.tier === 3) bonus -= 0.4;
+      if (!p.caps.includes("tools")) bonus -= 0.8;
+    }
+
+    // Learned compat penalties: avoid providers that will fail for this request type
+    if (compat.no_reasoning && hasReasoning) bonus -= 0.5;
+    if (compat.no_extra_body && needsThinking) bonus -= 0.3;
+    if (compat.max_tokens_cap && needsTools) bonus -= 0.1; // limited output = worse for tools
+    if (compat.no_reasoning && needsThinking) bonus -= 0.3; // can't relay thinking chains
+
+    return { provider: p, score: providerScore(p) + bonus };
+  });
+
+  return scored.sort((a, b) => b.score - a.score).map((s) => s.provider);
 }
 
-// Get providers for auto group — detect use case, prefer matching, but include all as fallback
-function getProvidersForAuto(messages, estimatedTokens) {
-  const detectedCaps = detectUseCase(messages);
-  const all = PROVIDERS.filter((p) => p.key && p.alive !== false && p.context >= estimatedTokens)
+// auto group: same logic but no specific group capability filter
+function getProvidersForAuto(messages, estimatedTokens, reqBody) {
+  const { caps: detectedCaps, isAgent } = detectUseCase(messages, reqBody);
+  const hasReasoning = (messages || []).some((m) => m.reasoning_content);
+  const needsThinking = detectedCaps.has("thinking");
+
+  const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
     .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+  const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
 
-  if (detectedCaps.size === 0) {
-    // No specific use case — return all sorted by score
-    return all.sort((a, b) => providerScore(b) - providerScore(a));
-  }
-
-  // Score providers: bonus for each matching detected capability
-  const scored = all.map((p) => {
+  const scored = withContext.map((p) => {
     let bonus = 0;
+    const compat = getCompat(p.name);
+
     for (const cap of detectedCaps) {
       if (p.caps.includes(cap)) bonus += 0.3;
     }
+    if (isAgent) {
+      if (p.tier === 1) bonus += 0.5;
+      if (p.tier === 3) bonus -= 0.5;
+      if (!p.caps.includes("tools")) bonus -= 1.0;
+    }
+    // Learned compat penalties
+    if (compat.no_reasoning && hasReasoning) bonus -= 0.5;
+    if (compat.no_extra_body && needsThinking) bonus -= 0.3;
+    if (compat.no_reasoning && needsThinking) bonus -= 0.3;
+
     return { provider: p, score: providerScore(p) + bonus };
   });
 
@@ -707,14 +774,14 @@ async function handleChatCompletion(reqBody, clientRes) {
   if (isGroup) {
     // auto group: detect use case, try all providers with smart ordering
     const providers = requestedModel === "auto"
-      ? getProvidersForAuto(reqBody.messages, totalNeeded)
-      : getProvidersForGroup(requestedModel, totalNeeded);
+      ? getProvidersForAuto(reqBody.messages, totalNeeded, reqBody)
+      : getProvidersForGroup(requestedModel, totalNeeded, reqBody);
 
     if (providers.length === 0) {
       // Check if providers exist but context is too small
       const allProviders = requestedModel === "auto"
-        ? getProvidersForAuto(reqBody.messages, 0)
-        : getProvidersForGroup(requestedModel, 0);
+        ? getProvidersForAuto(reqBody.messages, 0, reqBody)
+        : getProvidersForGroup(requestedModel, 0, reqBody);
       if (allProviders.length > 0) {
         const maxContext = Math.max(...allProviders.map((p) => p.context));
         return sendError(clientRes, 413, "Context too large for available providers", {
@@ -996,7 +1063,13 @@ const server = http.createServer(async (req, res) => {
         return sendError(res, 400, "Invalid JSON body");
       }
       const est = estimateTokens(parsed.messages);
-      log(`Request: model=${parsed.model || "auto-free"} stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok`);
+      const model = parsed.model || "auto-free";
+      if (model === "auto") {
+        const { caps, isAgent } = detectUseCase(parsed.messages, parsed);
+        log(`Request: model=auto stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent}`);
+      } else {
+        log(`Request: model=${model} stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok`);
+      }
       return await handleChatCompletion(parsed, res);
     }
 
