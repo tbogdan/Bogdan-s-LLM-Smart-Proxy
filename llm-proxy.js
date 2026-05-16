@@ -1324,6 +1324,7 @@ async function handleChatCompletion(reqBody, clientRes) {
     const errors = [];
     for (const provider of providers) {
       try {
+        log(`Route: ${requestedModel} → ${provider.name} model=${provider.model} via=${provider.name.split("-")[0]}`);
         if (isStreaming) {
           await routeStreamToProvider(provider, reqBody, clientRes);
           return; // success
@@ -1380,6 +1381,7 @@ async function handleChatCompletion(reqBody, clientRes) {
   }
 
   try {
+    log(`Route: ${requestedModel} → ${provider.name} model=${provider.model} via=${provider.name.split("-")[0]}`);
     if (isStreaming) {
       await routeStreamToProvider(provider, reqBody, clientRes);
     } else {
