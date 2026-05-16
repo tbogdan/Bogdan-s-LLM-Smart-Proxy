@@ -49,10 +49,11 @@ if [ ! -f .env ]; then
       ["HF_TOKEN"]="Hugging Face (hf_...) — free at huggingface.co/settings/tokens"
       ["OLLAMA_API_KEY"]="Ollama Cloud — free at ollama.com"
       ["LLM7_API_KEY"]="LLM7 (optional, works without) — higher limits with key"
+      ["OPENAI_API_KEY"]="OpenAI (sk-proj-...) — at platform.openai.com"
       ["BIGMODEL_API_KEY"]="BigModel/GLM — free at open.bigmodel.cn"
     )
 
-    KEY_ORDER=(GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COHERE_API_KEY HF_TOKEN OLLAMA_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID LLM7_API_KEY BIGMODEL_API_KEY)
+    KEY_ORDER=(OPENAI_API_KEY GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COHERE_API_KEY HF_TOKEN OLLAMA_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID LLM7_API_KEY BIGMODEL_API_KEY)
 
     for KEY in "${KEY_ORDER[@]}"; do
       read -p "${KEY_NAMES[$KEY]}: " VALUE
@@ -74,9 +75,45 @@ fi
 # Create data and palace directories
 mkdir -p data palace
 
+# Build profile flags from ENABLE_X vars in .env
+PROFILES=""
+
+# --- Kiro Gateway ---
+if grep -q "^ENABLE_KIRO=true" .env 2>/dev/null; then
+  PROFILES="$PROFILES --profile kiro"
+  CURRENT_TOKEN=$(grep "^REFRESH_TOKEN=" .env 2>/dev/null | cut -d= -f2-)
+  if [ -z "$CURRENT_TOKEN" ] || [ "$CURRENT_TOKEN" = "xxx" ]; then
+    echo ""
+    echo "Kiro enabled but REFRESH_TOKEN not set. Starting browser auth..."
+    node kiro-auth.js --env-file .env
+  fi
+fi
+
+# --- OpenAI Codex Proxy ---
+if grep -q "^ENABLE_CODEX=true" .env 2>/dev/null; then
+  PROFILES="$PROFILES --profile codex"
+  if [ ! -f "data/codex-auth.json" ]; then
+    echo ""
+    echo "Codex enabled but auth token not found."
+    echo "Run: npx @openai/codex login"
+    echo "Then: cp ~/.codex/auth.json data/codex-auth.json"
+    echo ""
+    if command -v npx &> /dev/null; then
+      read -p "Run codex login now? (y/N): " CODEX_LOGIN
+      if [[ "$CODEX_LOGIN" =~ ^[Yy]$ ]]; then
+        npx @openai/codex login
+        if [ -f "$HOME/.codex/auth.json" ]; then
+          cp "$HOME/.codex/auth.json" data/codex-auth.json
+          echo "  ✓ codex-auth.json saved"
+        fi
+      fi
+    fi
+  fi
+fi
+
 echo ""
 echo "Building and starting containers..."
-docker compose up -d --build
+docker compose up -d --build $PROFILES
 
 echo ""
 echo "=== Setup Complete ==="

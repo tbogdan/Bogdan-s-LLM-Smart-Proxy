@@ -228,6 +228,17 @@ function getEndpoints() {
     });
   }
 
+  // OpenAI
+  if (process.env.OPENAI_API_KEY) {
+    endpoints.push({
+      name: "OpenAI",
+      modelsUrl: "https://api.openai.com/v1/models",
+      chatUrl: "https://api.openai.com/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      key_env: "OPENAI_API_KEY",
+    });
+  }
+
   // Cohere
   if (process.env.COHERE_API_KEY) {
     endpoints.push({
@@ -247,6 +258,32 @@ function getEndpoints() {
       chatUrl: "https://router.huggingface.co/v1/chat/completions",
       headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` },
       key_env: "HF_TOKEN",
+    });
+  }
+
+  // --- Local Gateway Proxies (Docker internal network) ---
+
+  // Kiro Gateway
+  if (process.env.ENABLE_KIRO === "true" && process.env.KIRO_API_KEY) {
+    endpoints.push({
+      name: "Kiro",
+      modelsUrl: "http://kiro-gateway:10088/v1/models",
+      chatUrl: "http://kiro-gateway:10088/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.KIRO_API_KEY}` },
+      key_env: "KIRO_API_KEY",
+      local_gateway: true,
+    });
+  }
+
+  // OpenAI Codex Proxy (ChatGPT subscription OAuth)
+  if (process.env.ENABLE_CODEX === "true" && process.env.CODEX_API_KEY) {
+    endpoints.push({
+      name: "Codex",
+      modelsUrl: "http://codex-proxy:10531/v1/models",
+      chatUrl: "http://codex-proxy:10531/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.CODEX_API_KEY}` },
+      key_env: "CODEX_API_KEY",
+      local_gateway: true,
     });
   }
 

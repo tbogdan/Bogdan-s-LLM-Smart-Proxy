@@ -30,3 +30,26 @@ services:
     ports:
       - "8891:8891"
     restart: unless-stopped
+
+  kiro-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.kiro
+    env_file: .env
+    volumes:
+      - ./.env:/app/.env:ro
+    ports:
+      - "10088:10088"
+    restart: unless-stopped
+    profiles: [kiro]
+
+  codex-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.codex
+    volumes:
+      - ./data/codex-auth.json:/root/.codex/auth.json:ro
+    ports:
+      - "10531:10531"
+    restart: unless-stopped
+    profiles: [codex]

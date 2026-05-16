@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 61 free LLM models across 19 providers with automatic failover, capability-based routing, and smart scoring.
+A zero-dependency Node.js proxy that routes requests to 69+ LLM models across 24 providers with automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **61 free LLM models across 19 providers** with automatic failover on errors
+- **69+ LLM models across 24 providers** with automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
@@ -182,6 +182,14 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | Hugging Face | HF-GPTOSS120B | openai/gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
 | Hugging Face | HF-Qwen3Coder | Qwen3-Coder-480B | 131K | 1 | tools, coding, text, max, thinking | key |
 | Hugging Face | HF-DeepSeekR1 | DeepSeek-R1 | 131K | 1 | tools, coding, text, thinking | key |
+| OpenAI | OpenAI-GPT4oMini | gpt-4o-mini | 128K | 1 | tools, coding, text, images | key |
+| OpenAI | OpenAI-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
+| **Kiro** | **Kiro-ClaudeSonnet** | claude-sonnet-4 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
+| **Kiro** | **Kiro-ClaudeHaiku45** | claude-haiku-4-5 | 200K | 1 | tools, coding, text, images, thinking | **OAuth** |
+| **Codex** | **Codex-GPT54** | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
+| **Codex** | **Codex-GPT55** | gpt-5.5 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
+| **Codex** | **Codex-O3** | o3 | 200K | 1 | tools, coding, text, thinking | **OAuth** |
+| **Codex** | **Codex-O4Mini** | o4-mini | 200K | 1 | tools, coding, text, thinking | **OAuth** |
 
 ## How Routing Works
 
@@ -318,11 +326,14 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | Cohere | https://dashboard.cohere.com | Command A 111B, Command R+, Command R7B |
 | Hugging Face | https://huggingface.co/settings/tokens | GPT-OSS 120B, Qwen3 Coder 480B, DeepSeek R1 |
 | Ollama Cloud | https://ollama.com | GPT-OSS 120B, Qwen3 Coder, DeepSeek V3.1 |
+| OpenAI | https://platform.openai.com | GPT-4o, GPT-4o-mini |
 | Cloudflare | https://dash.cloudflare.com | Llama 70B |
 | BigModel | https://open.bigmodel.cn | GLM-4 Flash |
 | **Kilo** | **No key needed** | **8 models (anonymous access)** |
 | **OVH** | **No key needed** | **5 models (open endpoint)** |
 | **LLM7** | **No key needed** | **1 model (open endpoint)** |
+| **Kiro** | **Free AWS Builder ID** | **Claude Sonnet 4, Haiku 4.5 (via kiro-gateway)** |
+| **Codex** | **ChatGPT subscription** | **GPT-5.4/5.5, o3, o4-mini (via OAuth proxy)** |
 
 > ⚠️ **Alibaba free tier**: Each model gets 1M tokens free for 90 days. After that, requests are **charged silently** by default. To stay safe, enable **"Free Quota Only"** mode in the [Alibaba console](https://dashscope.console.aliyun.com) — the proxy will auto-detect the 403 error and disable the provider.
 
@@ -345,6 +356,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `DEEPSEEK_API_KEY` | DeepSeek API key | `sk-xxxx` |
 | `COHERE_API_KEY` | Cohere API key | `xxx` |
 | `HF_TOKEN` | Hugging Face token | `hf_xxxx` |
+| `OPENAI_API_KEY` | OpenAI API key | `sk-proj-xxxx` |
 | `OLLAMA_API_KEY` | Ollama Cloud API key | `xxx` |
 | `KILO_TOKEN` | Kilo Code token (optional, uses anonymous by default) | `anonymous` |
 | `ALIBABA_API_KEY` | Alibaba DashScope API key | `sk-xxxx` |
@@ -352,6 +364,13 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `OVH_API_KEY` | OVH AI (no key needed, works without) | |
 | `LLM_PROXY_PORT` | Proxy port (default: 18900) | `18900` |
 | `DATA_DIR` | Data directory (default: /data) | `/data` |
+| **Gateway Proxies** | | |
+| `ENABLE_KIRO` | Enable Kiro gateway (free Claude) | `true` / `false` |
+| `REFRESH_TOKEN` | Kiro refresh token (from `node kiro-auth.js`) | `aorAAAAA...` |
+| `PROFILE_ARN` | Kiro profile ARN | `arn:aws:...` |
+| `KIRO_API_KEY` | Kiro gateway API key | `proxy` |
+| `ENABLE_CODEX` | Enable Codex OAuth proxy | `true` / `false` |
+| `CODEX_API_KEY` | Codex proxy API key | `proxy` |
 
 ## Recommended Tools
 
@@ -471,6 +490,54 @@ The proxy injects execution rules into every request automatically. No separate 
 - Date/time awareness, user language detection
 - Smart merge with IDE system prompts (replaces identity, keeps tool instructions)
 
+## Local Gateway Proxies (optional — unlock premium models for free)
+
+These Docker-integrated proxies expose IDE/web subscription models as OpenAI-compatible endpoints. Enable with `ENABLE_X=true` in `.env` — setup.sh handles auth automatically.
+
+### Kiro Gateway — free Claude Sonnet 4, Haiku 4.5
+
+Powered by [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) by [@jwadow](https://github.com/jwadow). Uses free AWS Builder ID (sign up at [kiro.dev](https://kiro.dev)).
+
+```bash
+# Enable in .env
+ENABLE_KIRO=true
+
+# Auth (browser OAuth via AWS — opens URL, click Allow):
+node kiro-auth.js
+
+# Or run setup.sh which does it automatically
+```
+
+Auth script opens `https://app.kiro.dev/signin` → PKCE flow → captures refresh token → saves to `.env`. Token auto-refreshes inside the container.
+
+### OpenAI Codex Proxy — GPT-5.4/5.5, o3, o4-mini
+
+Uses ChatGPT subscription via OAuth. Powered by [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) by [@EvanZhouDev](https://github.com/EvanZhouDev).
+
+```bash
+# Enable in .env
+ENABLE_CODEX=true
+
+# One-time auth (opens browser for ChatGPT login):
+npx @openai/codex login
+
+# Copy token for Docker:
+cp ~/.codex/auth.json data/codex-auth.json
+
+# Or run setup.sh which handles it automatically
+```
+
+Requires ChatGPT Plus/Pro/Team subscription. Token auto-refreshes. Models available depend on subscription tier.
+
+### How Gateway Proxies Work
+
+1. `ENABLE_X=true` in `.env` activates the Docker profile
+2. `setup.sh` detects missing tokens → runs auth script automatically
+3. Auth scripts open browser URLs for login (no manual cookie/token extraction)
+4. Tokens saved to `.env` or token files, auto-refresh where supported
+5. Discovery daemon scans gateway `/v1/models` every 6h — new models auto-provisioned
+6. Providers scored via benchmark system — Claude/GPT/Gemini models get S/A-tier routing priority
+
 ## Memory (MemPalace)
 
 The proxy includes an optional persistent memory system. When enabled, it:
@@ -507,12 +574,29 @@ Client Request
 
 [MemPalace MCP :8891]         --> Persistent memory (sessions, tasks, errors, preferences)
 
+[Gateway Proxies (optional)]
+     +-- Kiro Gateway :10088     --> Claude Sonnet 4, Haiku 4.5 (free AWS Builder ID)
+     +-- Codex Proxy :10531      --> GPT-5.4/5.5, o3, o4-mini (ChatGPT subscription)
+
 [LLM Discovery Daemon]
      |
-     +-- Every 6h: scan /models endpoints
+     +-- Every 6h: scan /models endpoints (API + local gateways)
      +-- Test new models: chat, thinking, context
+     +-- Auto-provision new providers with heuristic scoring
      +-- Save to /data/discovery.json
 ```
+
+## Credits
+
+This project integrates several open source tools as Docker services:
+
+| Tool | Author | License | Used for |
+|------|--------|---------|----------|
+| [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) | [@jwadow](https://github.com/jwadow) | AGPL-3.0 | Kiro → OpenAI-compatible API for free AWS Claude |
+| [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) | [@EvanZhouDev](https://github.com/EvanZhouDev) | MIT | ChatGPT subscription → OpenAI-compatible API |
+| [MemPalace](https://github.com/MemPalace/mempalace) | MemPalace | MIT | Persistent AI memory via MCP |
+| [supergateway](https://www.npmjs.com/package/supergateway) | — | MIT | stdio-to-SSE MCP bridge |
+| [RTK](https://github.com/rtk-ai/rtk) | [@rtk-ai](https://github.com/rtk-ai) | MIT | CLI output compression (60-90% token savings) |
 
 ## License
 

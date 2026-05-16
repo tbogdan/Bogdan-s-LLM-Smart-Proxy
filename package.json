@@ -5,7 +5,8 @@
   "main": "llm-proxy.js",
   "scripts": {
     "start": "node llm-proxy.js",
-    "discovery": "node llm-discovery.js"
+    "discovery": "node llm-discovery.js",
+    "kiro-auth": "node kiro-auth.js"
   },
   "license": "MIT"
 }

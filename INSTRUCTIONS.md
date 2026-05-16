@@ -40,10 +40,28 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 
 No keys needed for: **Kilo** (anonymous), **OVH**, **LLM7**
 
+### 2b. Enable local gateway proxies (optional — free premium models)
+
+Set `ENABLE_X=true` in `.env` to activate gateway proxies. Each runs as a Docker container and needs a one-time auth:
+
+| Gateway | Enable flag | Auth command | What you get |
+|---------|-------------|-------------|--------------|
+| **Kiro** | `ENABLE_KIRO=true` | `node kiro-auth.js` | Free Claude Sonnet 4, Haiku 4.5 |
+| **Codex** | `ENABLE_CODEX=true` | `npx @openai/codex login` + copy auth.json | GPT-5.4/5.5, o3, o4-mini (ChatGPT sub) |
+
+Auth scripts open a browser URL for login — no manual cookie/token extraction needed.
+`setup.sh` runs auth automatically when tokens are missing.
+
+Discovery daemon scans gateway `/v1/models` every 6h — new models auto-provisioned.
+
 ### 3. Start
 
 ```bash
+# Without gateway proxies:
 docker compose up -d --build
+
+# With gateway proxies (reads ENABLE_X from .env):
+./setup.sh
 ```
 
 ### 4. Verify
@@ -201,7 +219,8 @@ seed-providers.json (source of truth)
         |
         v
 [Discovery Daemon] --scan /models endpoints every 6h--> test models
-        |
+        |                (includes API providers + local gateways)
+        |                (auto-provisions new models with heuristic scoring)
         v
 /data/providers.json (merged: seed + discovered)
         |
@@ -212,7 +231,8 @@ seed-providers.json (source of truth)
         |       |
         |       +-- recall memories from MemPalace (inject into system prompt)
         |       +-- detect context size → proactive compaction if >80%
-        |       +-- route to best provider (context-aware, agent-aware)
+        |       +-- auto-learn compat (strip stream_options, tool_choice, content arrays, cap max_tokens)
+        |       +-- route to best provider (context-aware, agent-aware, benchmark-scored)
         |       +-- save session/tasks/errors/preferences to MemPalace (async)
         |
         +-- /v1/models            --> list all (filterable by ?cap=X)
@@ -220,6 +240,10 @@ seed-providers.json (source of truth)
         +-- /health               --> system status + mempalace status
         +-- /scores               --> provider scoring
         +-- /discovery            --> scan results
+
+[Gateway Proxies (optional, Docker profiles)]
+        +-- Kiro Gateway :10088   --> Claude Sonnet 4, Haiku 4.5 (free AWS Builder ID)
+        +-- Codex Proxy :10531    --> GPT-5.4/5.5, o3, o4-mini (ChatGPT subscription)
 
 [MemPalace MCP :8891] <-- persistent memory (sessions, tasks, preferences, errors)
         |

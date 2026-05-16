@@ -1,6 +1,8 @@
 node_modules/
-data/
+data/*.json
 .env
 .claude/
 docs/
 .DS_Store
+palace/
+*.log

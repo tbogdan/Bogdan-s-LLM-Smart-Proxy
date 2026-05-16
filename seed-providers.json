@@ -338,7 +338,7 @@
       "url": "https://api.llm7.io/v1/chat/completions",
       "key_env": "LLM7_API_KEY",
       "model": "llm7/auto",
-      "context": 131072,
+      "context": 2000,
       "tier": 1,
       "tc": true,
       "caps": [
@@ -515,7 +515,7 @@
       "url": "https://api.cloudflare.com/client/v4/accounts/me/ai/v1/chat/completions",
       "key_env": "CLOUDFLARE_API_KEY",
       "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-      "context": 131072,
+      "context": 24000,
       "tier": 2,
       "tc": false,
       "caps": [
@@ -1010,6 +1010,153 @@
         "thinking"
       ],
       "headers": {}
+    },
+    {
+      "name": "OpenAI-GPT4oMini",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o-mini",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OpenAI-GPT4o",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Kiro-ClaudeSonnet",
+      "url": "http://kiro-gateway:10088/v1/chat/completions",
+      "key_env": "KIRO_API_KEY",
+      "model": "claude-sonnet-4",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": false,
+      "alive": null
+    },
+    {
+      "name": "Kiro-ClaudeHaiku45",
+      "url": "http://kiro-gateway:10088/v1/chat/completions",
+      "key_env": "KIRO_API_KEY",
+      "model": "claude-haiku-4-5",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": false,
+      "alive": null
+    },
+    {
+      "name": "Codex-GPT54",
+      "model": "gpt-5.4",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-GPT55",
+      "model": "gpt-5.5",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-O3",
+      "model": "o3",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-O4Mini",
+      "model": "o4-mini",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
     }
   ],
   "groups": {

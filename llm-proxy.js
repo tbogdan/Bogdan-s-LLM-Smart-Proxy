@@ -386,8 +386,26 @@ function estimateTokens(messages) {
       }
     }
     if (m.reasoning_content) chars += m.reasoning_content.length;
+    // Tool calls (assistant sending tool invocations)
+    if (m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        chars += (tc.function?.name || "").length;
+        chars += (tc.function?.arguments || "").length;
+      }
+    }
+    // Tool results (role=tool responses)
+    if (m.role === "tool" && typeof m.content === "string") {
+      // already counted above, but ensure tool name counted
+      chars += (m.name || "").length;
+    }
   }
   return Math.ceil(chars / 4);
+}
+
+// Also estimate tools definition array size
+function estimateToolsTokens(tools) {
+  if (!tools?.length) return 0;
+  return Math.ceil(JSON.stringify(tools).length / 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +480,15 @@ function getCompat(name) {
   return providerCompat[name];
 }
 
+// Get effective context for a provider — uses learned real_context if available
+function getEffectiveContext(provider) {
+  const compat = getCompat(provider.name);
+  if (compat.real_context && compat.real_context < provider.context) {
+    return compat.real_context;
+  }
+  return provider.context || 131072;
+}
+
 function detectIncompatibility(providerName, statusCode, errorBody) {
   const body = String(errorBody);
   const c = getCompat(providerName);
@@ -521,6 +548,79 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     }
   }
 
+  // stream_options rejected when stream=false
+  if ((body.includes("stream_options") || body.includes("Stream options")) && (statusCode === 400 || statusCode === 422)) {
+    if (!c.no_stream_options) {
+      c.no_stream_options = true;
+      changed = true;
+      log(`COMPAT: ${providerName} rejects stream_options when stream=false — will strip`);
+    }
+  }
+
+  // tool_choice rejected (no endpoints support it)
+  if (body.includes("tool_choice") && (statusCode === 400 || statusCode === 404)) {
+    if (!c.no_tool_choice) {
+      c.no_tool_choice = true;
+      changed = true;
+      log(`COMPAT: ${providerName} rejects tool_choice — will strip`);
+    }
+  }
+
+  // Content array not supported (must be string) — Cloudflare, BigModel
+  if ((body.includes("not in 'string'") || body.includes("Type mismatch") || body.includes("调用参数有误")) && (statusCode === 400)) {
+    if (!c.no_content_array) {
+      c.no_content_array = true;
+      changed = true;
+      log(`COMPAT: ${providerName} rejects content arrays — will flatten to string`);
+    }
+  }
+
+  // Character/content length limit (LLM7 anonymous: 8000 chars)
+  const charMatch = body.match(/content length.*?exceeds limit of (\d+) characters/i);
+  if (charMatch && (statusCode === 400)) {
+    const charLimit = parseInt(charMatch[1], 10);
+    // Convert chars to approximate tokens (÷4)
+    const tokenLimit = Math.floor(charLimit / 4);
+    if (tokenLimit > 0 && (!c.real_context || tokenLimit < c.real_context)) {
+      c.real_context = tokenLimit;
+      changed = true;
+      log(`COMPAT: ${providerName} char limit ${charLimit} ≈ ${tokenLimit} tokens`);
+      const p = PROVIDERS.find((pr) => pr.name === providerName);
+      if (p && p.context > tokenLimit) p.context = tokenLimit;
+    }
+  }
+
+  // Monthly/quota/usage limit (Kiro 402, Codex 500 "usage limit", etc.)
+  if (body.includes("reached the limit") || body.includes("MONTHLY_REQUEST_COUNT") || body.includes("usage limit has been reached")) {
+    // Long cooldown — quota limits are typically hourly/daily/monthly
+    setCooldown(providerName, 3600_000); // 1 hour cooldown
+    log(`QUOTA: ${providerName} quota/usage limit exhausted — cooldown 1h`);
+  }
+
+  // Context window from error (Cloudflare format: "exceeded this model context window limit (24000)")
+  const cfCtxMatch = body.match(/context window limit \((\d+)\)/i) || body.match(/exceeded.*?(\d+)\)/i);
+  if (cfCtxMatch && (statusCode === 413)) {
+    const limit = parseInt(cfCtxMatch[1], 10);
+    if (limit > 1000 && (!c.real_context || limit < c.real_context)) {
+      c.real_context = limit;
+      changed = true;
+      log(`COMPAT: ${providerName} real context limit detected: ${limit} tokens`);
+      const p = PROVIDERS.find((pr) => pr.name === providerName);
+      if (p && p.context > limit) p.context = limit;
+    }
+  }
+
+  // max_tokens must be ≤ N (Groq format: "must be less than or equal to `8192`")
+  const maxLteMatch = body.match(/max_tokens.*?less than or equal to.*?(\d+)/i);
+  if (maxLteMatch && (statusCode === 400)) {
+    const cap = parseInt(maxLteMatch[1], 10);
+    if (cap > 0 && (!c.max_tokens_cap || cap < c.max_tokens_cap)) {
+      c.max_tokens_cap = cap;
+      changed = true;
+      log(`COMPAT: ${providerName} max_tokens capped at ${cap}`);
+    }
+  }
+
   if (changed) saveCompat();
 }
 
@@ -532,6 +632,21 @@ function transformRequest(provider, reqBody) {
   body.model = provider.model;
 
   const compat = getCompat(provider.name);
+
+  // Per-provider context compaction: if messages exceed this provider's effective context,
+  // compact to fit (post-routing, provider-specific)
+  if (body.messages && body.messages.length > 4) {
+    const providerCtx = getEffectiveContext(provider);
+    const currentTokens = estimateTokens(body.messages) + (body.max_tokens || 4096);
+    if (currentTokens > providerCtx * 0.95) {
+      const target = Math.floor(providerCtx * 0.75);
+      const compacted = compactMessages(body.messages, target, body.max_tokens || 4096, []);
+      if (compacted) {
+        body.messages = compacted.messages;
+        log(`POST-COMPACT: ${provider.name} context ${currentTokens}tok → ${estimateTokens(body.messages)}tok (provider limit: ${providerCtx})`);
+      }
+    }
+  }
 
   // Qwen3 models: add enable_thinking (unless provider rejects it)
   if (provider.tc && /qwen3|qwq/i.test(provider.model) && !compat.no_extra_body) {
@@ -563,6 +678,69 @@ function transformRequest(provider, reqBody) {
   // Cap tools array (auto-learned — e.g. Groq max 128)
   if (compat.max_tools && body.tools?.length > compat.max_tools) {
     body.tools = body.tools.slice(0, compat.max_tools);
+  }
+
+  // Strip stream_options when stream=false or when provider rejects it (auto-learned)
+  if (body.stream_options && (!body.stream || compat.no_stream_options)) {
+    delete body.stream_options;
+  }
+
+  // Strip tool_choice for providers that reject it (auto-learned)
+  if (body.tool_choice && compat.no_tool_choice) {
+    delete body.tool_choice;
+  }
+
+  // Fix empty function_response.name (Gemini rejects empty names)
+  if (body.messages) {
+    for (const msg of body.messages) {
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.function && !tc.function.name) {
+            tc.function.name = "unknown_tool";
+          }
+        }
+      }
+      // Fix tool role messages with empty name
+      if (msg.role === "tool" && !msg.name && msg.tool_call_id) {
+        msg.name = "unknown_tool";
+      }
+    }
+  }
+
+  // Flatten multipart content arrays to string for providers that reject them
+  // (Cloudflare, BigModel only accept string content)
+  if (body.messages && compat.no_content_array) {
+    body.messages = body.messages.map((m) => {
+      if (Array.isArray(m.content)) {
+        const text = m.content
+          .filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join("\n");
+        return { ...m, content: text || "" };
+      }
+      return m;
+    });
+  }
+
+  // Strip orphaned tool responses (tool role messages whose tool_call_id has no matching
+  // assistant tool_call — causes 500 on OpenAI/Codex: "No tool call found for function call output")
+  if (body.messages) {
+    const validCallIds = new Set();
+    for (const msg of body.messages) {
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.id) validCallIds.add(tc.id);
+        }
+      }
+    }
+    const before = body.messages.length;
+    body.messages = body.messages.filter((m) => {
+      if (m.role !== "tool") return true;
+      if (!m.tool_call_id) return true;
+      return validCallIds.has(m.tool_call_id);
+    });
+    const removed = before - body.messages.length;
+    if (removed > 0) log(`TRANSFORM: stripped ${removed} orphaned tool responses`);
   }
 
   // Inject system instructions — identity, execution rules, memory, date/time
@@ -635,6 +813,18 @@ function transformRequest(provider, reqBody) {
     if (body.messages[0]?.role === "system") {
       let existingSystem = typeof body.messages[0].content === "string" ? body.messages[0].content : "";
 
+      // Strip previously-injected proxy system prompt (prevents stacking on re-sends)
+      const proxyMarker = "You are Bogdan's LLM Smart Proxy";
+      const proxyEnd = "Right tool for each sub-task. Tool exists = USE IT.";
+      const markerIdx = existingSystem.indexOf(proxyMarker);
+      const endIdx = existingSystem.indexOf(proxyEnd);
+      if (markerIdx !== -1 && endIdx !== -1) {
+        existingSystem = existingSystem.substring(0, markerIdx) + existingSystem.substring(endIdx + proxyEnd.length);
+      }
+
+      // Strip previously-injected memory sections
+      existingSystem = existingSystem.replace(/\n--- Recalled Memories ---[\s\S]*?(?=\n---|\n\n[A-Z#]|$)/g, "");
+
       // Replace ANY LLM identity line — keep tool/suggestion instructions
       existingSystem = existingSystem
         .replace(/^You are [^\n]{5,200}\n?/i, "") // any "You are X" identity line
@@ -655,6 +845,49 @@ function transformRequest(provider, reqBody) {
     } else {
       body.messages = [{ role: "system", content: PROXY_SYSTEM }, ...body.messages];
     }
+  }
+
+  // Deduplicate: remove repeated sentences/paragraphs in system message
+  // (can happen when proxy injects over IDE's own injected system prompt across turns)
+  if (body.messages?.[0]?.role === "system" && typeof body.messages[0].content === "string") {
+    const sys = body.messages[0].content;
+    const lines = sys.split("\n");
+    const seen = new Set();
+    const deduped = [];
+    let removed = 0;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip dedup for short lines (headers, blank, bullets under 20 chars)
+      if (trimmed.length < 20 || trimmed.startsWith("#") || trimmed.startsWith("-")) {
+        deduped.push(line);
+        continue;
+      }
+      if (seen.has(trimmed)) {
+        removed++;
+        continue;
+      }
+      seen.add(trimmed);
+      deduped.push(line);
+    }
+    if (removed > 0) {
+      body.messages[0] = { ...body.messages[0], content: deduped.join("\n") };
+      log(`DEDUP: removed ${removed} duplicate lines from system prompt`);
+    }
+  }
+
+  // Deduplicate: remove consecutive identical messages in history
+  // (can happen when compaction summary gets repeated)
+  if (body.messages && body.messages.length > 3) {
+    const before = body.messages.length;
+    body.messages = body.messages.filter((msg, i) => {
+      if (i === 0) return true; // keep system
+      const prev = body.messages[i - 1];
+      if (msg.role !== prev.role) return true;
+      if (typeof msg.content !== "string" || typeof prev.content !== "string") return true;
+      return msg.content !== prev.content;
+    });
+    const dupRemoved = before - body.messages.length;
+    if (dupRemoved > 0) log(`DEDUP: removed ${dupRemoved} consecutive duplicate messages`);
   }
 
   // Strip internal proxy fields — providers reject unknown fields (Gemini)
@@ -870,6 +1103,16 @@ function detectUseCase(messages, reqBody) {
 // ---------------------------------------------------------------------------
 const MODEL_SCORES = [
   // S-tier coding + reasoning
+  { pat: /claude.*opus[- _.]4/i,                 coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.15 },
+  { pat: /claude.*sonnet[- _.]4[._-]5/i,        coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.3 },
+  { pat: /claude.*sonnet[- _.]4(?![._-]5)/i,    coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.35 },
+  { pat: /claude.*3[._-]7.*sonnet/i,            coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.35 },
+  { pat: /claude.*haiku[- _.]4/i,               coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.5 },
+  { pat: /claude.*3[._-]5.*sonnet/i,            coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.35 },
+  { pat: /claude.*3[._-]5.*haiku/i,             coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.2, speed: 0.5 },
+  { pat: /gpt.*4\.1.*nano/i,                     coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /gpt.*4\.1.*mini/i,                     coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.2, speed: 0.5 },
+  { pat: /gpt.*4\.1/i,                           coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.2, speed: 0.35 },
   { pat: /gemini.*3.*flash/i,                    coding: 0.5, reasoning: 0.35, tools: 0.35, chat: 0.5, vision: 0.5, speed: 0.4 },
   { pat: /deepseek.*v3\.2/i,                     coding: 0.5, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /qwen.*3\.5.*397b/i,                    coding: 0.35, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.15 },
@@ -889,13 +1132,21 @@ const MODEL_SCORES = [
   { pat: /kimi.*k2\.5/i,                         coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /kimi.*k2\.6/i,                         coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /nemotron.*(?:120b|super)/i,            coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /gpt.*5\.[4-9]/i,                        coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.3 },
+  { pat: /gpt.*5.*pro/i,                         coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.2 },
+  { pat: /gpt.*5.*codex/i,                       coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /gpt.*5(?!\.\d)(?!.*mini|.*nano|.*pro|.*codex)/i, coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.3 },
   { pat: /gpt.*5.*mini/i,                        coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.2, speed: 0.4 },
+  { pat: /gpt.*5.*nano/i,                        coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /o3(?!.*mini)/i,                         coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.35, vision: 0, speed: 0.2 },
+  { pat: /o3.*mini/i,                             coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.4 },
+  { pat: /o4.*mini/i,                             coding: 0.35, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0, speed: 0.4 },
   { pat: /mistral.*medium/i,                     coding: 0.35, reasoning: 0.2, tools: 0.5, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /glm.*5(?!\.)/i,                        coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /minimax.*m2\.[57]/i,                   coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.35, vision: 0, speed: 0.3 },
   // B-tier
   { pat: /gpt.*4o/i,                             coding: 0.2, reasoning: 0.2, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.4 },
-  { pat: /gpt.*4\.1/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  // gpt-4.1 handled in S/A-tier above
   { pat: /qwen.*235b/i,                          coding: 0.2, reasoning: 0.35, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /qwen.*32b/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /qwen.*plus/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
@@ -930,6 +1181,40 @@ const CAP_TO_SCORE = {
   max: "quality", // max = best overall quality across all categories
 };
 
+// Heuristic scoring for models not in MODEL_SCORES — infer tier from name patterns
+function inferModelScore(model, category) {
+  const m = model.toLowerCase();
+  // Size-based tier inference (bigger = generally smarter)
+  const sizeMatch = m.match(/(\d+)b(?:\b|_)/);
+  const sizeB = sizeMatch ? parseInt(sizeMatch[1]) : 0;
+  // Known-good model families (any version) → at least B-tier
+  const knownGood = /claude|gpt|gemini|deepseek|qwen|mistral|llama|command|kimi/.test(m);
+  // Version hints: higher versions tend to be better
+  const hasVersion = /[- _.](?:[4-9]|[1-9]\d)[._-]/.test(m);
+  // Reasoning/thinking hints
+  const isReasoning = /think|reason|r1|o[1-9]|cot/.test(m);
+  // Speed hints
+  const isFast = /flash|mini|nano|small|tiny|lite|turbo/.test(m);
+  const isBig = /max|ultra|pro|large|mega|super/.test(m);
+
+  let base = 0.1; // absolute minimum
+  if (knownGood) base = 0.15;
+  if (sizeB >= 70) base = Math.max(base, 0.2);
+  if (sizeB >= 200) base = Math.max(base, 0.3);
+  if (hasVersion && knownGood) base = Math.max(base, 0.2);
+  if (isBig) base = Math.max(base, 0.2);
+
+  if (category === "speed") {
+    if (isFast) return 0.5;
+    if (sizeB > 0 && sizeB <= 14) return 0.5;
+    if (sizeB > 200) return 0.15;
+    return 0.3;
+  }
+  if (category === "vision") return 0; // assume no vision unless explicitly matched
+  if (category === "reasoning" && isReasoning) return Math.max(base, 0.3);
+  return base;
+}
+
 function getModelScore(model, category) {
   const m = (model || "").toLowerCase();
   for (const entry of MODEL_SCORES) {
@@ -941,10 +1226,14 @@ function getModelScore(model, category) {
       return entry[category] || 0;
     }
   }
-  return 0.1;
+  // No explicit match — use heuristic inference
+  if (category === "quality") {
+    return (inferModelScore(m, "coding") + inferModelScore(m, "reasoning") + inferModelScore(m, "tools")) / 3;
+  }
+  return inferModelScore(m, category);
 }
 
-function smartnessBonus(p, groupCap) {
+function smartnessBonus(p, groupCap, reqBody) {
   const model = p.model || "";
   const scoreField = CAP_TO_SCORE[groupCap] || "coding"; // default to coding
 
@@ -954,10 +1243,21 @@ function smartnessBonus(p, groupCap) {
   // Secondary: speed bonus (fast models preferred when scores close)
   bonus += getModelScore(model, "speed") * 0.15;
 
-  // Context bonus
-  if (p.context >= 1000000) bonus += 0.1;
-  else if (p.context >= 256000) bonus += 0.05;
-  else if (p.context < 32768) bonus -= 0.1;
+  // Context bonus — scales with how much room the provider has for this request
+  // Large requests need large context providers more urgently
+  const reqTokens = reqBody?._estimatedTokens || 0;
+  const effCtx = getEffectiveContext(p);
+  if (reqTokens > 0 && effCtx > 0) {
+    const utilization = reqTokens / effCtx; // 0.0 = plenty of room, 1.0 = full
+    if (utilization < 0.3) bonus += 0.15;       // plenty of headroom
+    else if (utilization < 0.6) bonus += 0.05;  // comfortable
+    else if (utilization > 0.85) bonus -= 0.2;  // dangerously tight
+  } else {
+    // Fallback static bonus when no token estimate
+    if (effCtx >= 1000000) bonus += 0.1;
+    else if (effCtx >= 256000) bonus += 0.05;
+    else if (effCtx < 32768) bonus -= 0.1;
+  }
 
   return bonus;
 }
@@ -972,7 +1272,7 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
   // All alive providers with enough context
   const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
     .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name) && !isBannedFromGroup(p.name, groupName));
-  const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
+  const withContext = estimatedTokens > 0 ? all.filter((p) => getEffectiveContext(p) >= estimatedTokens) : all;
 
   // Does request carry reasoning_content or need thinking?
   const hasReasoning = (reqBody?.messages || []).some((m) => m.reasoning_content);
@@ -985,7 +1285,7 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
     const compat = getCompat(p.name);
 
     // Benchmark-backed model scoring for this group's category
-    bonus += smartnessBonus(p, cap);
+    bonus += smartnessBonus(p, cap, reqBody);
 
     // Group capability match: strong bonus for matching, but don't exclude non-matching
     if (cap !== null && cap !== undefined) {
@@ -1040,7 +1340,7 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
 
   const all = PROVIDERS.filter((p) => p.key && p.alive !== false)
     .filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name) && !isBannedFromGroup(p.name, "auto"));
-  const withContext = estimatedTokens > 0 ? all.filter((p) => p.context >= estimatedTokens) : all;
+  const withContext = estimatedTokens > 0 ? all.filter((p) => getEffectiveContext(p) >= estimatedTokens) : all;
 
   const scored = withContext.map((p) => {
     let bonus = 0;
@@ -1052,7 +1352,7 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
       : detectedCaps.has("images") ? "images"
       : detectedCaps.has("tools") ? "tools"
       : "text";
-    bonus += smartnessBonus(p, primaryCap);
+    bonus += smartnessBonus(p, primaryCap, reqBody);
 
     for (const cap of detectedCaps) {
       if (p.caps.includes(cap)) bonus += 0.3;
@@ -1257,9 +1557,10 @@ async function handleChatCompletion(reqBody, clientRes) {
   const requestedModel = reqBody.model || "auto";
   const isStreaming = reqBody.stream === true;
   const isGroup = requestedModel in GROUPS || requestedModel === "auto";
-  const estTokens = estimateTokens(reqBody.messages);
+  const estTokens = estimateTokens(reqBody.messages) + estimateToolsTokens(reqBody.tools);
   const requestedMaxTokens = reqBody.max_tokens || 4096;
   const totalNeeded = estTokens + requestedMaxTokens;
+  reqBody._estimatedTokens = totalNeeded; // pass to scoring for context-aware ranking
 
   // MemPalace: recall memories and inject into context
   const mpSession = mempalace.getSession(reqBody.messages);
@@ -1340,18 +1641,40 @@ async function handleChatCompletion(reqBody, clientRes) {
     }
   }
 
-  // Proactive compaction: if context exceeds 80% of best available provider, compact preemptively
+  // Track compaction frequency per session — if IDE keeps sending huge context after we compact,
+  // force IDE-side compaction by returning context_length_exceeded
+  if (!global._compactTracker) global._compactTracker = {};
+  const ct = global._compactTracker;
+  const compactWindow = 5 * 60_000; // 5 minutes
+  const maxCompactsBeforeForce = 3;
+
+  // Proactive compaction: if context exceeds 90% of best available provider, compact preemptively
   if (isGroup && reqBody.messages?.length > 6) {
     const bestProviders = requestedModel === "auto"
       ? getProvidersForAuto(reqBody.messages, 0, reqBody)
       : getProvidersForGroup(requestedModel, 0, reqBody);
     if (bestProviders.length > 0) {
-      // Use median context (most providers are 131K, not 1M Gemini)
-      const contexts = bestProviders.map((p) => p.context).sort((a, b) => a - b);
-      const medianContext = contexts[Math.floor(contexts.length / 2)];
-      const threshold = Math.floor(medianContext * 0.9); // compact at 90% of median
+      // Use the LARGEST effective context among available providers —
+      // only pre-compact if context exceeds even the biggest provider
+      const largestEffCtx = Math.max(...bestProviders.map((p) => getEffectiveContext(p)));
+      const threshold = Math.floor(largestEffCtx * 0.9); // compact at 90% of largest
       if (totalNeeded > threshold) {
-        const targetTokens = Math.floor(medianContext * 0.8); // compact to 80% of median
+        // Check if this session is in a compaction loop
+        const now = Date.now();
+        if (!ct[mpSession.id]) ct[mpSession.id] = [];
+        ct[mpSession.id] = ct[mpSession.id].filter((t) => now - t < compactWindow);
+        ct[mpSession.id].push(now);
+
+        if (ct[mpSession.id].length > maxCompactsBeforeForce) {
+          const loopCount = ct[mpSession.id].length;
+          log(`COMPACT-LOOP: session ${mpSession.id} compacted ${loopCount}x in ${compactWindow/1000}s — forcing IDE compaction`);
+          ct[mpSession.id] = []; // reset counter
+          return sendError(clientRes, 400,
+            `Context too large (${estTokens} tokens, compacted ${loopCount}x). Please compact your conversation.`,
+            { code: "context_length_exceeded" });
+        }
+
+        const targetTokens = Math.floor(largestEffCtx * 0.8); // compact to 80% of largest
         let mpRefs = [];
         try { mpRefs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
         const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs);
@@ -1377,7 +1700,7 @@ async function handleChatCompletion(reqBody, clientRes) {
         : getProvidersForGroup(requestedModel, 0, reqBody);
 
       if (allProviders.length > 0) {
-        const maxContext = Math.max(...allProviders.map((p) => p.context));
+        const maxContext = Math.max(...allProviders.map((p) => getEffectiveContext(p)));
         const targetTokens = Math.floor(maxContext * 0.7); // aim for 70% of max context
 
         // Save full context to MemPalace before compaction
@@ -1406,7 +1729,7 @@ async function handleChatCompletion(reqBody, clientRes) {
         ? getProvidersForAuto(reqBody.messages, 0, reqBody)
         : getProvidersForGroup(requestedModel, 0, reqBody);
       if (allProviders.length > 0) {
-        const maxContext = Math.max(...allProviders.map((p) => p.context));
+        const maxContext = Math.max(...allProviders.map((p) => getEffectiveContext(p)));
         const currentTokens = estimateTokens(reqBody.messages);
         const currentTotal = currentTokens + requestedMaxTokens;
         // Return OpenAI-compatible context_length_exceeded error
@@ -1486,7 +1809,7 @@ async function handleChatCompletion(reqBody, clientRes) {
           const ctxErrCount = errors.filter((e) => /context.length|too.large|maximum.*token|too large for model/i.test(e.error)).length;
           if (ctxErrCount >= 2 && reqBody.messages?.length > 4 && !(reqBody._compactRetries >= 3)) {
             reqBody._compactRetries = (reqBody._compactRetries || 0) + 1;
-            const ctxs = providers.map((p) => p.context).sort((a, b) => a - b);
+            const ctxs = providers.map((p) => getEffectiveContext(p)).sort((a, b) => a - b);
             const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.6 - (reqBody._compactRetries - 1) * 0.15));
             let refs = [];
             try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
@@ -1517,7 +1840,7 @@ async function handleChatCompletion(reqBody, clientRes) {
       const allP = requestedModel === "auto"
         ? getProvidersForAuto(reqBody.messages, 0, reqBody)
         : getProvidersForGroup(requestedModel, 0, reqBody);
-      const ctxs = allP.map((p) => p.context).sort((a, b) => a - b);
+      const ctxs = allP.map((p) => getEffectiveContext(p)).sort((a, b) => a - b);
       const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.7 - reqBody._compactRetries * 0.15)); // 70%→55%→40%
 
       let refs = [];
@@ -1534,7 +1857,7 @@ async function handleChatCompletion(reqBody, clientRes) {
 
     // Final fallback — return context_length_exceeded to trigger IDE compaction
     if (isContextProblem) {
-      const maxContext = Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => p.context), 0);
+      const maxContext = Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => getEffectiveContext(p)), 0);
       const currentEst = estimateTokens(reqBody.messages);
       const body = JSON.stringify({
         error: {
@@ -1594,7 +1917,7 @@ function handleModels(query) {
     created: 0,
     owned_by: p.name,
     capabilities: p.caps,
-    context_length: p.context,
+    context_length: getEffectiveContext(p),
     tier: p.tier,
     thinking_capable: p.tc,
   }));
@@ -1620,7 +1943,7 @@ function handleModels(query) {
     created: 0,
     owned_by: "llm-proxy",
     capabilities: ["all", "auto-detect"],
-    context_length: Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => p.context), 0),
+    context_length: Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => getEffectiveContext(p)), 0),
     tier: 0,
     thinking_capable: true,
     is_group: true,
