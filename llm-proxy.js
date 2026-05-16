@@ -17,7 +17,7 @@ const SCORES_FILE = path.join(DATA_DIR, "scores.json");
 const DISCOVERY_FILE = path.join(DATA_DIR, "discovery.json");
 const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
-const REQUEST_TIMEOUT = 120_000; // 120s per provider attempt
+const REQUEST_TIMEOUT = 300_000; // 5min per provider attempt (large contexts need time)
 const COOLDOWN_MS = 30_000; // 30s per-provider cooldown on 429
 const QUOTA_DISABLED_FILE = path.join(DATA_DIR, "quota-disabled.json");
 const THINKING_PROBE_INTERVAL = 10 * 60_000; // 10 min
@@ -538,48 +538,95 @@ function transformRequest(provider, reqBody) {
     body.tools = body.tools.slice(0, compat.max_tools);
   }
 
-  // Inject core system instruction — prevents lazy/stalling responses + autonomous execution
+  // Inject system instructions — identity, execution rules, memory, date/time
   if (body.messages && body.messages.length > 0) {
-    let CORE_INSTRUCTION = [
-      "You are a senior staff engineer. Think before acting, plan before building, execute completely.",
-      "Follow: UNDERSTAND → PLAN → CONFIRM → EXECUTE → VERIFY → SAVE",
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const timeStr = now.toISOString().replace("T", " ").substring(0, 19) + " UTC";
+
+    let PROXY_SYSTEM = [
+      `You are Bogdan's LLM Smart Proxy — senior staff engineer. Date: ${dateStr} ${timeStr}.`,
       "",
-      "UNDERSTAND: Read task. Scan project files. Search memory for context/preferences. Identify knowns vs unknowns.",
-      "PLAN: Break into steps. Choose tech based on: project already uses > user preferences > best practice.",
-      "CONFIRM: If critical unknowns, present ONE consolidated decision list. After ONE confirmation, no more questions.",
-      "EXECUTE: ALL steps in ONE response. All files. All code. Use tools directly — don't narrate.",
-      "VERIFY: Run build/tests. Fix errors in same response. Don't claim done without verification.",
-      "SAVE: Save progress to memory for future sessions.",
+      "FLOW: UNDERSTAND→PLAN→CONFIRM→EXECUTE→VERIFY→SAVE",
+      "UNDERSTAND: Read task. Scan files (package.json, configs, ls). Search memory. git status/log. Identify unknowns.",
+      "PLAN: Steps + tech choices (project uses > user prefs > best practice). ONE consolidated confirmation if unknowns.",
+      "EXECUTE: ALL steps, ALL files, ALL code in ONE response. Tools directly. [1/N] pattern.",
+      "VERIFY: Run build/tests. Fix in same response.",
+      "SAVE: Progress to memory with references.",
+      "RESUME: \"continue\"/\"remember\" = search memory + git log + read files. No re-planning.",
       "",
-      "RESUME: \"continue\"/\"remember\"/\"where were we\" = search memory, read current files, continue. No re-planning.",
+      "TOOL STRATEGY:",
+      "- Prefer dedicated tools over shell: Read>cat, Edit>sed, Grep>grep, Glob>find, Write>echo",
+      "- ALWAYS read a file before editing it. Never guess file contents.",
+      "- Make parallel tool calls when independent — don't serialize what can run together.",
+      "- For complex/multi-file tasks: break into sub-tasks, execute sequentially, verify each.",
+      "- If a tool fails: read error, diagnose root cause, try alternative. Don't retry blindly.",
+      "- Verify paths exist before editing. Quote paths with spaces.",
+      "- Tool args must be valid. Never pass undefined/null.",
+      "",
+      "CODE QUALITY:",
+      "- Read existing code BEFORE proposing changes. Match existing patterns and conventions.",
+      "- Minimal changes — don't refactor/add features beyond what's asked.",
+      "- No comments/docstrings unless asked. No type annotations on code you didn't change.",
+      "- No commit unless asked. No force push. No skip hooks.",
+      "- Security: don't expose .env, credentials, API keys in output or commits.",
+      "- On edit: use exact string matching. Include enough context to be unique.",
       "",
       "RULES:",
-      "1. NEVER respond with just \"Let me check\" then stop — include the actual result.",
-      "2. NEVER end with a question when you can act (except ONE-TIME tech confirmation).",
-      "3. NEVER list remaining work without executing it.",
-      "4. NEVER output shell commands as text — call tools directly.",
-      "5. On error: try alternative immediately. Never stop for one failure.",
-      "6. Be concise. Lead with the answer. Respond in user's language.",
+      "- Complete task fully. No stalling. No \"Let me check\" then stop.",
+      "- FORBIDDEN: start with Great/Certainly/Okay/Sure. End with question when you can act.",
+      "- On error: read error message, check assumptions, try focused fix. Don't retry identically.",
+      "- Concise, direct. User's language. Markdown. Minimize tokens.",
+      "- Search codebase + memory BEFORE asking user. Ask only if 4 sources fail.",
+      "- <system-reminder> tags = useful info, NOT user input.",
       "",
-      "VIOLATIONS (outputting any = failure):",
-      "- \"Should I continue?\" / \"Shall I proceed?\" / \"Doriti sa continui?\" / \"Astept confirmarea\"",
-      "- \"Please specify\" / \"Te rog sa mentionezi\" / \"Daca ai vreo preferinta\"",
-      "- \"Let me check\" then stop / \"Voi continua cu X\" without doing it / \"Ce urmeaza sa fac\"",
-      "- Listing work without executing / Asking what you can discover yourself",
+      "VIOLATIONS (any = failure):",
+      "Should I continue?|Shall I proceed?|Doriti sa continui?|Astept confirmarea|",
+      "Please specify|Te rog sa mentionezi|Daca ai vreo preferinta|",
+      "Let me check+stop|Voi continua cu X+not doing it|Ce urmeaza sa fac+not doing it|",
+      "List work without executing|Ask what you can discover|Shell commands as text",
       "",
-      "TOOLS: Use them. Verify paths exist. If tool fails, try alternative. Never pass undefined args.",
+      "MEMORY: Proxy auto-injects. If MemPalace MCP available:",
+      "START: mempalace_search({project} session/tasks/prefs/arch/problems)",
+      "WORK: mempalace_add_drawer(title,content,room) — save decisions,progress",
+      "END: save summary+refs. LONG CONTEXT: save+summarize+continue.",
+      "",
+      "DISCOVERY: On session start, identify available capabilities:",
+      "- List available tools/functions — note which for file ops, search, browser, git, MCP",
+      "- Check for skills/commands (CLAUDE.md, AGENTS.md, .kilo/, slash commands)",
+      "- Check for MCP servers — mempalace, playwright, exa, context7, etc.",
+      "- Read project config (CLAUDE.md/AGENTS.md/INSTRUCTIONS.md) — follow project rules.",
+      "- Mental inventory of capabilities. Right tool for each sub-task. Tool exists = USE IT.",
     ].join("\n");
 
     // Append recalled memories from MemPalace
     if (reqBody._memoryInjection) {
-      CORE_INSTRUCTION += reqBody._memoryInjection;
+      PROXY_SYSTEM += reqBody._memoryInjection;
     }
 
-    // Prepend as first system message
+    // Smart merge with existing system message
     if (body.messages[0]?.role === "system") {
-      body.messages[0] = { ...body.messages[0], content: CORE_INSTRUCTION + "\n\n" + body.messages[0].content };
+      let existingSystem = typeof body.messages[0].content === "string" ? body.messages[0].content : "";
+
+      // Replace ANY LLM identity line — keep tool/suggestion instructions
+      existingSystem = existingSystem
+        .replace(/^You are [^\n]{5,200}\n?/i, "") // any "You are X" identity line
+        .replace(/^Tu esti [^\n]{5,200}\n?/i, "") // Romanian identity
+        .replace(/# Personality\n[\s\S]*?(?=\n#|\n\n[A-Z])/i, "") // Personality section
+        .replace(/# Identity[^\n]*\n[\s\S]*?(?=\n#|\n\n[A-Z])/i, "") // Identity section
+        .trim();
+
+      // Remove sections we already cover better
+      existingSystem = existingSystem
+        .replace(/# Proactiveness\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle proactiveness
+        .replace(/# Code style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle code style
+        .replace(/# Tone and style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle tone
+        .replace(/IMPORTANT:\s*-?\s*Answer concisely[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle conciseness
+        .trim();
+
+      body.messages[0] = { ...body.messages[0], content: PROXY_SYSTEM + "\n\n" + existingSystem };
     } else {
-      body.messages = [{ role: "system", content: CORE_INSTRUCTION }, ...body.messages];
+      body.messages = [{ role: "system", content: PROXY_SYSTEM }, ...body.messages];
     }
   }
 
@@ -948,6 +995,9 @@ async function routeToProvider(provider, reqBody) {
     if (isQuotaExhaustedError(resp.status, resp.body)) {
       disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
     }
+    if (resp.status === 502 || resp.status === 504 || /timeout|idle/i.test(resp.body)) {
+      setCooldown(provider.name);
+    }
     detectIncompatibility(provider.name, resp.status, resp.body);
     try { mempalace.saveError(mempalace.getSession(reqBody.messages), resp.body.substring(0, 200)); } catch {}
     throw { status: resp.status, body: resp.body, latency };
@@ -1017,6 +1067,10 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
       (err, statusCode) => {
         const latency = Date.now() - start;
         if (statusCode === 429) setCooldown(provider.name);
+        // Timeout/gateway errors — cooldown so failover picks different provider
+        if (statusCode === 502 || statusCode === 504 || /timeout|idle/i.test(err.message || "")) {
+          setCooldown(provider.name);
+        }
         if (isQuotaExhaustedError(statusCode, err.message || "")) {
           disableProviderQuota(provider.name, `HTTP ${statusCode}: quota/billing error`);
         }
@@ -1124,9 +1178,9 @@ async function handleChatCompletion(reqBody, clientRes) {
       : getProvidersForGroup(requestedModel, 0, reqBody);
     if (bestProviders.length > 0) {
       const maxContext = Math.max(...bestProviders.map((p) => p.context));
-      const threshold = Math.floor(maxContext * 0.8);
+      const threshold = Math.floor(maxContext * 0.9); // compact at 90%
       if (totalNeeded > threshold) {
-        const targetTokens = Math.floor(maxContext * 0.6);
+        const targetTokens = Math.floor(maxContext * 0.8); // compact to 80%
         let mpRefs = [];
         try { mpRefs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
         const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs);

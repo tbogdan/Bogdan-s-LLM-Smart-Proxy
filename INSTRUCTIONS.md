@@ -184,25 +184,15 @@ claude install-skill superpowers https://github.com/anthropics/claude-code-skill
 # Key sub-skills: brainstorming, test-driven, dispatching, verification
 ```
 
-### Autonomous Loop (never-stop execution)
+### Autonomous Execution (built into proxy — no install needed)
 
-```bash
-# Claude Code — copy to project
-cp -r skills/autonomous-loop/ .claude/skills/
+The proxy automatically injects execution rules into every request:
+- UNDERSTAND → PLAN → CONFIRM → EXECUTE → VERIFY → SAVE cycle
+- MemPalace auto-save/recall, context compaction, resume on "continue"
+- Decision making: discover tech → recall preferences → confirm once → build
+- Anti-stalling, violation detection, smart IDE prompt merging
 
-# Or add to CLAUDE.md
-echo 'Read and follow skills/autonomous-loop/SKILL.md' >> CLAUDE.md
-
-# DeerFlow — copy to skills
-cp -r skills/autonomous-loop/ /path/to/deer-flow/skills/custom/
-```
-
-Core rules:
-- Execute all tasks without stopping or asking
-- Save progress to MemPalace during work
-- Resume with "continue" — reads MemPalace, continues from saved state
-- On error: try alternative, continue. Never stop for one failure.
-- Long context: save to MemPalace, summarize, continue
+Full reference: `skills/autonomous-loop/SKILL.md`
 
 ## Architecture
 

@@ -325,17 +325,13 @@ function triggerSaves(session, reqBody, responseBody) {
     const actionSummary = session.recentResponses.slice(-10).join(" | ").substring(0, 400);
     const taskSummary = session.recentTasks.length > 0 ? `\n\nTasks: ${session.recentTasks.join(", ")}` : "";
 
-    // Structured summary with MemPalace references
+    // AAAK-style compressed summary with references
     const structured = [
-      `## Summary\n${actionSummary}`,
-      taskSummary,
-      `\n\n## References`,
-      `→ ${project} code — ${date} [room: sessions] — implementations and file changes`,
-      `→ ${project} tasks — ${date} [room: tasks] — task progress`,
-      `→ ${project} arch — ${date} [room: architecture] — tech decisions`,
-      `→ ${project} problems — ${date} [room: problems] — errors and fixes`,
-      `→ ${project} preferences [room: preferences] — user corrections`,
-    ].join("\n").substring(0, 800);
+      `PROJ:${project}|DATE:${date}|REQS:${session.requestCount}`,
+      `SUM:${actionSummary}`,
+      taskSummary ? `TASKS:${session.recentTasks.join("|")}` : "",
+      `REF:${project}.code→sessions|${project}.tasks→tasks|${project}.arch→architecture|${project}.err→problems|${project}.pref→preferences`,
+    ].filter(Boolean).join("\n").substring(0, 600);
 
     mpcSave(`${project} session ${date}`, structured, "sessions");
     session.lastSave = now;
@@ -406,8 +402,8 @@ async function saveCompactedContext(session, messages) {
   for (const m of (messages || [])) {
     if (m.role === "system") continue;
     const text = typeof m.content === "string" ? m.content : "";
-    const toolInfo = m.tool_calls ? ` [tools: ${m.tool_calls.map((t) => t.function?.name).join(",")}]` : "";
-    const line = `${m.role}: ${text.substring(0, 200)}${toolInfo}`;
+    const toolInfo = m.tool_calls ? `|T:${m.tool_calls.map((t) => t.function?.name).join(",")}` : "";
+    const line = `${m.role[0]}:${text.substring(0, 150).replace(/\n/g, " ")}${toolInfo}`;
 
     if (m.tool_calls?.length > 0 || m.role === "tool") {
       categories.tools.push(line);

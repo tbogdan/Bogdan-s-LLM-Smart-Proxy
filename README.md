@@ -458,32 +458,18 @@ claude install-skill superpowers https://github.com/anthropics/claude-code-skill
 
 Key sub-skills: `brainstorming`, `test-driven`, `dispatching`, `verification`, `writing-plans`
 
-### Autonomous Loop -- Never Stop Until Done
+### Autonomous Execution (built into proxy)
 
-Forces agent to execute all tasks without stopping or asking.
+The proxy injects execution rules into every request automatically. No separate installation needed. See `skills/autonomous-loop/SKILL.md` for the full reference.
 
-```bash
-# Claude Code — copy skill to project or global
-cp -r skills/autonomous-loop/ .claude/skills/
+**Injected automatically:**
 
-# Or add to CLAUDE.md:
-echo 'Read and follow skills/autonomous-loop/SKILL.md' >> CLAUDE.md
-
-# For DeerFlow — copy to skills directory:
-cp -r skills/autonomous-loop/ /path/to/deer-flow/skills/custom/
-
-# For any agent — add to system prompt:
-# See skills/autonomous-loop/SKILL.md for the full text
-```
-
-**Core behavior:**
-
-- Run until ALL tasks complete. Never ask permission.
-- Save progress to MemPalace. Resume with "continue".
-- Spawn sub-agents for parallel work via shared MemPalace.
-- Test with Playwright before marking done.
-- Error = try alternative, continue. Never stop for one failure.
-- Long context = save to MemPalace, summarize, continue.
+- Senior engineer identity with UNDERSTAND → PLAN → CONFIRM → EXECUTE → VERIFY → SAVE cycle
+- MemPalace integration (auto-save/recall, context compaction, resume protocol)
+- Decision making (discover tech → recall preferences → confirm once → build)
+- Anti-stalling rules and violation detection
+- Date/time awareness, user language detection
+- Smart merge with IDE system prompts (replaces identity, keeps tool instructions)
 
 ## Memory (MemPalace)
 
