@@ -189,6 +189,7 @@ function getSession(messages) {
       recentCorrections: [],
       recentResponses: [],
       isNew: true,
+      lastProvider: null, // session affinity — prefer same provider
     };
   }
   sessions[hash].requestCount++;
@@ -361,6 +362,14 @@ function triggerSaves(session, reqBody, responseBody) {
   }
 }
 
+function setLastProvider(session, providerName) {
+  session.lastProvider = providerName;
+}
+
+function getLastProvider(session) {
+  return session.lastProvider;
+}
+
 function saveError(session, errorMsg) {
   session.recentErrors.unshift(String(errorMsg).substring(0, 200));
   if (session.recentErrors.length > 5) session.recentErrors.pop();
@@ -481,6 +490,8 @@ module.exports = {
   saveStalling,
   saveProjectContext,
   saveCompactedContext,
+  setLastProvider,
+  getLastProvider,
   mempalaceHealth,
   MEMPALACE_ENABLED,
 };

@@ -181,6 +181,7 @@ function watchProvidersFile() {
         const oldCount = PROVIDERS.length;
         loadProviders();
         log(`Reloaded ${PROVIDERS.length} providers (was ${oldCount})`);
+        probeThinking().catch(() => {}); // probe new unverified providers
       }, 500); // debounce 500ms to avoid rapid reloads
     });
     log(`Watching ${PROVIDERS_FILE} for changes`);
@@ -985,6 +986,13 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
     if (compat.max_tokens_cap && needsTools) bonus -= 0.1;
     if (compat.no_reasoning && needsThinking) bonus -= 0.3;
 
+    // Session affinity — prefer same provider that worked last in this session
+    const lastProv = reqBody?._sessionLastProvider;
+    if (lastProv) {
+      if (p.name === lastProv) bonus += 0.4; // strong preference for same provider
+      else if (p.model === PROVIDERS.find((x) => x.name === lastProv)?.model) bonus += 0.2; // same model different source
+    }
+
     return { provider: p, score: providerScore(p) + bonus };
   });
 
@@ -1026,6 +1034,13 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
     if (compat.no_extra_body && needsThinking) bonus -= 0.3;
     if (compat.no_reasoning && needsThinking) bonus -= 0.3;
 
+    // Session affinity
+    const lastProv = reqBody?._sessionLastProvider;
+    if (lastProv) {
+      if (p.name === lastProv) bonus += 0.4;
+      else if (p.model === PROVIDERS.find((x) => x.name === lastProv)?.model) bonus += 0.2;
+    }
+
     return { provider: p, score: providerScore(p) + bonus };
   });
 
@@ -1050,6 +1065,7 @@ function findProviderByModel(model) {
 // ---------------------------------------------------------------------------
 async function routeToProvider(provider, reqBody) {
   const body = transformRequest(provider, reqBody);
+  body.stream = false; // force non-streaming
   const bodyStr = JSON.stringify(body);
   const headers = buildHeaders(provider);
   const start = Date.now();
@@ -1069,6 +1085,22 @@ async function routeToProvider(provider, reqBody) {
     throw { status: resp.status, body: resp.body, latency };
   }
 
+  // Validate response is OpenAI-compatible (has choices array)
+  try {
+    const parsed = JSON.parse(resp.body);
+    if (!parsed.choices || !Array.isArray(parsed.choices)) {
+      // Provider likely only supports streaming — mark stream_only
+      const c = getCompat(provider.name);
+      if (!c.stream_only) { c.stream_only = true; saveCompat(); log(`COMPAT: ${provider.name} → stream_only (no choices in response)`); }
+      throw { status: 502, body: resp.body, latency };
+    }
+  } catch (e) {
+    if (e.status) throw e;
+    const c = getCompat(provider.name);
+    if (!c.stream_only) { c.stream_only = true; saveCompat(); log(`COMPAT: ${provider.name} → stream_only (unparseable non-stream response)`); }
+    throw { status: 502, body: resp.body, latency };
+  }
+
   // Stalling detection — model says "Let me check" and stops without acting
   if (reqBody?.tools?.length > 0 || reqBody?.functions?.length > 0) {
     const stallingDetected = detectStalling(resp.body);
@@ -1079,6 +1111,9 @@ async function routeToProvider(provider, reqBody) {
   }
 
   recordSuccess(provider.name, latency);
+
+  // Session affinity — remember which provider worked
+  try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
 
   // MemPalace: save after successful response
   try {
@@ -1106,25 +1141,39 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
     const start = Date.now();
     let headersSent = false;
 
+    let dataChunks = 0;
+    const buffered = []; // buffer chunks until we commit to this stream
+
     streamRequest(
       provider.url,
       { method: "POST", headers },
       bodyStr,
       (chunk) => {
+        const text = chunk.toString();
+        if (/data:\s*\{/.test(text)) dataChunks++;
+
         if (!headersSent) {
-          clientRes.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-LLM-Provider": provider.name,
-          });
-          headersSent = true;
+          buffered.push(chunk);
+          if (dataChunks >= 2) {
+            // Commit — flush buffered chunks
+            clientRes.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              "Connection": "keep-alive",
+              "X-LLM-Provider": provider.name,
+            });
+            headersSent = true;
+            for (const b of buffered) clientRes.write(b);
+            buffered.length = 0;
+          }
+        } else {
+          clientRes.write(chunk);
         }
-        clientRes.write(chunk);
       },
       () => {
         const latency = Date.now() - start;
         recordSuccess(provider.name, latency);
+        try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
         if (headersSent) {
           clientRes.end();
         }
@@ -1161,6 +1210,7 @@ async function handleChatCompletion(reqBody, clientRes) {
 
   // MemPalace: recall memories and inject into context
   const mpSession = mempalace.getSession(reqBody.messages);
+  reqBody._sessionLastProvider = mempalace.getLastProvider(mpSession);
   let memoryInjection = "";
   try {
     memoryInjection = await mempalace.recallMemories(mpSession, reqBody);
@@ -1243,10 +1293,12 @@ async function handleChatCompletion(reqBody, clientRes) {
       ? getProvidersForAuto(reqBody.messages, 0, reqBody)
       : getProvidersForGroup(requestedModel, 0, reqBody);
     if (bestProviders.length > 0) {
-      const maxContext = Math.max(...bestProviders.map((p) => p.context));
-      const threshold = Math.floor(maxContext * 0.9); // compact at 90%
+      // Use median context (most providers are 131K, not 1M Gemini)
+      const contexts = bestProviders.map((p) => p.context).sort((a, b) => a - b);
+      const medianContext = contexts[Math.floor(contexts.length / 2)];
+      const threshold = Math.floor(medianContext * 0.9); // compact at 90% of median
       if (totalNeeded > threshold) {
-        const targetTokens = Math.floor(maxContext * 0.8); // compact to 80%
+        const targetTokens = Math.floor(medianContext * 0.8); // compact to 80% of median
         let mpRefs = [];
         try { mpRefs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
         const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs);
@@ -1324,10 +1376,22 @@ async function handleChatCompletion(reqBody, clientRes) {
     const errors = [];
     for (const provider of providers) {
       try {
-        log(`Route: ${requestedModel} → ${provider.name} model=${provider.model} via=${provider.name.split("-")[0]}`);
+        log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) via=${provider.name.split("-")[0]} stream_only=${!!getCompat(provider.name).stream_only}`);
+
         if (isStreaming) {
-          await routeStreamToProvider(provider, reqBody, clientRes);
-          return; // success
+          const compat = getCompat(provider.name);
+          if (compat.stream_only) {
+            // Known slow provider — go straight to streaming
+            await routeStreamToProvider(provider, reqBody, clientRes);
+            return;
+          }
+          // Try non-streaming first (enables full validation + retry)
+          const quickResp = await Promise.race([
+            routeToProvider(provider, reqBody),
+            new Promise((_, rej) => setTimeout(() => rej({ timeout: true }), 60_000)),
+          ]);
+          sendAsSSE(clientRes, quickResp.body, provider.name);
+          return;
         } else {
           const resp = await routeToProvider(provider, reqBody);
           clientRes.writeHead(resp.status, {
@@ -1335,33 +1399,71 @@ async function handleChatCompletion(reqBody, clientRes) {
             "X-LLM-Provider": provider.name,
           });
           clientRes.end(resp.body);
-          return; // success
-        }
-      } catch (err) {
-        // If streaming already sent headers, we cannot retry
-        if (err.headersSent) {
-          clientRes.end();
           return;
         }
+      } catch (err) {
+        // Non-streaming timed out → mark provider as stream-only, fall back to real streaming
+        if (err.timeout && isStreaming) {
+          const c = getCompat(provider.name);
+          if (!c.stream_only) {
+            c.stream_only = true;
+            saveCompat();
+            log(`COMPAT: ${provider.name} marked stream_only (non-streaming timeout)`);
+          }
+          try {
+            log(`Route: ${requestedModel} → ${provider.name} (streaming fallback)`);
+            await routeStreamToProvider(provider, reqBody, clientRes);
+            return;
+          } catch (streamErr) {
+            if (streamErr.headersSent) { clientRes.end(); return; }
+          }
+        }
+        if (err.headersSent) { clientRes.end(); return; }
         const status = err.status || err.statusCode || 500;
         const msg = err.body || err.error?.message || String(err);
         if (status === 429) setCooldown(provider.name);
         recordFailure(provider.name, msg);
         errors.push({ provider: provider.name, status, error: typeof msg === "string" ? msg.substring(0, 200) : String(msg) });
-        continue; // try next provider
+        continue;
       }
     }
 
-    // ALL providers in group failed
-    // Check if context overflow was the dominant error — return context_length_exceeded to trigger compaction
-    const contextErrors = errors.filter((e) =>
-      /context.length|too.long|token.*exceed|max.size.*token|too.large/i.test(e.error)
+    // ALL providers failed — check if context/timeout related, compact and retry
+    const contextOrTimeoutErrors = errors.filter((e) =>
+      /context.length|too.long|token.*exceed|max.size.*token|too.large|timeout|idle|502|504/i.test(e.error) || e.status === 502 || e.status === 504
     );
-    if (contextErrors.length > errors.length / 2) {
+    const isContextProblem = contextOrTimeoutErrors.length > errors.length / 3;
+
+    if (isContextProblem && reqBody.messages?.length > 4 && !reqBody._compactRetries) {
+      reqBody._compactRetries = 0;
+    }
+    if (isContextProblem && (reqBody._compactRetries || 0) < 3 && reqBody.messages?.length > 4) {
+      reqBody._compactRetries = (reqBody._compactRetries || 0) + 1;
+      const allP = requestedModel === "auto"
+        ? getProvidersForAuto(reqBody.messages, 0, reqBody)
+        : getProvidersForGroup(requestedModel, 0, reqBody);
+      const ctxs = allP.map((p) => p.context).sort((a, b) => a - b);
+      const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.7 - reqBody._compactRetries * 0.15)); // 70%→55%→40%
+
+      let refs = [];
+      try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
+      const compacted = compactMessages(reqBody.messages, target, requestedMaxTokens, refs);
+      if (compacted) {
+        reqBody.messages = compacted.messages;
+        const newEst = estimateTokens(reqBody.messages);
+        log(`RETRY-COMPACT #${reqBody._compactRetries}: ${estTokens}tok → ${newEst}tok (target=${target}, removed ${compacted.removed} msgs)`);
+        // Recursive retry with compacted context
+        return await handleChatCompletion(reqBody, clientRes);
+      }
+    }
+
+    // Final fallback — return context_length_exceeded to trigger IDE compaction
+    if (isContextProblem) {
       const maxContext = Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => p.context), 0);
+      const currentEst = estimateTokens(reqBody.messages);
       const body = JSON.stringify({
         error: {
-          message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${totalNeeded} tokens (${estTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
+          message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${currentEst + requestedMaxTokens} tokens (${currentEst} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
           type: "invalid_request_error",
           param: "messages",
           code: "context_length_exceeded",
@@ -1381,7 +1483,7 @@ async function handleChatCompletion(reqBody, clientRes) {
   }
 
   try {
-    log(`Route: ${requestedModel} → ${provider.name} model=${provider.model} via=${provider.name.split("-")[0]}`);
+    log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) via=${provider.name.split("-")[0]}`);
     if (isStreaming) {
       await routeStreamToProvider(provider, reqBody, clientRes);
     } else {
@@ -1536,8 +1638,14 @@ function handleDiscovery() {
 // Thinking probe
 // ---------------------------------------------------------------------------
 async function probeThinking() {
-  // Only probe providers that haven't been verified yet
-  const thinkingProviders = PROVIDERS.filter((p) => p.key && p.tc && p.alive !== false && !(getScore(p.name).thinking_ok > 0));
+  // Only probe unverified providers, skip after 3 failed attempts
+  const thinkingProviders = PROVIDERS.filter((p) => {
+    if (!p.key || !p.tc || p.alive === false) return false;
+    const s = getScore(p.name);
+    if (s.thinking_ok > 0) return false; // already verified
+    if ((s._probeAttempts || 0) >= 3) return false; // gave up
+    return true;
+  });
   if (thinkingProviders.length === 0) return;
   log(`Thinking probe: ${thinkingProviders.length} unverified providers`);
   for (const p of thinkingProviders) {
@@ -1551,12 +1659,15 @@ async function probeThinking() {
         headers: buildHeaders(p),
       }, JSON.stringify(body));
 
+      const s = getScore(p.name);
+      s._probeAttempts = (s._probeAttempts || 0) + 1;
       if (resp.status < 400 && detectThinking(resp.body)) {
         recordThinkingOk(p.name);
         log(`Thinking OK: ${p.name}`);
       }
     } catch {
-      // skip
+      const s = getScore(p.name);
+      s._probeAttempts = (s._probeAttempts || 0) + 1;
     }
   }
 }
@@ -1564,6 +1675,70 @@ async function probeThinking() {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+// Convert non-streaming response to SSE stream for client
+function sendAsSSE(res, responseBody, providerName) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-LLM-Provider": providerName,
+  });
+
+  try {
+    const data = JSON.parse(responseBody);
+    const choice = data.choices?.[0];
+    if (!choice) { res.write(`data: ${responseBody}\n\n`); res.write("data: [DONE]\n\n"); res.end(); return; }
+
+    const content = choice.message?.content || "";
+    const toolCalls = choice.message?.tool_calls;
+
+    // Send content in chunks for streaming feel
+    if (content && !toolCalls?.length) {
+      const chunkSize = 20; // ~20 chars per SSE event
+      for (let i = 0; i < content.length; i += chunkSize) {
+        const delta = content.substring(i, i + chunkSize);
+        const chunk = {
+          id: data.id || "chatcmpl-proxy",
+          object: "chat.completion.chunk",
+          created: data.created || Math.floor(Date.now() / 1000),
+          model: data.model,
+          choices: [{ index: 0, delta: i === 0 ? { role: "assistant", content: delta } : { content: delta }, finish_reason: null }],
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      }
+    }
+
+    // Send tool calls as single chunk (can't split)
+    if (toolCalls?.length) {
+      const chunk = {
+        id: data.id || "chatcmpl-proxy",
+        object: "chat.completion.chunk",
+        created: data.created || Math.floor(Date.now() / 1000),
+        model: data.model,
+        choices: [{ index: 0, delta: { role: "assistant", content: content || null, tool_calls: toolCalls }, finish_reason: null }],
+      };
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    }
+
+    // Final chunk with finish_reason
+    const finalChunk = {
+      id: data.id || "chatcmpl-proxy",
+      object: "chat.completion.chunk",
+      created: data.created || Math.floor(Date.now() / 1000),
+      model: data.model,
+      choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || "stop" }],
+      usage: data.usage,
+    };
+    res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+    res.write("data: [DONE]\n\n");
+  } catch {
+    // Fallback: send raw response as single SSE event
+    res.write(`data: ${responseBody}\n\n`);
+    res.write("data: [DONE]\n\n");
+  }
+  res.end();
+}
+
 function sendError(res, status, message, details) {
   const body = JSON.stringify({ error: { message, type: "proxy_error", ...details } });
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -1697,14 +1872,10 @@ server.listen(PORT, () => {
   log(`Endpoints: /v1/chat/completions, /v1/models, /v1/capabilities, /health, /scores, /discovery`);
 });
 
-// Run thinking probe on startup (after 5s) and every 10min
-setTimeout(() => {
-  log("Running initial thinking probe...");
-  probeThinking().catch(() => {});
-}, 5000);
+// Run thinking probe immediately on startup, then hourly for new unverified only
+probeThinking().catch(() => {});
 
 setInterval(() => {
-  log("Running thinking probe...");
   probeThinking().catch(() => {});
 }, THINKING_PROBE_INTERVAL);
 
