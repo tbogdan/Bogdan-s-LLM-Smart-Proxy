@@ -20,7 +20,7 @@ const SEED_FILE = path.join(__dirname, "seed-providers.json");
 const REQUEST_TIMEOUT = 300_000; // 5min per provider attempt (large contexts need time)
 const COOLDOWN_MS = 30_000; // 30s per-provider cooldown on 429
 const QUOTA_DISABLED_FILE = path.join(DATA_DIR, "quota-disabled.json");
-const THINKING_PROBE_INTERVAL = 10 * 60_000; // 10 min
+const THINKING_PROBE_INTERVAL = 60 * 60_000; // 1 hour
 
 // Ensure data dir
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
@@ -1468,7 +1468,10 @@ function handleDiscovery() {
 // Thinking probe
 // ---------------------------------------------------------------------------
 async function probeThinking() {
-  const thinkingProviders = PROVIDERS.filter((p) => p.key && p.tc && p.alive !== false);
+  // Only probe providers that haven't been verified yet
+  const thinkingProviders = PROVIDERS.filter((p) => p.key && p.tc && p.alive !== false && !(getScore(p.name).thinking_ok > 0));
+  if (thinkingProviders.length === 0) return;
+  log(`Thinking probe: ${thinkingProviders.length} unverified providers`);
   for (const p of thinkingProviders) {
     try {
       const body = transformRequest(p, {
