@@ -1476,9 +1476,29 @@ async function handleChatCompletion(reqBody, clientRes) {
         const msg = err.body || err.error?.message || String(err);
         if (status === 429) setCooldown(provider.name);
         recordFailure(provider.name, msg);
-        const errShort = typeof msg === "string" ? msg.substring(0, 100) : String(msg).substring(0, 100);
-        log(`FAIL: ${provider.name} status=${status} ${err.timeout ? "TIMEOUT" : ""} ${errShort}`);
+        const errFull = typeof msg === "string" ? msg.substring(0, 300) : String(msg).substring(0, 300);
+        log(`FAIL: ${provider.name} status=${status} ${err.timeout ? "TIMEOUT" : ""} ${errFull}`);
         errors.push({ provider: provider.name, status, error: typeof msg === "string" ? msg.substring(0, 200) : String(msg) });
+
+        // Mid-loop: if 2+ context errors, compact now instead of burning through all providers
+        const isCtxErr = /context.length|too.large|maximum.*token|too large for model/i.test(errFull);
+        if (isCtxErr) {
+          const ctxErrCount = errors.filter((e) => /context.length|too.large|maximum.*token|too large for model/i.test(e.error)).length;
+          if (ctxErrCount >= 2 && reqBody.messages?.length > 4 && !(reqBody._compactRetries >= 3)) {
+            reqBody._compactRetries = (reqBody._compactRetries || 0) + 1;
+            const ctxs = providers.map((p) => p.context).sort((a, b) => a - b);
+            const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.6 - (reqBody._compactRetries - 1) * 0.15));
+            let refs = [];
+            try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
+            const compacted = compactMessages(reqBody.messages, target, requestedMaxTokens, refs);
+            if (compacted) {
+              reqBody.messages = compacted.messages;
+              const newEst = estimateTokens(reqBody.messages);
+              log(`MID-COMPACT #${reqBody._compactRetries}: ${estTokens}tok → ${newEst}tok (target=${target}, after ${ctxErrCount} context errors)`);
+              return await handleChatCompletion(reqBody, clientRes);
+            }
+          }
+        }
         continue;
       }
     }
