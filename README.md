@@ -36,7 +36,7 @@ The proxy runs at `http://localhost:18900`.
 # Simple chat
 curl http://localhost:18900/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"auto-free","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'
 
 # Streaming
 curl http://localhost:18900/v1/chat/completions \
@@ -58,7 +58,7 @@ Main routing endpoint. OpenAI-compatible request format.
 **Request body:**
 ```json
 {
-  "model": "auto-free",
+  "model": "auto",
   "messages": [{"role": "user", "content": "Hello"}],
   "stream": false,
   "max_tokens": 1000,
@@ -67,7 +67,7 @@ Main routing endpoint. OpenAI-compatible request format.
 ```
 
 The `model` field accepts:
-- **Smart group name**: `auto-free`, `auto-tools`, `auto-coding`, `auto-images`, `auto-video`, `auto-text`, `auto-max`, `auto-thinking`
+- **Smart group name**: `auto`, `auto-tools`, `auto-coding`, `auto-images`, `auto-video`, `auto-text`, `auto-max`, `auto-thinking`
 - **Provider model ID**: e.g., `gpt-4o`, `llama-3.3-70b-versatile`, `qwen3-235b-a22b`
 - **Provider name**: e.g., `Groq-Llama70B`, `Gemini-2.5-Pro`
 
@@ -104,7 +104,7 @@ Discovered models from the last auto-scan.
 | Group | Routes to | Description |
 |-------|-----------|-------------|
 | `auto` | All providers (smart) | Detects use case from message, routes to best match, tries all as fallback |
-| `auto-free` | All providers | Best available across all providers |
+| `auto` | All providers (smart) | Detects use case, routes to benchmark-best model, full fallback |
 | `auto-tools` | Providers with tool calling | Function calling / tool use |
 | `auto-coding` | Providers tagged "coding" | Code generation and editing |
 | `auto-images` | Providers with vision | Image understanding |
@@ -234,7 +234,7 @@ Then add key to `.env` and restart. Discovery auto-detects new models from confi
 # Settings > AI Provider > Custom > OpenAI Compatible
 # Base URL: http://YOUR_SERVER:18900/v1
 # API Key: any (proxy ignores it)
-# Model: auto-free (or any group/provider name)
+# Model: auto (or any group/provider name)
 ```
 
 Or in `settings.json`:
@@ -249,7 +249,7 @@ Or in `settings.json`:
 
 Settings > Models > OpenAI API Key: `proxy` > Base URL: `http://YOUR_SERVER:18900/v1`
 
-Model names: `auto-free`, `auto-coding`, `auto-thinking`, or any specific provider like `Groq-GPTOSS120B`.
+Model names: `auto`, `auto-coding`, `auto-thinking`, or any specific provider like `Groq-GPTOSS120B`.
 
 ### DeerFlow / LangChain / LangGraph
 

@@ -93,4 +93,4 @@ echo ""
 echo "Test:"
 echo '  curl http://localhost:18900/v1/chat/completions \'
 echo '    -H "Content-Type: application/json" \'
-echo '    -d '"'"'{"model":"auto-free","messages":[{"role":"user","content":"Hello"}]}'"'"
+echo '    -d '"'"'{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'"'"

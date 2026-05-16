@@ -79,8 +79,7 @@ function hydrateSeedProviders(config) {
     });
   }
   const groups = config.groups || {
-    "auto-free": null,
-    "auto-tools": "tools",
+        "auto-tools": "tools",
     "auto-coding": "coding",
     "auto-images": "images",
     "auto-video": "video",
@@ -132,8 +131,7 @@ function hydrateProvidersFile(config) {
     });
   }
   const groups = config.groups || {
-    "auto-free": null,
-    "auto-tools": "tools",
+        "auto-tools": "tools",
     "auto-coding": "coding",
     "auto-images": "images",
     "auto-video": "video",
@@ -831,38 +829,101 @@ function detectUseCase(messages, reqBody) {
 // ---------------------------------------------------------------------------
 // Smartness bonus — prefer larger, more capable, smarter models
 // ---------------------------------------------------------------------------
-function smartnessBonus(p) {
-  let bonus = 0;
+// ---------------------------------------------------------------------------
+// Model Knowledge Base — benchmark-backed per-category scoring
+// Pattern → { coding, reasoning, tools, chat, vision, speed }
+// S=0.5, A=0.35, B=0.2, C=0.05, null=0
+// ---------------------------------------------------------------------------
+const MODEL_SCORES = [
+  // S-tier coding + reasoning
+  { pat: /gemini.*3.*flash/i,                    coding: 0.5, reasoning: 0.35, tools: 0.35, chat: 0.5, vision: 0.5, speed: 0.4 },
+  { pat: /deepseek.*v3\.2/i,                     coding: 0.5, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /qwen.*3\.5.*397b/i,                    coding: 0.35, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.15 },
+  { pat: /qwen.*coder.*480b/i,                   coding: 0.5, reasoning: 0.35, tools: 0.35, chat: 0.2, vision: 0, speed: 0.15 },
+  { pat: /glm.*5\.1/i,                           coding: 0.5, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /qwen.*3\.6.*max/i,                     coding: 0.5, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  // A-tier
+  { pat: /gemini.*2\.5.*pro/i,                   coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.5, speed: 0.3 },
+  { pat: /gemini.*2\.5.*flash/i,                 coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.4 },
+  { pat: /deepseek.*v4.*flash/i,                 coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.4 },
+  { pat: /gpt.*oss.*120b/i,                      coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.5 },
+  { pat: /qwen.*coder.*(?:plus|next)/i,          coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /qwen.*3\.5.*122b/i,                    coding: 0.35, reasoning: 0.35, tools: 0.5, chat: 0.35, vision: 0.35, speed: 0.4 },
+  { pat: /qwen.*max/i,                           coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /deepseek.*v3\.1/i,                     coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /deepseek.*r1/i,                        coding: 0.35, reasoning: 0.35, tools: 0.2, chat: 0.2, vision: 0, speed: 0.15 },
+  { pat: /kimi.*k2\.5/i,                         coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /kimi.*k2\.6/i,                         coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /nemotron.*(?:120b|super)/i,            coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /gpt.*5.*mini/i,                        coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.2, speed: 0.4 },
+  { pat: /mistral.*medium/i,                     coding: 0.35, reasoning: 0.2, tools: 0.5, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /glm.*5(?!\.)/i,                        coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /minimax.*m2\.[57]/i,                   coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.35, vision: 0, speed: 0.3 },
+  // B-tier
+  { pat: /gpt.*4o/i,                             coding: 0.2, reasoning: 0.2, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.4 },
+  { pat: /gpt.*4\.1/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /qwen.*235b/i,                          coding: 0.2, reasoning: 0.35, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /qwen.*32b/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /qwen.*plus/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /deepseek.*v3(?!\.)/i,                  coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /llama.*3\.3.*70b/i,                    coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /llama.*4.*maverick/i,                  coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.35, speed: 0.4 },
+  { pat: /command.*a/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /kimi.*k2(?!\.)/i,                      coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /laguna.*m\.?1/i,                       coding: 0.2, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.3 },
+  { pat: /laguna.*xs/i,                          coding: 0.2, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.4 },
+  { pat: /mistral.*small/i,                      coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /glm.*4/i,                              coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /ring.*2\.6/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  // C-tier
+  { pat: /llama.*4.*scout/i,                     coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0.2, speed: 0.4 },
+  { pat: /command.*r.*plus/i,                    coding: 0.05, reasoning: 0.05, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /command.*r7b/i,                        coding: 0.05, reasoning: 0.05, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /qwen.*turbo/i,                         coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /qwen.*(?:8b|14b|4b|0\.6b|1\.7b)/i,    coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /llama.*(?:8b|1b|3b)/i,                 coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /mistral.*(?:7b|8b|nemo)/i,             coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /gemma/i,                               coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /cobuddy/i,                             coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /phi/i,                                 coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+];
 
-  // More capabilities = smarter model
-  const capCount = p.caps?.length || 0;
-  bonus += Math.min(capCount * 0.05, 0.3); // +0.05 per cap, max +0.3
+// Map group capability → score field
+// Map proxy group capability → model score field
+const CAP_TO_SCORE = {
+  coding: "coding", thinking: "reasoning",
+  tools: "tools", text: "chat", images: "vision", video: "vision",
+  max: "quality", // max = best overall quality across all categories
+};
 
-  // Thinking/reasoning capable = smarter
-  if (p.tc) bonus += 0.2;
+function getModelScore(model, category) {
+  const m = (model || "").toLowerCase();
+  for (const entry of MODEL_SCORES) {
+    if (entry.pat.test(m)) {
+      if (category === "quality") {
+        // Average of coding + reasoning + tools — overall quality metric
+        return ((entry.coding || 0) + (entry.reasoning || 0) + (entry.tools || 0)) / 3;
+      }
+      return entry[category] || 0;
+    }
+  }
+  return 0.1;
+}
 
-  // Coding capability = better trained
-  if (p.caps?.includes("coding")) bonus += 0.15;
+function smartnessBonus(p, groupCap) {
+  const model = p.model || "";
+  const scoreField = CAP_TO_SCORE[groupCap] || "coding"; // default to coding
 
-  // Larger context = better architecture
-  if (p.context >= 1000000) bonus += 0.2;       // 1M+
-  else if (p.context >= 256000) bonus += 0.15;   // 256K+
-  else if (p.context >= 131072) bonus += 0.1;    // 131K
-  else if (p.context < 32768) bonus -= 0.15;     // <32K = limited
+  // Primary: how good is this model for requested category
+  let bonus = getModelScore(model, scoreField);
 
-  // Known large/smart models get explicit boost
-  const model = (p.model || "").toLowerCase();
-  if (/gpt-4|gpt-5|gpt-oss-120b/.test(model)) bonus += 0.15;
-  if (/qwen.*(?:max|235b|397b|480b|coder)/.test(model)) bonus += 0.15;
-  if (/deepseek.*(?:v3|v4|r1)/.test(model)) bonus += 0.15;
-  if (/gemini.*(?:2\.5|3).*(?:pro|flash)/.test(model)) bonus += 0.15;
-  if (/command-a|nemotron.*120b|kimi.*k2/.test(model)) bonus += 0.1;
-  if (/llama.*(?:70b|4-maverick)/.test(model)) bonus += 0.05;
-  if (/mistral.*(?:large|medium)/.test(model)) bonus += 0.05;
+  // Secondary: speed bonus (fast models preferred when scores close)
+  bonus += getModelScore(model, "speed") * 0.15;
 
-  // Small/weak models penalized
-  if (/\b(?:7b|8b|1\.5b|0\.6b|3b|4b)\b/.test(model)) bonus -= 0.2;
-  if (/mini|nano|tiny|small|lite/i.test(model) && !/minimax/i.test(model)) bonus -= 0.1;
+  // Context bonus
+  if (p.context >= 1000000) bonus += 0.1;
+  else if (p.context >= 256000) bonus += 0.05;
+  else if (p.context < 32768) bonus -= 0.1;
 
   return bonus;
 }
@@ -889,8 +950,8 @@ function getProvidersForGroup(groupName, estimatedTokens, reqBody) {
     let bonus = 0;
     const compat = getCompat(p.name);
 
-    // Smartness bonus — prefer more capable, larger, smarter models
-    bonus += smartnessBonus(p);
+    // Benchmark-backed model scoring for this group's category
+    bonus += smartnessBonus(p, cap);
 
     // Group capability match: strong bonus for matching, but don't exclude non-matching
     if (cap !== null && cap !== undefined) {
@@ -944,8 +1005,13 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
     let bonus = 0;
     const compat = getCompat(p.name);
 
-    // Smartness bonus
-    bonus += smartnessBonus(p);
+    // Benchmark-backed model scoring — detect primary category from use case
+    const primaryCap = detectedCaps.has("coding") ? "coding"
+      : detectedCaps.has("thinking") ? "thinking"
+      : detectedCaps.has("images") ? "images"
+      : detectedCaps.has("tools") ? "tools"
+      : "text";
+    bonus += smartnessBonus(p, primaryCap);
 
     for (const cap of detectedCaps) {
       if (p.caps.includes(cap)) bonus += 0.3;
@@ -1086,7 +1152,7 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
 // Main routing with group failover
 // ---------------------------------------------------------------------------
 async function handleChatCompletion(reqBody, clientRes) {
-  const requestedModel = reqBody.model || "auto-free";
+  const requestedModel = reqBody.model || "auto";
   const isStreaming = reqBody.stream === true;
   const isGroup = requestedModel in GROUPS || requestedModel === "auto";
   const estTokens = estimateTokens(reqBody.messages);
@@ -1360,7 +1426,7 @@ function handleModels(query) {
     object: "model",
     created: 0,
     owned_by: "llm-proxy",
-    capabilities: g === "auto-free" ? ["all"] : [GROUPS[g]],
+    capabilities: GROUPS[g] === null ? ["all"] : [GROUPS[g]],
     context_length: 131072,
     tier: 0,
     thinking_capable: g === "auto-thinking",
@@ -1556,7 +1622,7 @@ const server = http.createServer(async (req, res) => {
         return sendError(res, 400, "Invalid JSON body");
       }
       const est = estimateTokens(parsed.messages);
-      const model = parsed.model || "auto-free";
+      const model = parsed.model || "auto";
       if (model === "auto") {
         const { caps, isAgent } = detectUseCase(parsed.messages, parsed);
         log(`Request: model=auto stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent}`);

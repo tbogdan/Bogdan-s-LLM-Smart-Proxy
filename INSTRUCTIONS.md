@@ -58,7 +58,7 @@ curl http://localhost:18900/v1/models
 # Test chat
 curl http://localhost:18900/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"auto-free","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ## Connect to IDEs and Agents
@@ -71,7 +71,7 @@ Add to Claude Code settings or use as MCP:
 # As OpenAI-compatible provider
 # Base URL: http://localhost:18900/v1
 # API Key: proxy (any string)
-# Model: auto-free
+# Model: auto
 ```
 
 ### DeerFlow

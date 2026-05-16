@@ -1013,7 +1013,6 @@
     }
   ],
   "groups": {
-    "auto-free": null,
     "auto-tools": "tools",
     "auto-coding": "coding",
     "auto-images": "images",

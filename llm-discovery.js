@@ -414,8 +414,7 @@ function writeProvidersFile(seed, discoveredProviders) {
     generated: new Date().toISOString(),
     providers: Array.from(providerMap.values()),
     groups: seed.groups || {
-      "auto-free": null,
-      "auto-tools": "tools",
+        "auto-tools": "tools",
       "auto-coding": "coding",
       "auto-images": "images",
       "auto-video": "video",
@@ -677,8 +676,7 @@ function generateInitialProvidersFile() {
     generated: new Date().toISOString(),
     providers,
     groups: seed.groups || {
-      "auto-free": null,
-      "auto-tools": "tools",
+        "auto-tools": "tools",
       "auto-coding": "coding",
       "auto-images": "images",
       "auto-video": "video",
