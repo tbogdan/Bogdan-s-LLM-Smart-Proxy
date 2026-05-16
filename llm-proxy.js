@@ -261,16 +261,26 @@ function saveQuotaDisabled() {
   try { fs.writeFileSync(QUOTA_DISABLED_FILE, JSON.stringify(quotaDisabled, null, 2)); } catch {}
 }
 
+const QUOTA_COOLDOWN_MS = 3.5 * 60 * 60_000; // 3.5 hours — retry after cooldown
+
 function disableProviderQuota(name, reason) {
   quotaDisabled[name] = { time: Date.now(), reason };
-  const provider = PROVIDERS.find((p) => p.name === name);
-  if (provider) provider.alive = false;
   saveQuotaDisabled();
-  log(`QUOTA EXHAUSTED: ${name} disabled — ${reason}`);
+  setCooldown(name, QUOTA_COOLDOWN_MS);
+  log(`QUOTA: ${name} cooled 3.5h — ${reason}`);
 }
 
 function isQuotaDisabled(name) {
-  return !!quotaDisabled[name];
+  const entry = quotaDisabled[name];
+  if (!entry) return false;
+  // Auto-expire after 3.5h
+  if (Date.now() - entry.time > QUOTA_COOLDOWN_MS) {
+    delete quotaDisabled[name];
+    saveQuotaDisabled();
+    log(`QUOTA-RETRY: ${name} re-enabled after 3.5h`);
+    return false;
+  }
+  return true;
 }
 
 function isQuotaExhaustedError(statusCode, body) {
@@ -281,6 +291,24 @@ function isQuotaExhaustedError(statusCode, body) {
   if (statusCode === 400 && body.includes("Arrearage")) return true;
   if (statusCode === 429 && body.includes("PrepaidBillOverdue")) return true;
   if (statusCode === 429 && body.includes("PostpaidBillOverdue")) return true;
+  // SiliconFlow / generic balance errors
+  if (statusCode === 403 && /insufficient|balance/i.test(body)) return true;
+  if (statusCode === 402) return true; // Payment Required
+  // Ollama / generic usage limit
+  if (statusCode === 429 && /usage limit|weekly.*limit|monthly.*limit/i.test(body)) return true;
+  return false;
+}
+
+// Temporary rate limit — cooldown 1 hour, not permanent disable
+function isTemporaryRateLimit(statusCode, body) {
+  // Gemini quota exceeded
+  if (statusCode === 429 && /exceeded.*current quota|quota.*exceeded/i.test(body)) return true;
+  // Groq per-org token limit
+  if (statusCode === 413 && /too large for model/i.test(body)) return true;
+  // SambaNova daily token limit
+  if (statusCode === 429 && /token limit|day.*token/i.test(body)) return true;
+  // Generic 502 upstream unavailable
+  if (statusCode === 502 && /upstream.*unavailable/i.test(body)) return true;
   return false;
 }
 
@@ -472,7 +500,7 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
   const ctxMatch = body.match(/Max size:\s*(\d+)\s*tokens/i) || body.match(/maximum context length.*?(\d+)/i) || body.match(/max.*?(\d+)\s*tokens/i);
   if (ctxMatch && (statusCode === 400 || statusCode === 413)) {
     const limit = parseInt(ctxMatch[1], 10);
-    if (limit > 0 && (!c.real_context || limit < c.real_context)) {
+    if (limit > 1000 && (!c.real_context || limit < c.real_context)) { // ignore absurd values <1K
       c.real_context = limit;
       changed = true;
       log(`COMPAT: ${providerName} real context limit detected: ${limit} tokens`);
@@ -628,6 +656,11 @@ function transformRequest(provider, reqBody) {
       body.messages = [{ role: "system", content: PROXY_SYSTEM }, ...body.messages];
     }
   }
+
+  // Strip internal proxy fields — providers reject unknown fields (Gemini)
+  delete body._sessionLastProvider;
+  delete body._memoryInjection;
+  delete body._compactRetries;
 
   return body;
 }
@@ -1077,7 +1110,9 @@ async function routeToProvider(provider, reqBody) {
     if (isQuotaExhaustedError(resp.status, resp.body)) {
       disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
     }
-    if (resp.status === 502 || resp.status === 504 || /timeout|idle/i.test(resp.body)) {
+    if (isTemporaryRateLimit(resp.status, resp.body)) {
+      setCooldown(provider.name, 60 * 60_000); // 1 hour cooldown
+    } else if (resp.status === 502 || resp.status === 504 || /timeout|idle/i.test(resp.body)) {
       setCooldown(provider.name);
     }
     detectIncompatibility(provider.name, resp.status, resp.body);
@@ -1111,6 +1146,7 @@ async function routeToProvider(provider, reqBody) {
   }
 
   recordSuccess(provider.name, latency);
+  log(`OK: ${provider.name} ${latency}ms`);
 
   // Session affinity — remember which provider worked
   try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
@@ -1142,13 +1178,24 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
     let headersSent = false;
 
     let dataChunks = 0;
-    const buffered = []; // buffer chunks until we commit to this stream
+    const buffered = [];
+    let lastChunkTime = Date.now();
 
-    streamRequest(
+    // Watchdog: kill stream if no data for 90s
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastChunkTime > 90_000) {
+        clearInterval(watchdog);
+        log(`STREAM-STALE: ${provider.name} no data for 90s, killing`);
+        try { streamReq?.destroy(); } catch {}
+      }
+    }, 10_000);
+
+    const streamReq = streamRequest(
       provider.url,
       { method: "POST", headers },
       bodyStr,
       (chunk) => {
+        lastChunkTime = Date.now();
         const text = chunk.toString();
         if (/data:\s*\{/.test(text)) dataChunks++;
 
@@ -1172,7 +1219,9 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
       },
       () => {
         const latency = Date.now() - start;
+        clearInterval(watchdog);
         recordSuccess(provider.name, latency);
+        log(`STREAM-OK: ${provider.name} ${latency}ms chunks=${dataChunks}`);
         try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
         if (headersSent) {
           clientRes.end();
@@ -1183,14 +1232,18 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
         const latency = Date.now() - start;
         if (statusCode === 429) setCooldown(provider.name);
         // Timeout/gateway errors — cooldown so failover picks different provider
-        if (statusCode === 502 || statusCode === 504 || /timeout|idle/i.test(err.message || "")) {
+        if (isTemporaryRateLimit(statusCode, err.message || "")) {
+          setCooldown(provider.name, 60 * 60_000);
+        } else if (statusCode === 502 || statusCode === 504 || /timeout|idle/i.test(err.message || "")) {
           setCooldown(provider.name);
         }
         if (isQuotaExhaustedError(statusCode, err.message || "")) {
           disableProviderQuota(provider.name, `HTTP ${statusCode}: quota/billing error`);
         }
+        clearInterval(watchdog);
         detectIncompatibility(provider.name, statusCode, err.message || "");
         recordFailure(provider.name, err.message);
+        log(`STREAM-ERR: ${provider.name} ${latency}ms status=${statusCode} headersSent=${headersSent} chunks=${dataChunks} err=${(err.message || "").substring(0, 80)}`);
         reject({ error: err, statusCode, headersSent, latency });
       }
     );
@@ -1423,6 +1476,8 @@ async function handleChatCompletion(reqBody, clientRes) {
         const msg = err.body || err.error?.message || String(err);
         if (status === 429) setCooldown(provider.name);
         recordFailure(provider.name, msg);
+        const errShort = typeof msg === "string" ? msg.substring(0, 100) : String(msg).substring(0, 100);
+        log(`FAIL: ${provider.name} status=${status} ${err.timeout ? "TIMEOUT" : ""} ${errShort}`);
         errors.push({ provider: provider.name, status, error: typeof msg === "string" ? msg.substring(0, 200) : String(msg) });
         continue;
       }
@@ -1802,9 +1857,11 @@ const server = http.createServer(async (req, res) => {
       const model = parsed.model || "auto";
       if (model === "auto") {
         const { caps, isAgent } = detectUseCase(parsed.messages, parsed);
-        log(`Request: model=auto stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent}`);
+        const sid = mempalace.getSession(parsed.messages).id;
+        log(`Request: model=auto stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent} sid=${sid}`);
       } else {
-        log(`Request: model=${model} stream=${!!parsed.stream} messages=${parsed.messages?.length || 0} ~${est}tok`);
+        const sid = mempalace.getSession(parsed.messages).id;
+        log(`Request: model=${model} stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok sid=${sid}`);
       }
       return await handleChatCompletion(parsed, res);
     }
@@ -1851,11 +1908,7 @@ loadCompat();
 loadProviders();
 watchProvidersFile();
 
-// Re-apply quota disables and learned context limits to loaded providers
-for (const name of Object.keys(quotaDisabled)) {
-  const p = PROVIDERS.find((pr) => pr.name === name);
-  if (p) p.alive = false;
-}
+// Re-apply learned context limits to loaded providers (quota disables use cooldown, not alive=false)
 for (const [name, c] of Object.entries(providerCompat)) {
   if (c.real_context) {
     const p = PROVIDERS.find((pr) => pr.name === name);
