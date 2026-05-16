@@ -184,12 +184,12 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | Hugging Face | HF-DeepSeekR1 | DeepSeek-R1 | 131K | 1 | tools, coding, text, thinking | key |
 | OpenAI | OpenAI-GPT4oMini | gpt-4o-mini | 128K | 1 | tools, coding, text, images | key |
 | OpenAI | OpenAI-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| **Kiro** | **Kiro-ClaudeSonnet** | claude-sonnet-4 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
-| **Kiro** | **Kiro-ClaudeHaiku45** | claude-haiku-4-5 | 200K | 1 | tools, coding, text, images, thinking | **OAuth** |
-| **Codex** | **Codex-GPT54** | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
-| **Codex** | **Codex-GPT55** | gpt-5.5 | 200K | 1 | tools, coding, text, images, max, thinking | **OAuth** |
-| **Codex** | **Codex-O3** | o3 | 200K | 1 | tools, coding, text, thinking | **OAuth** |
-| **Codex** | **Codex-O4Mini** | o4-mini | 200K | 1 | tools, coding, text, thinking | **OAuth** |
+| Kiro | Kiro-ClaudeSonnet | claude-sonnet-4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
+| Kiro | Kiro-ClaudeHaiku45 | claude-haiku-4-5 | 200K | 1 | tools, coding, text, images, thinking | OAuth |
+| Codex | Codex-GPT54 | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
+| Codex | Codex-GPT55 | gpt-5.5 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
+| Codex | Codex-O3 | o3 | 200K | 1 | tools, coding, text, thinking | OAuth |
+| Codex | Codex-O4Mini | o4-mini | 200K | 1 | tools, coding, text, thinking | OAuth |
 
 ## How Routing Works
 

@@ -833,12 +833,17 @@ function transformRequest(provider, reqBody) {
         .replace(/# Identity[^\n]*\n[\s\S]*?(?=\n#|\n\n[A-Z])/i, "") // Identity section
         .trim();
 
-      // Remove sections we already cover better
+      // Remove sections we already cover better (prevents semantic duplication)
       existingSystem = existingSystem
-        .replace(/# Proactiveness\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle proactiveness
-        .replace(/# Code style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle code style
-        .replace(/# Tone and style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle tone
-        .replace(/IMPORTANT:\s*-?\s*Answer concisely[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "") // we handle conciseness
+        .replace(/# Proactiveness\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Code style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Tone and style\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Output efficiency\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Doing tasks\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Using your tools\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/# Executing actions with care\n[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/IMPORTANT:\s*-?\s*Answer concisely[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
+        .replace(/IMPORTANT:\s*Go straight to the point[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
         .trim();
 
       body.messages[0] = { ...body.messages[0], content: PROXY_SYSTEM + "\n\n" + existingSystem };
@@ -847,8 +852,9 @@ function transformRequest(provider, reqBody) {
     }
   }
 
-  // Deduplicate: remove repeated sentences/paragraphs in system message
-  // (can happen when proxy injects over IDE's own injected system prompt across turns)
+  // Deduplicate: remove repeated lines in system message
+  // Catches: stacked proxy injections, IDE instructions overlapping with ours,
+  // MCP/skill instructions repeated, tool descriptions duplicated
   if (body.messages?.[0]?.role === "system" && typeof body.messages[0].content === "string") {
     const sys = body.messages[0].content;
     const lines = sys.split("\n");
@@ -857,16 +863,22 @@ function transformRequest(provider, reqBody) {
     let removed = 0;
     for (const line of lines) {
       const trimmed = line.trim();
-      // Skip dedup for short lines (headers, blank, bullets under 20 chars)
-      if (trimmed.length < 20 || trimmed.startsWith("#") || trimmed.startsWith("-")) {
+      // Keep blank lines, very short lines, and markdown headers (structure)
+      if (trimmed.length === 0 || trimmed.length < 10 || /^#{1,4}\s/.test(trimmed)) {
         deduped.push(line);
         continue;
       }
-      if (seen.has(trimmed)) {
+      // Normalize for comparison: trim whitespace, lowercase, strip leading bullet/dash
+      const normalized = trimmed.replace(/^[-*•]\s*/, "").toLowerCase();
+      if (normalized.length < 15) {
+        deduped.push(line); // too short to be meaningful duplicate
+        continue;
+      }
+      if (seen.has(normalized)) {
         removed++;
         continue;
       }
-      seen.add(trimmed);
+      seen.add(normalized);
       deduped.push(line);
     }
     if (removed > 0) {
