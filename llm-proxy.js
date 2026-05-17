@@ -33,6 +33,10 @@ let PROVIDERS = [];
 let GROUPS = {};
 let providersVersion = 0;
 
+// Provider unique ID = name (encodes source + model shortname)
+// All systems (compat, scores, cooldown, quota, bans) key on provider.name
+// Same model from different sources = different names = independent tracking
+
 // ---------------------------------------------------------------------------
 // Load seed providers as fallback
 // ---------------------------------------------------------------------------
@@ -411,75 +415,114 @@ function estimateToolsTokens(tools) {
 
 // ---------------------------------------------------------------------------
 // Smart context compaction — hybrid approach:
-// Phase 1: Compact tool responses in-place (summarize, don't delete)
-// Phase 2: Priority-score messages, drop lowest first
-// Phase 3: If still over target, aggressive drop with summary
+// Strategy 1: Budget slots — hard caps per category
+// Strategy 2: Smart tool extraction — regex-based fact extraction, not truncation
+// Strategy 3: Re-read hints — LLM knows files were read and can re-request
 // ---------------------------------------------------------------------------
 
-// Summarize a tool response to essential info
-function compactToolResponse(msg) {
+// Smart tool response extraction — extract structured facts, not truncation
+function extractToolFacts(msg) {
   const content = typeof msg.content === "string" ? msg.content : "";
-  if (content.length < 200) return msg; // already small
+  if (content.length < 300) return msg; // already small
 
-  const name = msg.name || "tool";
-  const lines = content.split("\n").length;
-  const chars = content.length;
+  const name = (msg.name || "tool").toLowerCase();
+  const allLines = content.split("\n");
+  const lineCount = allLines.length;
 
-  // File read → "Read <file> (N lines)"
-  if (/read|cat|file/i.test(name)) {
-    const fileMatch = content.match(/^(\d+)\t/) ? `${lines} lines` : `${chars} chars`;
-    const preview = content.substring(0, 150).replace(/\n/g, " ");
-    return { ...msg, content: `[Read ${fileMatch}] ${preview}...` };
+  // File read → extract path, imports, exports, function signatures, classes
+  if (/read|cat|file|notebookread/i.test(name)) {
+    const parts = [];
+    // Detect file path from numbered lines (cat -n format) or content
+    const pathMatch = content.match(/^(?:File|Reading|Contents of)\s+[`"']?([^\s`"'\n]+)/im);
+    const filePath = pathMatch ? pathMatch[1] : "";
+
+    // Extract imports/requires
+    const imports = allLines.filter(l => /^\s*(?:import |from |require\(|const .* = require)/.test(l));
+    if (imports.length > 0) parts.push("Imports: " + imports.slice(0, 10).map(l => l.trim()).join("; "));
+
+    // Extract function/class signatures
+    const signatures = allLines.filter(l =>
+      /^\s*(?:(?:export\s+)?(?:async\s+)?function\s+\w|(?:export\s+)?class\s+\w|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(|module\.exports)/.test(l)
+    );
+    if (signatures.length > 0) parts.push("Signatures: " + signatures.slice(0, 15).map(l => l.trim()).join("; "));
+
+    // Extract error-related lines
+    const errors = allLines.filter(l => /error|throw|catch|reject|fail/i.test(l) && l.trim().length > 10);
+    if (errors.length > 0) parts.push("Error handling: " + errors.slice(0, 5).map(l => l.trim()).join("; "));
+
+    const hint = filePath
+      ? `[file: ${filePath} previously read — ${lineCount} lines. Use Read tool to re-read if needed]`
+      : `[file read — ${lineCount} lines. Use Read tool to re-read if needed]`;
+
+    return { ...msg, content: hint + "\n" + parts.join("\n") };
   }
-  // Grep/search → "N matches in M files"
-  if (/grep|search|glob|find|ripgrep/i.test(name)) {
-    const matchCount = (content.match(/\n/g) || []).length + 1;
-    const preview = content.substring(0, 200).replace(/\n/g, " | ");
-    return { ...msg, content: `[Search: ${matchCount} results] ${preview}...` };
+
+  // Grep/search → keep file:line matches, drop context
+  if (/grep|search|glob|find|ripgrep|rg/i.test(name)) {
+    const matches = allLines.filter(l => /:\d+:/.test(l) || /^\S+\.\w+$/.test(l.trim())); // file:line:content or just filenames
+    const matchCount = matches.length || lineCount;
+    const kept = matches.slice(0, 20).join("\n"); // keep top 20 matches
+    return { ...msg, content: `[Search: ${matchCount} results]\n${kept}${matchCount > 20 ? `\n...+${matchCount - 20} more` : ""}` };
   }
-  // Edit/Write → "Edited <file>"
+
+  // Edit/Write → keep confirmation + what changed
   if (/edit|write|patch/i.test(name)) {
-    const preview = content.substring(0, 200).replace(/\n/g, " ");
-    return { ...msg, content: `[Edit] ${preview}...` };
+    const pathMatch = content.match(/(?:file|path|updated|created|edited)\s*[:`"']?\s*([^\s`"'\n,]+\.\w+)/i);
+    const filePath = pathMatch ? pathMatch[1] : "";
+    const success = /success|updated|created|written|applied/i.test(content);
+    return { ...msg, content: `[${success ? "✓" : "?"} Edit${filePath ? ": " + filePath : ""}] ${content.substring(0, 200).replace(/\n/g, " ")}` };
   }
-  // Bash/exec → first/last lines
-  if (/bash|exec|shell|terminal/i.test(name)) {
-    const firstLines = content.split("\n").slice(0, 3).join("\n");
-    const lastLines = content.split("\n").slice(-2).join("\n");
-    return { ...msg, content: `[Command output ${lines} lines]\n${firstLines}\n...\n${lastLines}` };
+
+  // Bash/exec → exit code + first 5 + last 5 lines
+  if (/bash|exec|shell|terminal|command/i.test(name)) {
+    const exitMatch = content.match(/exit code:?\s*(\d+)/i) || content.match(/^(\d+)$/m);
+    const exitCode = exitMatch ? `exit=${exitMatch[1]}` : "";
+    const first = allLines.slice(0, 5).join("\n");
+    const last = allLines.slice(-5).join("\n");
+    return { ...msg, content: `[Command ${exitCode} ${lineCount} lines]\n${first}\n...\n${last}` };
   }
-  // Generic: truncate to 300 chars
-  return { ...msg, content: content.substring(0, 300) + `\n...[${chars} chars truncated]` };
+
+  // LSP/diagnostics → keep just the findings
+  if (/lsp|diagnostic|lint/i.test(name)) {
+    const findings = allLines.filter(l => /error|warning|info|hint/i.test(l));
+    return { ...msg, content: `[Diagnostics: ${findings.length} findings]\n${findings.slice(0, 10).join("\n")}` };
+  }
+
+  // Generic: structured truncation with hint
+  return { ...msg, content: `[Tool output ${lineCount} lines]\n${content.substring(0, 400)}\n...[${content.length} chars, use tool again if needed]` };
 }
 
 // Score a message for retention priority (higher = keep)
 function messagePriority(msg, index, total) {
   let score = 5; // base
 
-  // Recent messages = high priority (last 20%)
+  // Recency: exponential — recent msgs much more important
   const recency = index / total;
-  if (recency > 0.9) score += 8;      // last 10%
-  else if (recency > 0.8) score += 5;  // last 20%
-  else if (recency > 0.6) score += 2;  // last 40%
+  if (recency > 0.9) score += 10;      // last 10% — critical
+  else if (recency > 0.8) score += 6;  // last 20%
+  else if (recency > 0.6) score += 3;  // last 40%
+  else if (recency < 0.2) score -= 2;  // very old
 
   const content = typeof msg.content === "string" ? msg.content : "";
 
   if (msg.role === "user") {
-    score += 6; // user messages always important
-    if (/fix|implement|add|create|update|change|refactor|debug/i.test(content)) score += 3; // task instruction
+    score += 7; // user messages always important
+    if (/fix|implement|add|create|update|change|refactor|debug|deploy/i.test(content)) score += 3;
+    if (content.length < 20) score -= 2; // short "ok" / "continua"
   }
 
   if (msg.role === "assistant") {
-    if (msg.tool_calls?.length > 0) score += 4; // tool-using assistant = action
-    if (/because|decided|chose|architecture|design|approach/i.test(content)) score += 3; // decisions
-    if (/error|fix|bug|issue|problem|solved/i.test(content)) score += 2; // error handling
-    if (content.length < 100 && !msg.tool_calls?.length) score -= 3; // short ack without action
+    if (msg.tool_calls?.length > 0) score += 5; // tool-using assistant = took action
+    if (/because|decided|chose|architecture|design|approach|strategy/i.test(content)) score += 4; // decisions
+    if (/error|fix|bug|issue|problem|solved|resolved/i.test(content)) score += 3; // error handling
+    if (/```/.test(content)) score += 2; // contains code
+    if (content.length < 80 && !msg.tool_calls?.length) score -= 4; // short ack without action
   }
 
   if (msg.role === "tool") {
-    score += 1; // tool responses are least important (info already acted on)
-    // But edit/write results are more important
-    if (/edit|write|success/i.test(msg.name || "")) score += 2;
+    score += 1; // tool responses lowest base (info already acted on)
+    if (/edit|write|success|created|updated/i.test(msg.name || "")) score += 3; // mutations > reads
+    if (/read|cat|file/i.test(msg.name || "")) score += 0; // reads can be re-done
   }
 
   return score;
@@ -492,85 +535,152 @@ function compactMessages(messages, targetTokens, maxOutputTokens, mempalaceRefs)
   const nonSystem = messages.filter((m) => m.role !== "system");
   if (nonSystem.length < 6) return null;
 
-  // Phase 1: Compact tool responses in-place (keep msg, shrink content)
-  let working = nonSystem.map((m) => m.role === "tool" ? compactToolResponse(m) : m);
-  let currentTokens = estimateTokens([...system, ...working]);
-  const phase1Saved = estimateTokens([...system, ...nonSystem]) - currentTokens;
+  // === BUDGET SLOTS ===
+  // System: 100% (never touch)
+  // Tool schemas: separate (not in messages)
+  // Last 3 conversation turns (~6-12 msgs): 100% verbatim
+  // Everything else: compress to fit remaining budget
 
-  if (currentTokens + maxOutputTokens <= targetTokens) {
-    log(`COMPACT-P1: tool response compaction sufficient (saved ${phase1Saved}tok)`);
-    return { messages: [...system, ...working], removed: 0 };
+  const systemTokens = estimateTokens(system);
+  const budget = targetTokens - maxOutputTokens - systemTokens;
+  if (budget <= 0) return null;
+
+  // Protect last 3 turns (user+assistant+tools = ~6-12 msgs)
+  // Find last 3 user messages and everything after the first of those
+  let protectIdx = nonSystem.length;
+  let userCount = 0;
+  for (let i = nonSystem.length - 1; i >= 0; i--) {
+    if (nonSystem[i].role === "user") userCount++;
+    if (userCount >= 3) { protectIdx = i; break; }
+  }
+  const protectedMsgs = nonSystem.slice(protectIdx);
+  const compressibleMsgs = nonSystem.slice(0, protectIdx);
+  const protectedTokens = estimateTokens(protectedMsgs);
+  const compressibleBudget = budget - protectedTokens;
+
+  // If protected alone fits, only compress the old part
+  if (compressibleBudget <= 0 && protectedTokens + systemTokens + maxOutputTokens <= targetTokens) {
+    // Drop all old messages, keep only protected
+    const summaryMsg = { role: "assistant", content: buildCompactSummary(compressibleMsgs, mempalaceRefs) };
+    log(`COMPACT-BUDGET: old msgs dropped (protected ${protectedMsgs.length} msgs fit, ${compressibleMsgs.length} dropped)`);
+    return { messages: [...system, summaryMsg, ...protectedMsgs], removed: compressibleMsgs.length };
   }
 
-  // Phase 2: Priority-score all messages, drop lowest priority first
-  // Always keep: first user msg, last 8 msgs
-  const keepFirst = 1;
-  const keepLast = 8;
-  const droppable = working.slice(keepFirst, -keepLast);
+  // === PHASE 1: Smart extraction on OLD tool responses ===
+  let working = compressibleMsgs.map((m) =>
+    m.role === "tool" ? extractToolFacts(m) : m
+  );
+  let workingTokens = estimateTokens(working);
 
+  if (workingTokens + protectedTokens + systemTokens + maxOutputTokens <= targetTokens) {
+    log(`COMPACT-P1: smart extraction sufficient (${estimateTokens(compressibleMsgs)}→${workingTokens}tok, protected=${protectedTokens}tok)`);
+    return { messages: [...system, ...working, ...protectedMsgs], removed: 0 };
+  }
+
+  // === PHASE 2: Priority-based drop from compressed old messages ===
+  const firstUser = working[0]; // keep first user msg (original task)
+  const droppable = working.slice(1);
   if (droppable.length === 0) return null;
 
-  // Score and sort droppable messages
   const scored = droppable.map((m, i) => ({
     msg: m,
-    priority: messagePriority(m, i + keepFirst, working.length),
+    priority: messagePriority(m, i, working.length),
+    tokens: estimateTokens([m]),
     index: i,
   }));
-  scored.sort((a, b) => a.priority - b.priority); // lowest priority first
+  scored.sort((a, b) => a.priority - b.priority); // drop lowest first
 
-  // Drop messages one by one until we fit
   const dropped = new Set();
-  let droppedCount = 0;
+  let droppedTokens = 0;
+  const tokensToFree = workingTokens - compressibleBudget;
   for (const item of scored) {
-    if (currentTokens + maxOutputTokens <= targetTokens) break;
-    const msgTokens = estimateTokens([item.msg]);
-    currentTokens -= msgTokens;
+    if (droppedTokens >= tokensToFree) break;
+    droppedTokens += item.tokens;
     dropped.add(item.index);
-    droppedCount++;
   }
 
-  // Rebuild message list preserving order
-  const surviving = [];
-  surviving.push(working[0]); // first user
+  const surviving = [firstUser];
   for (let i = 0; i < droppable.length; i++) {
     if (!dropped.has(i)) surviving.push(droppable[i]);
   }
-  surviving.push(...working.slice(-keepLast)); // last 8
 
-  // Insert summary of dropped messages
-  let summaryText = `[CONTEXT COMPACTED — ${droppedCount} low-priority messages removed]\n`;
-  if (mempalaceRefs?.length > 0) {
-    summaryText += "Full context saved to MemPalace:\n";
-    for (const ref of mempalaceRefs) {
-      summaryText += `  → ${ref.title} [${ref.room}] — ${ref.summary}\n`;
-    }
-  }
-  summaryText += "Continue from the recent context below.";
+  const summaryMsg = { role: "assistant", content: buildCompactSummary(
+    scored.filter(s => dropped.has(s.index)).map(s => s.msg), mempalaceRefs
+  )};
 
-  const summaryMsg = { role: "assistant", content: summaryText };
-  const result = [...system, surviving[0], summaryMsg, ...surviving.slice(1)];
+  const result = [...system, surviving[0], summaryMsg, ...surviving.slice(1), ...protectedMsgs];
   const resultTokens = estimateTokens(result);
 
   if (resultTokens + maxOutputTokens <= targetTokens) {
-    log(`COMPACT-P2: priority-based drop (${droppedCount}/${droppable.length} msgs, saved ${phase1Saved + (estimateTokens([...system, ...working]) - resultTokens)}tok)`);
-    return { messages: result, removed: droppedCount };
+    log(`COMPACT-P2: priority drop ${dropped.size}/${droppable.length} msgs (${workingTokens}→${resultTokens - systemTokens - protectedTokens}tok old, protected=${protectedTokens}tok)`);
+    return { messages: result, removed: dropped.size };
   }
 
-  // Phase 3: Aggressive — keep only system + first user + summary + last 4
-  const lastFour = working.slice(-4);
-  const aggressiveResult = [...system, working[0], summaryMsg, ...lastFour];
+  // === PHASE 3: Aggressive — keep only first user + summary + protected ===
+  const aggressiveResult = [...system, firstUser, summaryMsg, ...protectedMsgs];
   const aggressiveTokens = estimateTokens(aggressiveResult);
 
   if (aggressiveTokens + maxOutputTokens <= targetTokens) {
-    log(`COMPACT-P3: aggressive (kept system + first + last 4, dropped ${nonSystem.length - 5} msgs)`);
-    return { messages: aggressiveResult, removed: nonSystem.length - 5 };
+    log(`COMPACT-P3: aggressive (kept first + protected ${protectedMsgs.length}, dropped ${compressibleMsgs.length - 1})`);
+    return { messages: aggressiveResult, removed: compressibleMsgs.length - 1 };
   }
 
-  // Phase 3b: Ultra-aggressive — last 2 only
-  const lastTwo = working.slice(-2);
-  const ultraResult = [...system, working[0], summaryMsg, ...lastTwo];
-  log(`COMPACT-P3b: ultra-aggressive (kept system + first + last 2, dropped ${nonSystem.length - 3} msgs)`);
-  return { messages: ultraResult, removed: nonSystem.length - 3 };
+  // Phase 3b: Ultra-aggressive — keep only last 2 messages
+  const lastTwo = nonSystem.slice(-2);
+  const ultraSummary = { role: "assistant", content: buildCompactSummary(nonSystem.slice(0, -2), mempalaceRefs) };
+  const ultraResult = [...system, ultraSummary, ...lastTwo];
+  log(`COMPACT-P3b: ultra-aggressive (kept system + last 2, dropped ${nonSystem.length - 2} msgs)`);
+  return { messages: ultraResult, removed: nonSystem.length - 2 };
+}
+
+// Build compact summary for dropped messages with re-read hints
+function buildCompactSummary(droppedMsgs, mempalaceRefs) {
+  const parts = [`[CONTEXT COMPACTED — ${droppedMsgs.length} messages removed]`];
+
+  // MemPalace references
+  if (mempalaceRefs?.length > 0) {
+    parts.push("Full context saved to MemPalace:");
+    for (const ref of mempalaceRefs) {
+      parts.push(`  → ${ref.title} [${ref.room}] — ${ref.summary}`);
+    }
+  }
+
+  // Extract re-read hints: which files were read (so LLM knows to re-request)
+  const filesRead = new Set();
+  const filesEdited = new Set();
+  const decisions = [];
+
+  for (const m of droppedMsgs) {
+    const content = typeof m.content === "string" ? m.content : "";
+    const name = (m.name || "").toLowerCase();
+
+    // Track files from tool responses
+    if (m.role === "tool") {
+      const pathMatch = content.match(/(?:file[: ]*|path[: ]*)([^\s\n,`"']+\.\w{1,10})/i)
+        || content.match(/^(\d+)\t.*?([^\s/]+\.\w{1,10})/m);
+      if (/read|cat|file/i.test(name) && pathMatch) filesRead.add(pathMatch[1]);
+      if (/edit|write/i.test(name) && pathMatch) filesEdited.add(pathMatch[1]);
+    }
+
+    // Track decisions from assistant messages
+    if (m.role === "assistant" && /because|decided|chose|approach|strategy|architecture/i.test(content)) {
+      const snippet = content.substring(0, 120).replace(/\n/g, " ").trim();
+      if (snippet) decisions.push(snippet);
+    }
+  }
+
+  if (filesRead.size > 0) {
+    parts.push(`Files previously read (re-read with Read tool if needed): ${[...filesRead].slice(0, 20).join(", ")}`);
+  }
+  if (filesEdited.size > 0) {
+    parts.push(`Files edited: ${[...filesEdited].slice(0, 20).join(", ")}`);
+  }
+  if (decisions.length > 0) {
+    parts.push("Key decisions: " + decisions.slice(0, 5).join(" | "));
+  }
+
+  parts.push("Continue from the recent context below.");
+  return parts.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -712,10 +822,40 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     log(`QUOTA: ${providerName} quota/usage limit exhausted — cooldown 1h`);
   }
 
-  // Socket hang up from providers that drop connection on quota (Codex free tier)
-  if (body.includes("socket hang up") && /codex|openai-oauth/i.test(providerName)) {
+  // Daily token limit (SambaNova: "Request would exceed the 1-day token limit")
+  if (body.includes("1-day token limit") || body.includes("rate_limit_daily")) {
+    setCooldown(providerName, 3600_000); // 1 hour cooldown (daily resets)
+    log(`QUOTA: ${providerName} daily token limit — cooldown 1h`);
+  }
+
+  // Billing/plan quota (Gemini: "exceeded your current quota", OpenAI: "exceeded your current quota")
+  if (body.includes("exceeded your current quota") || body.includes("check your plan and billing")) {
+    setCooldown(providerName, 3600_000); // 1 hour cooldown
+    log(`QUOTA: ${providerName} billing quota exceeded — cooldown 1h`);
+  }
+
+  // Tool results missing — Codex/OpenAI server-side state mismatch, cooldown briefly
+  if (body.includes("Tool results are missing") && statusCode === 500) {
+    setCooldown(providerName, 300_000); // 5 min cooldown
+    log(`COMPAT: ${providerName} tool state mismatch — cooldown 5min`);
+  }
+
+  // Socket hang up / streaming failed from providers that reject on quota (Codex free tier)
+  if ((body.includes("socket hang up") || body.includes("Streaming request failed")) && /codex/i.test(providerName)) {
     setCooldown(providerName, 3600_000);
-    log(`QUOTA: ${providerName} socket hang up (likely quota) — cooldown 1h`);
+    log(`QUOTA: ${providerName} connection rejected (likely quota) — cooldown 1h`);
+  }
+
+  // Codex/OpenAI usage_limit_reached
+  if (body.includes("usage_limit_reached") || (body.includes("usage limit") && body.includes("resets"))) {
+    setCooldown(providerName, 3600_000);
+    log(`QUOTA: ${providerName} usage limit reached — cooldown 1h`);
+  }
+
+  // NVIDIA rate limits (1000 credits/month free tier)
+  if ((body.includes("rate limit") || body.includes("credits") || body.includes("exceeded")) && /NVIDIA/i.test(providerName)) {
+    setCooldown(providerName, 3600_000);
+    log(`QUOTA: ${providerName} NVIDIA rate limit — cooldown 1h`);
   }
 
   // Context window from error (Cloudflare format: "exceeded this model context window limit (24000)")
@@ -790,6 +930,12 @@ function transformRequest(provider, reqBody) {
   if (provider.tc && /qwen3|qwq/i.test(provider.model) && !compat.no_extra_body) {
     if (!body.extra_body) body.extra_body = {};
     body.extra_body.enable_thinking = true;
+  }
+
+  // NVIDIA models: add reasoning_budget + enable_thinking for reasoning models
+  if (provider.tc && /nvidia|integrate\.api\.nvidia/i.test(provider.url) && /reasoning|nemotron.*omni/i.test(provider.model)) {
+    body.reasoning_budget = body.reasoning_budget || 16384;
+    body.chat_template_kwargs = { enable_thinking: true };
   }
 
   // Strip extra_body for providers that reject it (auto-learned)
@@ -879,6 +1025,26 @@ function transformRequest(provider, reqBody) {
     });
     const removed = before - body.messages.length;
     if (removed > 0) log(`TRANSFORM: stripped ${removed} orphaned tool responses`);
+
+    // Reverse: strip assistant tool_calls that have no matching tool response
+    // (causes 500 on Codex/OpenAI: "Tool results are missing for tool calls")
+    const answeredCallIds = new Set();
+    for (const msg of body.messages) {
+      if (msg.role === "tool" && msg.tool_call_id) answeredCallIds.add(msg.tool_call_id);
+    }
+    let strippedCalls = 0;
+    let totalCalls = 0;
+    for (const msg of body.messages) {
+      if (msg.role === "assistant" && msg.tool_calls?.length > 0) {
+        totalCalls += msg.tool_calls.length;
+        const orig = msg.tool_calls.length;
+        msg.tool_calls = msg.tool_calls.filter((tc) => answeredCallIds.has(tc.id));
+        strippedCalls += orig - msg.tool_calls.length;
+        if (msg.tool_calls.length === 0) delete msg.tool_calls;
+      }
+    }
+    if (DEV_MODE) log(`TOOL-SYNC: ${totalCalls} calls, ${answeredCallIds.size} responses, stripped ${strippedCalls} unanswered`);
+    if (strippedCalls > 0) log(`TRANSFORM: stripped ${strippedCalls} unanswered tool calls`);
   }
 
   // Inject system instructions — identity, execution rules, memory, date/time
@@ -940,7 +1106,31 @@ function transformRequest(provider, reqBody) {
       "- Check for MCP servers — mempalace, playwright, exa, context7, etc.",
       "- Read project config (CLAUDE.md/AGENTS.md/INSTRUCTIONS.md) — follow project rules.",
       "- Mental inventory of capabilities. Right tool for each sub-task. Tool exists = USE IT.",
+      "",
+      "PARALLEL EXECUTION & SUBAGENTS:",
+      "- When task has 2+ independent sub-tasks: use Agent tool to dispatch in parallel.",
+      "- Use TodoWrite to track sequential steps. Mark in_progress BEFORE starting, completed AFTER.",
+      "- For multi-file changes: dispatch subagents for independent files, merge results.",
+      "- For research + implementation: dispatch research agent, use results to implement.",
+      "- Subagent types: Explore (search), Plan (design), general-purpose (complex tasks).",
+      "- Don't dispatch subagents for trivial tasks — direct tool calls are faster.",
+      "- IMPORTANT: After dispatching, wait for results before proceeding to dependent steps.",
     ].join("\n");
+
+    // Category-specific system prompt extensions
+    const routedGroup = (reqBody.model || "").toLowerCase();
+    if (/thinking|reasoning/i.test(routedGroup)) {
+      PROXY_SYSTEM += "\n\nTHINKING MODE: Show step-by-step reasoning. Break complex problems into sub-problems. Verify each step before proceeding. Use chain-of-thought explicitly. Challenge your own assumptions.";
+    } else if (/image|vision/i.test(routedGroup)) {
+      PROXY_SYSTEM += "\n\nVISION MODE: Describe what you see in detail. Note layout, colors, text, UI elements. For screenshots: identify the app/page, highlight issues, suggest improvements. For diagrams: trace data flow and relationships. When asked to create/generate images: use available image generation tools (DALL-E, gpt-image, Artifacts). Provide detailed prompts for best results. For UI mockups: generate wireframes or high-fidelity mockups as requested.";
+    } else if (/text|chat/i.test(routedGroup)) {
+      PROXY_SYSTEM += "\n\nTEXT MODE: Focus on clarity, accuracy, and natural language. Structure responses with headings/lists for complex topics. Match the user's language and tone. Cite sources when making claims.";
+    } else if (/tool/i.test(routedGroup)) {
+      PROXY_SYSTEM += "\n\nTOOL MODE: Prioritize tool use over text explanations. Execute actions directly. Use parallel tool calls when independent. Verify results before reporting.";
+    } else if (/max|quality/i.test(routedGroup)) {
+      PROXY_SYSTEM += "\n\nMAX QUALITY MODE: Take extra care with accuracy. Double-check facts and code. Provide comprehensive answers. Consider edge cases. Use the best available tools and approaches.";
+    }
+    // coding is the default — already covered by base PROXY_SYSTEM
 
     // Append recalled memories from MemPalace
     if (reqBody._memoryInjection) {
@@ -1027,24 +1217,44 @@ function transformRequest(provider, reqBody) {
   }
 
   // Deduplicate: remove consecutive identical messages in history
-  // (can happen when compaction summary gets repeated)
+  // (can happen when compaction summary gets repeated, or after tool_calls stripping)
   if (body.messages && body.messages.length > 3) {
     const before = body.messages.length;
+    const dedupLog = DEV_MODE ? [] : null;
     body.messages = body.messages.filter((msg, i) => {
       if (i === 0) return true; // keep system
       const prev = body.messages[i - 1];
       if (msg.role !== prev.role) return true;
-      if (typeof msg.content !== "string" || typeof prev.content !== "string") return true;
-      return msg.content !== prev.content;
+      // Both must have comparable content
+      const msgContent = msg.content || "";
+      const prevContent = prev.content || "";
+      if (typeof msgContent !== "string" || typeof prevContent !== "string") return true;
+      // Skip dedup for messages with tool_calls (they're actions, not duplicates)
+      if (msg.tool_calls?.length > 0 || prev.tool_calls?.length > 0) return true;
+      // Skip dedup for tool responses (matched by tool_call_id, not content)
+      if (msg.role === "tool" || prev.role === "tool") return true;
+      if (msgContent === prevContent) {
+        if (dedupLog) dedupLog.push(`  msg[${i}] ${msg.role}: "${msgContent.substring(0, 60)}..."`);
+        return false;
+      }
+      return true;
     });
     const dupRemoved = before - body.messages.length;
-    if (dupRemoved > 0) log(`DEDUP: removed ${dupRemoved} consecutive duplicate messages`);
+    if (dupRemoved > 0) {
+      log(`DEDUP: removed ${dupRemoved} consecutive duplicate messages`);
+      if (dedupLog && dedupLog.length > 0) {
+        log(`DEDUP-DETAIL: samples (first 5):\n${dedupLog.slice(0, 5).join("\n")}`);
+      }
+    }
   }
 
   // Strip internal proxy fields — providers reject unknown fields (Gemini)
   delete body._sessionLastProvider;
   delete body._memoryInjection;
   delete body._compactRetries;
+  delete body._estimatedTokens;
+  delete body._midCompactRetries;
+  delete body._postCompactRetries;
 
   return body;
 }
@@ -1288,6 +1498,7 @@ const MODEL_SCORES = [
   { pat: /kimi.*k2\.6/i,                         coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /nemotron.*(?:120b|super)/i,            coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.2, vision: 0, speed: 0.5 },
   { pat: /gpt.*5\.[4-9]/i,                        coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.3 },
+  { pat: /gpt.*5\.[2-3]/i,                        coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.3 },
   { pat: /gpt.*5.*pro/i,                         coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.2 },
   { pat: /gpt.*5.*codex/i,                       coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /gpt.*5(?!\.\d)(?!.*mini|.*nano|.*pro|.*codex)/i, coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.3 },
@@ -1335,6 +1546,23 @@ const MODEL_SCORES = [
   { pat: /gemma/i,                               coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /cobuddy/i,                             coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /phi/i,                                 coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /mistral.*large.*675b/i,                 coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.2 },
+  { pat: /mistral.*small.*119b/i,                coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /mistral.*nemotron/i,                   coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /qwen.*3.*next/i,                       coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.4 },
+  { pat: /qwen.*3\.5.*122b/i,                    coding: 0.35, reasoning: 0.35, tools: 0.5, chat: 0.35, vision: 0.35, speed: 0.4 },
+  { pat: /solar/i,                               coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /step.*flash/i,                         coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /sarvam/i,                              coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /stockmark/i,                           coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.2 },
+  { pat: /ministral/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /mixtral/i,                             coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /nemotron.*nano.*vl/i,                  coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.35, speed: 0.4 },
+  { pat: /gpt.*oss.*20b/i,                       coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.5 },
+  { pat: /llama.*3\.2.*vision/i,                 coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.35, speed: 0.35 },
+  { pat: /compound/i,                             coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.35, vision: 0, speed: 0.4 },
+  { pat: /seed.*oss/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /mistral.*vibe/i,                       coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /openrouter\/(?:auto|free)/i,           coding: 0.15, reasoning: 0.15, tools: 0.15, chat: 0.15, vision: 0, speed: 0.3 },
   { pat: /llm7/i,                                coding: 0.15, reasoning: 0.15, tools: 0.15, chat: 0.15, vision: 0, speed: 0.3 },
   { pat: /perceptron/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
@@ -1549,16 +1777,28 @@ function getProvidersForAuto(messages, estimatedTokens, reqBody) {
 }
 
 function findProviderByModel(model) {
-  const alive = PROVIDERS.filter((p) => p.alive !== false);
-  // Exact match
-  let p = alive.find((p) => p.model === model && p.key);
-  if (p) return p;
+  const alive = PROVIDERS.filter((p) => p.alive !== false && p.key);
+
+  // Find all matches, prefer non-cooldown
+  function bestOf(candidates) {
+    if (candidates.length === 0) return null;
+    const available = candidates.filter((p) => !isOnCooldown(p.name) && !isQuotaDisabled(p.name));
+    if (available.length > 0) {
+      // Return highest-scored available provider
+      return available.sort((a, b) => providerScore(b) - providerScore(a))[0];
+    }
+    return candidates[0]; // fallback to first match even if on cooldown
+  }
+
+  // Exact model match (multiple sources may have same model)
+  let matches = alive.filter((p) => p.model === model);
+  if (matches.length > 0) return bestOf(matches);
   // Name match
-  p = alive.find((p) => p.name.toLowerCase() === model.toLowerCase() && p.key);
-  if (p) return p;
+  matches = alive.filter((p) => p.name.toLowerCase() === model.toLowerCase());
+  if (matches.length > 0) return bestOf(matches);
   // Partial match
-  p = alive.find((p) => p.model.includes(model) && p.key);
-  return p || null;
+  matches = alive.filter((p) => p.model.includes(model));
+  return bestOf(matches);
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,6 +1983,13 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
         detectIncompatibility(provider.name, statusCode, err.message || "");
         recordFailure(provider.name, err.message);
         log(`STREAM-ERR: ${provider.name} ${latency}ms status=${statusCode} headersSent=${headersSent} chunks=${dataChunks} err=${(err.message || "").substring(0, 80)}`);
+
+        // Stream abort with minimal data = likely quota/stall — cooldown
+        if (dataChunks <= 2 && /aborted|socket hang up|ECONNRESET/i.test(err.message || "")) {
+          setCooldown(provider.name, 3600_000);
+          log(`STREAM-STALL: ${provider.name} aborted after ${dataChunks} chunks — cooldown 1h`);
+        }
+
         reject({ error: err, statusCode, headersSent, latency });
       }
     );
@@ -1920,7 +2167,7 @@ async function handleChatCompletion(reqBody, clientRes) {
     for (const provider of providers) {
       try {
         const pCtx = getEffectiveContext(provider);
-        log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) ctx=${pCtx} stream_only=${!!getCompat(provider.name).stream_only}`);
+        log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) via=${provider.name.split("-")[0]} ctx=${pCtx} stream_only=${!!getCompat(provider.name).stream_only}`);
 
         if (isStreaming) {
           const compat = getCompat(provider.name);
@@ -1965,7 +2212,8 @@ async function handleChatCompletion(reqBody, clientRes) {
         if (err.headersSent) { clientRes.end(); return; }
         const status = err.status || err.statusCode || 500;
         const msg = err.body || err.error?.message || String(err);
-        if (status === 429) setCooldown(provider.name);
+        // Don't override longer cooldowns already set by routeToProvider/detectIncompatibility
+        if (status === 429 && !isOnCooldown(provider.name)) setCooldown(provider.name);
         recordFailure(provider.name, msg);
         const errFull = typeof msg === "string" ? msg.substring(0, 300) : String(msg).substring(0, 300);
         log(`FAIL: ${provider.name} status=${status} ${err.timeout ? "TIMEOUT" : ""} ${errFull}`);

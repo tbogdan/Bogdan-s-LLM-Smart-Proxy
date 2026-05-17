@@ -3,7 +3,7 @@ set -e
 
 echo "=== LLM Smart Proxy Setup ==="
 echo ""
-echo "14 models across 3 providers work WITHOUT any API keys (Kilo, OVH, LLM7)."
+echo "14 models across 3 sources work WITHOUT any API keys (Kilo, OVH, LLM7)."
 echo "Add more keys for additional providers."
 echo ""
 
@@ -52,9 +52,10 @@ if [ ! -f .env ]; then
       ["OPENAI_API_KEY"]="OpenAI (sk-proj-...) — at platform.openai.com"
       ["BIGMODEL_API_KEY"]="BigModel/GLM — free at open.bigmodel.cn"
       ["CLINE_API_KEY"]="Cline Provider (sk_...) — free at app.cline.bot (28 free models)"
+      ["MODELSCOPE_API_KEY"]="ModelScope (ms-...) — free at modelscope.ai/my/access/token (65 free models)"
     )
 
-    KEY_ORDER=(OPENAI_API_KEY GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COHERE_API_KEY HF_TOKEN OLLAMA_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID LLM7_API_KEY BIGMODEL_API_KEY CLINE_API_KEY)
+    KEY_ORDER=(OPENAI_API_KEY GROQ_API_KEY GEMINI_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY CEREBRAS_API_KEY NVIDIA_API_KEY ALIBABA_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY COHERE_API_KEY HF_TOKEN OLLAMA_API_KEY COPILOT_TOKEN SILICONFLOW_API_KEY CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID LLM7_API_KEY BIGMODEL_API_KEY CLINE_API_KEY MODELSCOPE_API_KEY)
 
     for KEY in "${KEY_ORDER[@]}"; do
       read -p "${KEY_NAMES[$KEY]}: " VALUE
@@ -124,7 +125,7 @@ echo "Health:         http://localhost:18900/health"
 echo "Models:         http://localhost:18900/v1/models"
 echo "Capabilities:   http://localhost:18900/v1/capabilities"
 echo ""
-echo "Works immediately with 14 models (3 providers: Kilo, OVH, LLM7) — no keys needed."
+echo "Works immediately with 14 models (3 sources: Kilo, OVH, LLM7) — no keys needed."
 echo "Add API keys to .env for more providers, then restart:"
 echo "  docker compose restart"
 echo ""

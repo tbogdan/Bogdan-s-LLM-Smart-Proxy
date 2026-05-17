@@ -38,6 +38,7 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 | Cloudflare | https://dash.cloudflare.com (also need Account ID) |
 | BigModel | https://open.bigmodel.cn |
 | Cline | https://app.cline.bot (28 free models, 356 total) |
+| ModelScope | [modelscope.ai/my/access/token](https://www.modelscope.ai/my/access/token) (65 free models) |
 
 No keys needed for: **Kilo** (anonymous), **OVH**, **LLM7**
 
@@ -48,7 +49,7 @@ Set `ENABLE_X=true` in `.env` to activate gateway proxies. Each runs as a Docker
 | Gateway | Enable flag | Auth command | What you get |
 |---------|-------------|-------------|--------------|
 | **Kiro** | `ENABLE_KIRO=true` | `node kiro-auth.js` | Free Claude Sonnet 4, Haiku 4.5 |
-| **Codex** | `ENABLE_CODEX=true` | `npx @openai/codex login` + copy auth.json | GPT-5.4/5.5, o3, o4-mini (ChatGPT sub) |
+| **Codex** | `ENABLE_CODEX=true` | `npx @openai/codex login` + copy auth.json | GPT-5.5/5.4/5.3/5.2 (ChatGPT sub) |
 
 Auth scripts open a browser URL for login — no manual cookie/token extraction needed.
 `setup.sh` runs auth automatically when tokens are missing.
@@ -244,14 +245,30 @@ seed-providers.json (source of truth)
 
 [Gateway Proxies (optional, Docker profiles)]
         +-- Kiro Gateway :10088   --> Claude Sonnet 4, Haiku 4.5 (free AWS Builder ID)
-        +-- Codex Proxy :10531    --> GPT-5.4/5.5, o3, o4-mini (ChatGPT subscription)
+        +-- Codex Proxy :10531    --> GPT-5.5/5.4/5.3/5.2 (ChatGPT subscription)
 
 [MemPalace MCP :8891] <-- persistent memory (sessions, tasks, preferences, errors)
         |
         +-- auto-save: session summaries, task progress, architecture, corrections
         +-- auto-recall: project context, task resume, error fixes, preferences
         +-- context compaction: save middle → compact → recover on "continue"
+
+[LLM Discovery Daemon]
+        +-- Every 6h: scan /models endpoints (API + local gateways)
+        +-- Test new models: chat + thinking capability
+        +-- Auto-provision with benchmark scoring (heuristic for unknown models)
+        +-- Incremental hot-reload: new providers available immediately
+        +-- Same model from different sources = independent providers/rate limits
 ```
+
+## Key Features
+
+- **Smart context compaction**: 3-phase (extract facts → priority drop → aggressive) preserves file contents + re-read hints
+- **Auto-learning**: learns provider quirks from errors (stream_options, tool_choice, max_tokens, content format)
+- **Per-provider effective context**: real context learned from errors, independent per source
+- **Category-specific prompts**: thinking, vision/image-gen, text, tools, max quality — injected per group
+- **Benchmark scoring**: 80+ model patterns (S/A/B/C per category) + heuristic fallback for unknown models
+- **Deduplication**: strips orphaned tool calls/responses, duplicate messages, stacked system prompts
 
 ## Troubleshooting
 

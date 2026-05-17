@@ -19,8 +19,9 @@ const REQUEST_TIMEOUT = 30_000;
 
 // Thinking model patterns
 const THINKING_PATTERNS = [
-  /qwen3/i, /qwq/i, /deepseek-v[34]/i, /gpt-oss/i, /kimi/i,
-  /gemini-2\.5/i, /magistral/i, /\b(o1|o3|o4)\b/i, /nemotron.*reason/i,
+  /qwen3/i, /qwq/i, /deepseek-v[34]/i, /deepseek.*r1/i, /gpt-oss/i, /kimi/i,
+  /gemini-2\.5/i, /gemini-3/i, /magistral/i, /\b(o1|o3|o4)\b/i, /nemotron.*reason/i,
+  /gpt-5/i, /claude.*sonnet[- _.]4/i, /claude.*opus/i, /claude.*haiku[- _.]4/i,
 ];
 
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
@@ -275,11 +276,22 @@ function getEndpoints() {
     });
   }
 
+  // ModelScope (Alibaba model hub — 65 free models)
+  if (process.env.MODELSCOPE_API_KEY) {
+    endpoints.push({
+      name: "ModelScope",
+      modelsUrl: "https://api-inference.modelscope.ai/v1/models",
+      chatUrl: "https://api-inference.modelscope.ai/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.MODELSCOPE_API_KEY}` },
+      key_env: "MODELSCOPE_API_KEY",
+    });
+  }
+
   // Cline Provider (public API — 356 models, 28 free)
   if (process.env.CLINE_API_KEY) {
     endpoints.push({
       name: "Cline",
-      modelsUrl: "https://api.cline.bot/api/v1/models",
+      modelsUrl: "https://api.cline.bot/api/v1/ai/cline/models",
       chatUrl: "https://api.cline.bot/api/v1/chat/completions",
       headers: { Authorization: `Bearer ${process.env.CLINE_API_KEY}` },
       key_env: "CLINE_API_KEY",
@@ -309,16 +321,16 @@ function detectCaps(modelId, modelData) {
   const caps = ["text"];
   const id = (modelId || "").toLowerCase();
 
-  // Coding
-  if (/coder|code|codex|starcoder|codellama|deepseek-v|laguna/i.test(id)) caps.push("coding");
+  // Coding — frontier models + code-specialized
+  if (/coder|code|codex|starcoder|codellama|deepseek-v[3-9]|laguna|gpt-[45]|claude.*sonnet|claude.*opus|command-a|nemotron.*super|qwen.*max|qwen.*plus|qwen.*235b/i.test(id)) caps.push("coding");
 
-  // Tools
-  if (modelData?.capabilities?.tools || /gpt|llama|qwen|mistral|gemini|nemotron|glm|deepseek|kimi|ring/i.test(id)) {
+  // Tools — most chat models support tools
+  if (modelData?.capabilities?.tools || /gpt|llama|qwen|mistral|gemini|nemotron|glm|deepseek|kimi|ring|claude|command|owl|granite|ministral/i.test(id)) {
     caps.push("tools");
   }
 
-  // Images
-  if (/vision|llava|scout|maverick|gemini|gpt-4o|pixtral/i.test(id)) caps.push("images");
+  // Images/vision
+  if (/vision|llava|scout|maverick|gemini|gpt-4o|gpt-5|pixtral|claude.*sonnet.*4|claude.*opus|omni/i.test(id)) caps.push("images");
 
   // Video
   if (/gemini/i.test(id)) caps.push("video");
@@ -437,23 +449,38 @@ function saveDiscovery(data) {
 // Write providers.json: merge seed + discovered
 // ---------------------------------------------------------------------------
 function writeProvidersFile(seed, discoveredProviders) {
-  // Start with all seed providers
+  // Start with EXISTING providers.json to preserve previously discovered providers
   const providerMap = new Map();
 
+  // Load existing file first (preserves providers from previous scan cycles)
+  try {
+    if (fs.existsSync(PROVIDERS_FILE)) {
+      const existing = JSON.parse(fs.readFileSync(PROVIDERS_FILE, "utf8"));
+      for (const p of (existing.providers || [])) {
+        providerMap.set(p.name, p);
+      }
+    }
+  } catch {}
+
+  // Layer seed providers on top (source of truth for seed config)
   for (const sp of (seed.providers || [])) {
-    providerMap.set(sp.name, { ...sp, seed: true, alive: true });
+    const existing = providerMap.get(sp.name);
+    if (existing) {
+      // Keep alive/last_tested from existing, update config from seed
+      providerMap.set(sp.name, { ...sp, seed: true, alive: existing.alive, last_tested: existing.last_tested });
+    } else {
+      providerMap.set(sp.name, { ...sp, seed: true, alive: true });
+    }
   }
 
-  // Merge discovered providers (add new ones, update alive status of existing)
+  // Merge current scan results (update alive status, add new discoveries)
   for (const dp of discoveredProviders) {
     if (providerMap.has(dp.name)) {
-      // Seed provider: update alive status from test results, keep seed data
       const existing = providerMap.get(dp.name);
       existing.alive = dp.alive;
       existing.last_tested = dp.last_tested;
       providerMap.set(dp.name, existing);
     } else {
-      // New discovered provider: add it
       providerMap.set(dp.name, { ...dp, seed: false });
     }
   }
@@ -574,8 +601,9 @@ async function runDiscoveryScan() {
   const endpoints = getEndpoints();
   const discovery = loadDiscovery();
   const seedNames = new Set((seed.providers || []).map((p) => p.name));
-  const knownModels = new Set(discovery.models.map((m) => `${m.provider}:${m.model}`));
+  const knownModels = new Set(discovery.models.map((m) => `${m.provider}|${m.name || ""}|${m.model}`));
   let newCount = 0;
+  let prevNewCount = 0;
 
   // Phase 1: Test all seed providers for alive status
   log("Phase 1: Testing seed providers...");
@@ -614,9 +642,6 @@ async function runDiscoveryScan() {
 
       for (const m of models) {
         const modelId = m.id || m.name;
-        const key = `${ep.name}:${modelId}`;
-
-        if (knownModels.has(key)) continue;
 
         // Skip models that are already in seed (they are handled separately)
         const matchesSeed = (seed.providers || []).some(
@@ -644,15 +669,23 @@ async function runDiscoveryScan() {
         // Determine thinking capable
         const tc = thinkingVerified || THINKING_PATTERNS.some((p) => p.test(modelId));
 
-        // Build provider name
+        // Build provider name — unique per source+model
         const shortName = modelId.split("/").pop().replace(/[^a-zA-Z0-9]/g, "").substring(0, 20);
-        const providerName = `${ep.name}-${shortName}`;
+        let providerName = `${ep.name}-${shortName}`;
 
-        // Skip if seed already has a provider with this name
-        if (seedNames.has(providerName)) continue;
+        // Unique key = source + provider name + model ID
+        // Same model from different sources (Kilo, Codex, NVIDIA) = different providers, keep all
+        const uniqueKey = `${ep.name}|${providerName}|${modelId}`;
+        if (knownModels.has(uniqueKey)) continue;
+
+        // If name collides with seed, suffix to avoid overwrite
+        if (seedNames.has(providerName)) {
+          providerName = `${providerName}-d`; // -d = discovered duplicate
+        }
 
         const entry = {
           provider: ep.name,
+          name: providerName,
           model: modelId,
           context_length: m.context_length || m.max_tokens || 4096,
           capabilities: caps,
@@ -662,7 +695,7 @@ async function runDiscoveryScan() {
         };
 
         discovery.models.push(entry);
-        knownModels.add(key);
+        knownModels.add(uniqueKey);
         newCount++;
         log(`  NEW: ${ep.name}/${modelId} caps=[${caps.join(",")}] thinking=${thinkingVerified}`);
 
@@ -687,6 +720,14 @@ async function runDiscoveryScan() {
     } catch (err) {
       log(`  ${ep.name}: error - ${err.message}`);
     }
+
+    // Incremental write: after each endpoint scan, update providers.json
+    // so new providers are available to the proxy immediately (hot-reload via fs.watch)
+    if (newCount > prevNewCount) {
+      writeProvidersFile(seed, discoveredProviders);
+      log(`  → Incremental write: ${newCount - prevNewCount} new providers available now`);
+    }
+    prevNewCount = newCount;
   }
 
   // Save raw discovery data

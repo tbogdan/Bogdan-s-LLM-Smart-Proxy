@@ -323,13 +323,14 @@
       "model": "gemini-3-flash-preview",
       "context": 1048576,
       "tier": 1,
-      "tc": false,
+      "tc": true,
       "caps": [
         "tools",
         "coding",
         "text",
         "images",
-        "video"
+        "video",
+        "thinking"
       ],
       "headers": {}
     },
@@ -534,7 +535,9 @@
       "tc": false,
       "caps": [
         "tools",
-        "text"
+        "text",
+        "coding",
+        "images"
       ],
       "headers": {}
     },
@@ -631,7 +634,7 @@
       "model": "nvidia/nemotron-3-super-120b-a12b:free",
       "context": 262144,
       "tier": 2,
-      "tc": true,
+      "tc": false,
       "caps": [
         "tools",
         "coding",
@@ -676,7 +679,7 @@
       "model": "inclusionai/ring-2.6-1t:free",
       "context": 262144,
       "tier": 2,
-      "tc": true,
+      "tc": false,
       "caps": [
         "tools",
         "coding",
@@ -739,7 +742,7 @@
       "model": "baidu/cobuddy:free",
       "context": 131072,
       "tier": 3,
-      "tc": true,
+      "tc": false,
       "caps": [
         "tools",
         "text"
@@ -813,7 +816,7 @@
       "model": "qwen-turbo",
       "context": 131072,
       "tier": 2,
-      "tc": true,
+      "tc": false,
       "caps": [
         "tools",
         "text"
@@ -1068,7 +1071,7 @@
       "url": "http://kiro-gateway:10088/v1/chat/completions",
       "key_env": "KIRO_API_KEY",
       "model": "claude-haiku-4-5",
-      "context": 131072,
+      "context": 200000,
       "tier": 1,
       "tc": true,
       "caps": [
@@ -1105,7 +1108,7 @@
     {
       "name": "Codex-GPT55",
       "model": "gpt-5.5",
-      "context": 200000,
+      "context": 1000000,
       "tier": 1,
       "tc": true,
       "caps": [
@@ -1114,42 +1117,6 @@
         "text",
         "images",
         "max",
-        "thinking"
-      ],
-      "url": "http://codex-proxy:10531/v1/chat/completions",
-      "key_env": "CODEX_API_KEY",
-      "no_auth": false,
-      "headers": {},
-      "seed": true
-    },
-    {
-      "name": "Codex-O3",
-      "model": "o3",
-      "context": 200000,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "tools",
-        "coding",
-        "text",
-        "thinking"
-      ],
-      "url": "http://codex-proxy:10531/v1/chat/completions",
-      "key_env": "CODEX_API_KEY",
-      "no_auth": false,
-      "headers": {},
-      "seed": true
-    },
-    {
-      "name": "Codex-O4Mini",
-      "model": "o4-mini",
-      "context": 200000,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "tools",
-        "coding",
-        "text",
         "thinking"
       ],
       "url": "http://codex-proxy:10531/v1/chat/completions",
@@ -1221,6 +1188,211 @@
       "no_auth": false,
       "headers": {},
       "seed": true
+    },
+    {
+      "name": "MS-DSV32",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-DSV4Flash",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-Qwen3Coder",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-DSR1",
+      "model": "deepseek-ai/DeepSeek-R1-0528",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-GPT54Mini",
+      "model": "gpt-5.4-mini",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-GPT53Codex",
+      "model": "gpt-5.3-codex",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Codex-GPT52",
+      "model": "gpt-5.2",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "thinking"
+      ],
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "NVIDIA-KimiK26",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "moonshotai/kimi-k2.6",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-MistralNemotron",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "mistralai/mistral-nemotron",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-SeedOSS36B",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "bytedance/seed-oss-36b-instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Mistral-Large",
+      "url": "https://api.mistral.ai/v1/chat/completions",
+      "key_env": "MISTRAL_API_KEY",
+      "model": "mistral-large-2411",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-CompoundMini",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "groq/compound-mini",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
     }
   ],
   "groups": {

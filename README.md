@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 73+ LLM models across 25 providers with automatic failover, capability-based routing, and smart scoring.
+A zero-dependency Node.js proxy that routes requests to 150+ LLM models across 17 providers and 26 sources with auto-discovery with automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **73+ LLM models across 25 providers** with automatic failover on errors
+- **150+ LLM models across 17 providers and 26 sources with auto-discovery** with automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
@@ -117,9 +117,11 @@ Groups automatically route to the best-scoring provider that matches the capabil
 
 ## Provider List
 
-"Provider" = API service where you create account and get key. "Name" = proxy identifier you can use in `model` field.
+- **Source** = API service (Groq, NVIDIA, Kilo, etc.) — where you create account and get key
+- **Provider** = unique proxy identifier (source + model) — each tracked independently for scoring, cooldowns, rate limits
+- Same model from different sources = different providers = independent rate limits
 
-| Provider | Name | Model | Context | Tier | Capabilities | Auth |
+| Source | Provider | Model | Context | Tier | Capabilities | Auth |
 |----------|------|-------|---------|------|-------------|------|
 | GitHub Copilot | Copilot-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
 | GitHub Copilot | Copilot-GPT5mini | gpt-5-mini | 128K | 1 | tools, coding, text, thinking | key |
@@ -190,32 +192,99 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | Cline | Cline-LagunaM1 | laguna-m.1:free | 131K | 2 | coding | key |
 | Cline | Cline-LagunaXS2 | laguna-xs.2:free | 131K | 3 | coding | key |
 | Cline | Cline-Cobuddy | cobuddy:free | 131K | 3 | tools, text | key |
+| Codex | Codex-GPT55 | gpt-5.5 | 1M | 1 | tools, coding, text, images, max, thinking | OAuth |
 | Codex | Codex-GPT54 | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
-| Codex | Codex-GPT55 | gpt-5.5 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
-| Codex | Codex-O3 | o3 | 200K | 1 | tools, coding, text, thinking | OAuth |
-| Codex | Codex-O4Mini | o4-mini | 200K | 1 | tools, coding, text, thinking | OAuth |
+| Codex | Codex-GPT54Mini | gpt-5.4-mini | 200K | 1 | tools, coding, text, thinking | OAuth |
+| Codex | Codex-GPT53Codex | gpt-5.3-codex | 200K | 1 | tools, coding, text, max, thinking | OAuth |
+| Codex | Codex-GPT52 | gpt-5.2 | 200K | 1 | tools, coding, text, images, thinking | OAuth |
 
 ## How Routing Works
 
 1. Request arrives (e.g. `model: "auto"` or `model: "auto-coding"`)
 2. Proxy detects use case from messages: tools, coding, thinking, images, agent/IDE mode
 3. Recalls relevant memories from MemPalace (project context, preferences, past errors)
-4. Injects core instructions + recalled memories into system prompt
-5. Estimates token count, checks if context exceeds 80% of best provider → proactive compaction
-6. Filters providers by: group capability, context size, cooldown, bans, quota
-7. Scores and ranks providers:
+4. Injects category-specific system prompt + recalled memories
+5. Filters providers by: group capability, effective context, cooldown, bans, quota
+6. Scores and ranks providers:
    - Base score: success rate (50%) + latency (30%) + tier (20%)
-   - Smartness bonus: more capabilities, thinking, coding, larger context, known strong models
-   - Agent bonus: tier 1 preferred, tools required, small models penalized
-   - Compat penalty: auto-learned incompatibilities (reasoning_content, extra_body, max_tokens, tools limit)
-   - Stalling penalty: -0.05 per stalling incident
-8. Transforms request per provider: strips incompatible fields, caps max_tokens/tools, adds thinking params
-9. Routes to highest-scoring provider
-10. On failure: auto-learns incompatibility, retries next provider (30s cooldown on 429)
-11. On stalling (2x "continue" = 5min cooldown, 3x = ban from group)
-12. If context too large: proxy saves full context to MemPalace, compacts messages (keeps system + first task + last 4 messages + summary), retries with smaller context
-13. If still too large after proxy compaction: returns `context_length_exceeded` to trigger IDE-side compaction
-14. Saves session progress, task state, errors, preferences to MemPalace (async) — recoverable on "continue"
+   - Benchmark scoring: 80+ model patterns rated S/A/B/C per category (coding, reasoning, tools, chat, vision, speed)
+   - Context-aware: providers with more headroom for this request score higher
+   - Heuristic fallback: unknown models scored by name patterns (model family, size, version)
+   - Compat penalty: auto-learned incompatibilities (stream_options, tool_choice, content arrays, max_tokens)
+   - Session affinity: +0.4 for same provider that worked last
+7. Transforms request per provider:
+   - Per-provider context compaction if tokens > 95% of effective context
+   - Dynamic max_tokens cap (input + output ≤ effective context)
+   - Strips incompatible fields, caps tools, adds thinking params (Qwen3, NVIDIA reasoning)
+   - Fixes empty function names, strips orphaned tool calls/responses
+   - Deduplicates system prompt lines and consecutive identical messages
+8. Routes to highest-scoring provider
+9. On failure: auto-learns incompatibility, reroutes to next provider
+   - Rate limit (429) → 30s cooldown
+   - Quota exhausted → 1h cooldown
+   - Stream abort after 1-2 chunks → 1h cooldown (likely quota)
+   - Context too large → mid-loop compaction at 80% of failing provider's effective context
+10. If ALL providers fail with context errors:
+    - Post-compact at 70% of max effective context → retry all
+    - Post-compact at 55% → retry all
+    - Final fallback: `context_length_exceeded` → IDE compacts on its side
+
+## Smart Context Compaction
+
+When context exceeds provider limits, the proxy uses a 3-phase strategy:
+
+**Phase 1 — Smart Extraction** (zero message loss):
+- Old tool responses summarized with regex-based fact extraction (not truncation)
+- File reads → path + imports + function signatures + re-read hint
+- Grep results → top 20 file:line matches
+- Edit/Write → confirmation + file path
+- Bash → exit code + first/last 5 lines
+- Recent messages (last 3 turns) always kept verbatim
+
+**Phase 2 — Priority-Based Drop**:
+- Each message scored by: recency (exponential), role importance, action content
+- User instructions, decisions, code blocks scored highest
+- Short acks, old tool reads scored lowest
+- Drops lowest-priority messages until context fits
+
+**Phase 3 — Aggressive**:
+- Keeps only system + first user message + summary + last 4 messages
+- Summary includes: MemPalace references, files read (with re-read hints), files edited, key decisions
+
+## Category-Specific Behavior
+
+| Group | System Prompt Extension |
+|-------|------------------------|
+| `auto-coding` | Default — full coding workflow (FLOW, tool strategy, code quality) |
+| `auto-thinking` | Chain-of-thought reasoning, step verification, assumption challenging |
+| `auto-images` | Vision analysis + image generation (DALL-E, mockups, diagrams) |
+| `auto-text` | Clarity, structure, language matching, source citations |
+| `auto-tools` | Prioritize tool execution, parallel calls, verify results |
+| `auto-max` | Extra accuracy, edge cases, comprehensive analysis |
+
+## Auto-Discovery
+
+Every 6 hours, the discovery daemon scans all provider `/v1/models` endpoints:
+- Tests each model with a chat request
+- Detects capabilities: coding, tools, images, video, thinking (verified with reasoning test)
+- New providers available to proxy immediately via incremental hot-reload
+- Same model from different sources = separate providers with independent rate limits
+- Benchmark scores auto-assigned via heuristic (model family, size, version patterns)
+
+## Auto-Learning
+
+The proxy learns provider-specific quirks from errors and adapts:
+
+| Error | What's Learned | Action |
+|-------|---------------|--------|
+| `stream_options rejected` | Provider needs stream_options stripped when stream=false | Auto-strip on future requests |
+| `tool_choice not supported` | Provider can't handle tool_choice param | Auto-strip |
+| `content array not string` | Provider needs flattened content (Cloudflare, BigModel) | Auto-flatten |
+| `max_tokens too large` | Provider has lower max_tokens cap | Auto-cap to learned limit |
+| `context window exceeded` | Provider's real context is smaller than advertised | Update effective context |
+| `function_response.name empty` | Provider rejects empty tool names | Auto-fix to "unknown_tool" |
+| `Tool results missing` | Server-side state mismatch | 5min cooldown |
+| Stream abort after 1-2 chunks | Likely quota exhaustion | 1h cooldown |
 
 ## Adding New Providers
 
@@ -313,7 +382,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 
 ## Get Free API Keys
 
-14 models work with zero keys (Kilo, OVH, LLM7). Add keys for wider coverage:
+14 models across 3 sources work with zero keys (Kilo, OVH, LLM7). Add keys + sources for wider coverage:
 
 | Provider | Get free key at | Models |
 |----------|----------------|--------|
@@ -337,8 +406,9 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | **OVH** | **No key needed** | **5 models (open endpoint)** |
 | **LLM7** | **No key needed** | **1 model (open endpoint)** |
 | Kiro | Free AWS Builder ID | Claude Sonnet 4, Haiku 4.5 (via kiro-gateway, OAuth) |
-| Codex | ChatGPT subscription | GPT-5.4/5.5, o3, o4-mini (via OAuth proxy) |
+| Codex | ChatGPT subscription | GPT-5.5/5.4/5.3/5.2 (via OAuth proxy) |
 | Cline | Free at app.cline.bot | 28 free models + 356 total (OpenAI-compatible API) |
+| ModelScope | Free at [modelscope.ai/my/access/token](https://www.modelscope.ai/my/access/token) | 65 free models — DeepSeek V3.2/V4, Qwen3 Coder, R1 |
 
 > ⚠️ **Alibaba free tier**: Each model gets 1M tokens free for 90 days. After that, requests are **charged silently** by default. To stay safe, enable **"Free Quota Only"** mode in the [Alibaba console](https://dashscope.console.aliyun.com) — the proxy will auto-detect the 403 error and disable the provider.
 
@@ -377,6 +447,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `ENABLE_CODEX` | Enable Codex OAuth proxy | `true` / `false` |
 | `CODEX_API_KEY` | Codex proxy API key | `proxy` |
 | `CLINE_API_KEY` | Cline Provider API key (app.cline.bot) | `cline_xxx` |
+| `MODELSCOPE_API_KEY` | ModelScope API key ([get token](https://www.modelscope.ai/my/access/token)) | `ms-xxx` |
 
 ## Recommended Tools
 
@@ -516,7 +587,7 @@ node kiro-auth.js
 
 Auth script opens `https://app.kiro.dev/signin` with PKCE challenge → user logs in with free AWS Builder ID → captures refresh token → saves to `.env`. Token auto-refreshes inside the container.
 
-### OpenAI Codex Proxy — GPT-5.4/5.5, o3, o4-mini
+### OpenAI Codex Proxy — GPT-5.5/5.4/5.3/5.2
 
 Uses ChatGPT subscription via OAuth. Powered by [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) by [@EvanZhouDev](https://github.com/EvanZhouDev).
 
@@ -582,7 +653,7 @@ Client Request
 
 [Gateway Proxies (optional)]
      +-- Kiro Gateway :10088     --> Claude Sonnet 4, Haiku 4.5 (free AWS Builder ID)
-     +-- Codex Proxy :10531      --> GPT-5.4/5.5, o3, o4-mini (ChatGPT subscription)
+     +-- Codex Proxy :10531      --> GPT-5.5/5.4/5.3/5.2 (ChatGPT subscription)
 
 [LLM Discovery Daemon]
      |
