@@ -263,11 +263,12 @@ seed-providers.json (source of truth)
 
 ## Key Features
 
-- **Smart context compaction**: 3-phase (extract facts → priority drop → aggressive) preserves file contents + re-read hints
+- **IDE-first context management**: returns `context_length_exceeded` early so IDE compacts (IDE knows conversation best). Per-provider safety compaction as fallback
 - **Auto-learning**: learns provider quirks from errors (stream_options, tool_choice, max_tokens, content format)
 - **Per-provider effective context**: real context learned from errors, independent per source
 - **Category-specific prompts**: thinking, vision/image-gen, text, tools, max quality — injected per group
 - **Benchmark scoring**: 80+ model patterns (S/A/B/C per category) + heuristic fallback for unknown models
+- **Right-sizing**: small requests → fast small-context models; context grows → scales to larger providers; saves 1M-context providers for when actually needed
 - **Deduplication**: strips orphaned tool calls/responses, duplicate messages, stacked system prompts
 
 ## Troubleshooting

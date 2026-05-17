@@ -14,7 +14,7 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const DISCOVERY_FILE = path.join(DATA_DIR, "discovery.json");
 const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
-const SCAN_INTERVAL = 6 * 60 * 60_000; // 6 hours
+const SCAN_INTERVAL = 2 * 60 * 60_000; // 2 hours
 const REQUEST_TIMEOUT = 30_000;
 
 // Thinking model patterns
@@ -525,7 +525,7 @@ function loadProvidersFromFile() {
 async function testSeedProviders(seed) {
   const results = [];
   const RETEST_OK_MS = 3.5 * 24 * 60 * 60_000; // retest alive providers every 3.5 days
-  const RETEST_FAIL_MS = 6 * 60 * 60_000; // retest dead providers every 6h
+  const RETEST_FAIL_MS = 2 * 60 * 60_000; // retest dead providers every 2h
 
   // Load existing test results from providers.json
   const existingConfig = loadProvidersFromFile();

@@ -37,6 +37,30 @@ let providersVersion = 0;
 // All systems (compat, scores, cooldown, quota, bans) key on provider.name
 // Same model from different sources = different names = independent tracking
 
+// Session token tracking
+const sessionStats = {}; // { sessionId: { totalInputTokens, totalOutputTokens, requests, startTime, lastRequest } }
+
+// Session compaction cache — store compacted messages so next request reuses them
+// instead of IDE sending full history and us re-compacting from scratch
+const sessionCompactCache = {}; // { sessionId: { compactedMessages, originalMsgCount, timestamp } }
+
+function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) {
+  if (!sessionStats[sessionId]) {
+    sessionStats[sessionId] = { totalInputTokens: 0, totalOutputTokens: 0, requests: 0, startTime: Date.now(), lastRequest: 0, providers: {} };
+  }
+  const s = sessionStats[sessionId];
+  s.totalInputTokens += inputTokens;
+  s.totalOutputTokens += outputTokens || 0;
+  if (inputTokens > 0) s.requests++;
+  s.lastRequest = Date.now();
+  if (providerName) {
+    if (!s.providers[providerName]) s.providers[providerName] = { input: 0, output: 0, requests: 0 };
+    s.providers[providerName].input += inputTokens;
+    s.providers[providerName].output += outputTokens || 0;
+    if (inputTokens > 0) s.providers[providerName].requests++;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Load seed providers as fallback
 // ---------------------------------------------------------------------------
@@ -432,7 +456,9 @@ function detectGarbledText(text) {
   const digitLetterSoup = (text.match(/\d[a-zA-Z]|[a-zA-Z]\d/g) || []).length;
 
   // 6. Nonsense fragments: random capitalization mid-word (XICl, hiY, digu)
-  const nonsenseFragments = (text.match(/[a-z][A-Z][a-z]|[A-Z]{2,}[a-z][A-Z]/g) || []).length;
+  // Exclude common programming patterns: camelCase (taskList), PascalCase (TaskList), acronyms (API, URL)
+  const allFragments = text.match(/[a-z][A-Z][a-z]|[A-Z]{2,}[a-z][A-Z]/g) || [];
+  const nonsenseFragments = allFragments.filter(f => !/^[a-z][A-Z][a-z]+$/.test(f)).length; // keep only truly random ones
 
   // 7. High unique-word ratio with short words (garble = many unique random fragments)
   const uniqueWords = new Set(words.map(w => w.toLowerCase()));
@@ -454,7 +480,7 @@ function detectGarbledText(text) {
   else if (nonsenseFragments > 1) garbleScore += 1;
   if (uniqueRatio > 0.95 && words.length > 10) garbleScore += 1; // almost all words unique = random
 
-  return garbleScore >= 3;
+  return garbleScore >= 5;
 }
 
 // Also estimate tools definition array size
@@ -627,43 +653,74 @@ function compactMessages(messages, targetTokens, maxOutputTokens, mempalaceRefs)
     return { messages: [...system, ...working, ...protectedMsgs], removed: 0 };
   }
 
-  // === PHASE 2: Priority-based drop from compressed old messages ===
-  const firstUser = working[0]; // keep first user msg (original task)
-  const droppable = working.slice(1);
-  if (droppable.length === 0) return null;
+  // === PHASE 2: Group-aware priority drop ===
+  // Group messages into atomic units: assistant+tool_calls+tool_responses = one unit
+  const firstUser = working[0];
+  const rest = working.slice(1);
+  if (rest.length === 0) return null;
 
-  const scored = droppable.map((m, i) => ({
-    msg: m,
-    priority: messagePriority(m, i, working.length),
-    tokens: estimateTokens([m]),
-    index: i,
+  const groups = [];
+  let i = 0;
+  while (i < rest.length) {
+    const msg = rest[i];
+    if (msg.role === "assistant" && msg.tool_calls?.length > 0) {
+      // Collect assistant + following tool responses as one atomic group
+      const group = [msg];
+      const callIds = new Set(msg.tool_calls.map(tc => tc.id).filter(Boolean));
+      let j = i + 1;
+      while (j < rest.length && rest[j].role === "tool" && callIds.has(rest[j].tool_call_id)) {
+        group.push(rest[j]);
+        j++;
+      }
+      groups.push(group);
+      i = j;
+    } else {
+      groups.push([msg]);
+      i++;
+    }
+  }
+
+  // Score each group (use max priority of members)
+  const scoredGroups = groups.map((group, gi) => ({
+    group,
+    priority: Math.max(...group.map((m, mi) => messagePriority(m, gi * 3 + mi, rest.length))),
+    tokens: estimateTokens(group),
+    index: gi,
   }));
-  scored.sort((a, b) => a.priority - b.priority); // drop lowest first
+  scoredGroups.sort((a, b) => a.priority - b.priority); // drop lowest first
 
-  const dropped = new Set();
+  const droppedGroups = new Set();
   let droppedTokens = 0;
   const tokensToFree = workingTokens - compressibleBudget;
-  for (const item of scored) {
+  for (const item of scoredGroups) {
     if (droppedTokens >= tokensToFree) break;
     droppedTokens += item.tokens;
-    dropped.add(item.index);
+    droppedGroups.add(item.index);
   }
 
   const surviving = [firstUser];
-  for (let i = 0; i < droppable.length; i++) {
-    if (!dropped.has(i)) surviving.push(droppable[i]);
+  let droppedMsgCount = 0;
+  for (let gi = 0; gi < groups.length; gi++) {
+    if (droppedGroups.has(gi)) {
+      droppedMsgCount += groups[gi].length;
+    } else {
+      surviving.push(...groups[gi]);
+    }
   }
 
-  const summaryMsg = { role: "assistant", content: buildCompactSummary(
-    scored.filter(s => dropped.has(s.index)).map(s => s.msg), mempalaceRefs
-  )};
+  // Build summary from dropped groups
+  const droppedMsgs = [];
+  for (let gi = 0; gi < groups.length; gi++) {
+    if (droppedGroups.has(gi)) droppedMsgs.push(...groups[gi]);
+  }
+  const summaryMsg = { role: "assistant", content: buildCompactSummary(droppedMsgs, mempalaceRefs) };
 
   const result = [...system, surviving[0], summaryMsg, ...surviving.slice(1), ...protectedMsgs];
   const resultTokens = estimateTokens(result);
 
   if (resultTokens + maxOutputTokens <= targetTokens) {
-    log(`COMPACT-P2: priority drop ${dropped.size}/${droppable.length} msgs (${workingTokens}→${resultTokens - systemTokens - protectedTokens}tok old, protected=${protectedTokens}tok)`);
-    return { messages: result, removed: dropped.size };
+    log(`COMPACT-P2: priority drop ${droppedMsgCount}/${rest.length} msgs in ${droppedGroups.size}/${groups.length} groups (${workingTokens}→${resultTokens - systemTokens - protectedTokens}tok old, protected=${protectedTokens}tok)`);
+    return { messages: result, removed: droppedMsgCount };
   }
 
   // === PHASE 3: Aggressive — keep only first user + summary + protected ===
@@ -770,8 +827,8 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
   const c = getCompat(providerName);
   let changed = false;
 
-  // reasoning_content rejected
-  if (body.includes("reasoning_content") && (statusCode === 400 || statusCode === 422)) {
+  // reasoning/thinking content rejected (Groq, Cohere: "thinking content is not allowed")
+  if ((body.includes("reasoning_content") || body.includes("reasoning_content' is unsupported") || body.includes("thinking content is not allowed")) && (statusCode === 400 || statusCode === 422)) {
     if (!c.no_reasoning) {
       c.no_reasoning = true;
       changed = true;
@@ -789,7 +846,9 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
   }
 
   // max_tokens cap detected (e.g. "Range of max_tokens should be [1, 8192]")
-  const maxMatch = body.match(/max_tokens.*?\[1,\s*(\d+)\]/i) || body.match(/max_tokens.*?maximum.*?(\d+)/i) || body.match(/Max size:\s*(\d+)\s*tokens/i);
+  // Only match explicit limit messages, not request body dumps
+  const errOnly = body.substring(0, 500); // limit to error message, not full request dump
+  const maxMatch = errOnly.match(/max_tokens.*?\[1,\s*(\d+)\]/i) || errOnly.match(/Max size:\s*(\d+)\s*tokens/i);
   if (maxMatch && (statusCode === 400 || statusCode === 422)) {
     const cap = parseInt(maxMatch[1], 10);
     if (cap > 0 && (!c.max_tokens_cap || cap < c.max_tokens_cap)) {
@@ -814,7 +873,7 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
   }
 
   // Tools limit detected (e.g. "maximum number of items is 128")
-  const toolsMatch = body.match(/tools.*?maximum.*?(\d+)/i) || body.match(/maximum number of items is (\d+)/i);
+  const toolsMatch = errOnly.match(/tools.*?maximum.*?(\d+)/i) || errOnly.match(/maximum number of items is (\d+)/i);
   if (toolsMatch && (statusCode === 400 || statusCode === 422)) {
     const cap = parseInt(toolsMatch[1], 10);
     if (cap > 0 && (!c.max_tools || cap < c.max_tools)) {
@@ -833,8 +892,8 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     }
   }
 
-  // tool_choice rejected (no endpoints support it)
-  if (body.includes("tool_choice") && (statusCode === 400 || statusCode === 404)) {
+  // tool_choice rejected (no endpoints support it) — also through wrappers (Cline 500 wrapping 404)
+  if (body.includes("tool_choice") && (statusCode === 400 || statusCode === 404 || statusCode === 500)) {
     if (!c.no_tool_choice) {
       c.no_tool_choice = true;
       changed = true;
@@ -884,6 +943,18 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     log(`QUOTA: ${providerName} billing quota exceeded — cooldown 1h`);
   }
 
+  // Trial key rate limit (Cohere: "limited to 20 API calls / minute")
+  if (body.includes("Trial key") && body.includes("limited to")) {
+    setCooldown(providerName, 60_000); // 1 min cooldown for per-minute limits
+    log(`RATE: ${providerName} trial key rate limit — cooldown 1min`);
+  }
+
+  // OpenRouter free-models-per-day limit
+  if (body.includes("free-models-per-day") || body.includes("Add 5 credits to unlock")) {
+    setCooldown(providerName, 3600_000);
+    log(`QUOTA: ${providerName} OpenRouter free daily limit — cooldown 1h`);
+  }
+
   // Tool results missing — Codex/OpenAI server-side state mismatch, cooldown briefly
   if (body.includes("Tool results are missing") && statusCode === 500) {
     setCooldown(providerName, 300_000); // 5 min cooldown
@@ -922,7 +993,7 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
   }
 
   // max_tokens must be ≤ N (Groq format: "must be less than or equal to `8192`")
-  const maxLteMatch = body.match(/max_tokens.*?less than or equal to.*?(\d+)/i);
+  const maxLteMatch = body.match(/max.tokens.*?less than or equal to.*?(\d+)/i);
   if (maxLteMatch && (statusCode === 400)) {
     const cap = parseInt(maxLteMatch[1], 10);
     if (cap > 0 && (!c.max_tokens_cap || cap < c.max_tokens_cap)) {
@@ -951,12 +1022,38 @@ function transformRequest(provider, reqBody) {
     const currentTokens = estimateTokens(body.messages) + estimateToolsTokens(body.tools) + (body.max_tokens || 4096);
     if (currentTokens > providerCtx * 0.95) {
       const toolsTokens = estimateToolsTokens(body.tools);
-      const target = Math.floor((providerCtx - toolsTokens) * 0.75); // compact messages to 75%, leaving room for tools
-      log(`POST-COMPACT: ${provider.name} needs ${currentTokens}tok (msgs=${estimateTokens(body.messages)}, tools=${toolsTokens}, max_tok=${body.max_tokens||4096}) > ${providerCtx} ctx → compacting to ${target}tok`);
+      const msgTokens = estimateTokens(body.messages);
+      const target = Math.floor((providerCtx - toolsTokens) * 0.75);
+      log(`POST-COMPACT: ${provider.name} needs ${currentTokens}tok (msgs=${msgTokens}, tools=${toolsTokens}, max_tok=${body.max_tokens||4096}) > ${Math.floor(providerCtx*0.95)} (95% of ${providerCtx}) → target ${target}tok`);
       const compacted = compactMessages(body.messages, target, body.max_tokens || 4096, []);
       if (compacted) {
+        // Cache compacted messages for session reuse
+        try {
+          const sessionId = mempalace.getSession(reqBody.messages)?.id;
+          if (sessionId) {
+            // Store last message content from ORIGINAL context for split-point matching
+            const origMsgs = reqBody.messages || body.messages;
+            const lastMsg = origMsgs[origMsgs.length - 1];
+            const lastContent = typeof lastMsg?.content === "string" ? lastMsg.content : "";
+            sessionCompactCache[sessionId] = {
+              compactedMessages: compacted.messages,
+              originalMsgCount: origMsgs.length,
+              lastOriginalContent: lastContent,
+              timestamp: Date.now(),
+            };
+          }
+        } catch {}
         body.messages = compacted.messages;
-        log(`POST-COMPACT: ${provider.name} done: ${estimateTokens(body.messages)}tok msgs + ${toolsTokens}tok tools = ${estimateTokens(body.messages)+toolsTokens}tok (limit: ${providerCtx})`);
+        log(`POST-COMPACT: ${provider.name} done: ${estimateTokens(body.messages)}tok msgs (limit: ${providerCtx}) — cached for session`);
+      } else {
+        // Can't compact further — cap max_tokens aggressively
+        const headroom = providerCtx - msgTokens - toolsTokens;
+        if (headroom > 1024) {
+          body.max_tokens = Math.floor(headroom * 0.9);
+          log(`POST-COMPACT: ${provider.name} can't compact msgs, capped max_tokens to ${body.max_tokens} (headroom=${headroom})`);
+        } else {
+          log(`POST-COMPACT: ${provider.name} can't compact and no headroom (${headroom}tok) — will likely fail`);
+        }
       }
     }
   }
@@ -1397,11 +1494,26 @@ function detectStalling(responseBody) {
   }
 }
 
+const stallingTracker = {}; // { name: [timestamp, timestamp, ...] }
+
 function recordStalling(name) {
   const s = getScore(name);
   s.stalling = (s.stalling || 0) + 1;
   log(`STALLING: ${name} (count: ${s.stalling})`);
   saveScores();
+
+  // Track recent stallings — 2+ in 5 min = cooldown
+  if (!stallingTracker[name]) stallingTracker[name] = [];
+  const now = Date.now();
+  stallingTracker[name] = stallingTracker[name].filter(t => now - t < 300_000); // 5 min window
+  stallingTracker[name].push(now);
+  if (stallingTracker[name].length >= 2) {
+    if (!isOnCooldown(name)) {
+      setCooldown(name, 3600_000);
+      log(`STALL-COOLDOWN: ${name} stalled 2+ in 5min — cooldown 1h`);
+    }
+    stallingTracker[name] = [];
+  }
 }
 
 // Per-group ban list — providers banned from specific groups due to repeated stalling
@@ -1689,20 +1801,29 @@ function smartnessBonus(p, groupCap, reqBody) {
   // Secondary: speed bonus (fast models preferred when scores close)
   bonus += getModelScore(model, "speed") * 0.15;
 
-  // Context bonus — scales with how much room the provider has for this request
-  // Large requests need large context providers more urgently
+  // Right-sizing: prefer smallest context that fits well
+  // Small requests → fast/cheap small-context models (save big context for when needed)
+  // Large requests → need big context, bonus for having it
   const reqTokens = reqBody?._estimatedTokens || 0;
   const effCtx = getEffectiveContext(p);
   if (reqTokens > 0 && effCtx > 0) {
-    const utilization = reqTokens / effCtx; // 0.0 = plenty of room, 1.0 = full
-    if (utilization < 0.3) bonus += 0.15;       // plenty of headroom
-    else if (utilization < 0.6) bonus += 0.05;  // comfortable
-    else if (utilization > 0.85) bonus -= 0.2;  // dangerously tight
+    const utilization = reqTokens / effCtx; // 0.0 = way too big, 1.0 = exact fit
+
+    if (utilization > 0.9) {
+      bonus -= 0.3; // dangerously tight — penalize hard
+    } else if (utilization > 0.7) {
+      bonus -= 0.1; // tight — slight penalty
+    } else if (utilization > 0.3 && utilization <= 0.7) {
+      bonus += 0.2; // sweet spot — good fit, not wasteful
+    } else if (utilization > 0.1 && utilization <= 0.3) {
+      bonus += 0.1; // comfortable but oversized
+    } else {
+      // utilization < 0.1 — massively oversized context for this request
+      // Penalize wasting big context on small requests (save for later)
+      bonus -= 0.05;
+    }
   } else {
-    // Fallback static bonus when no token estimate
-    if (effCtx >= 1000000) bonus += 0.1;
-    else if (effCtx >= 256000) bonus += 0.05;
-    else if (effCtx < 32768) bonus -= 0.1;
+    if (effCtx < 32768) bonus -= 0.1;
   }
 
   return bonus;
@@ -1936,13 +2057,27 @@ async function routeToProvider(provider, reqBody) {
     if (content.length > 30 && detectGarbledText(content)) {
       log(`GARBLE-DETECTED: ${provider.name} content="${content.substring(0, 100)}..."`);
       recordFailure(provider.name, "garbled output");
-      setCooldown(provider.name, 300_000);
+      setCooldown(provider.name, 3600_000);
       throw { status: 502, body: resp.body, latency, garbled: true };
     }
   } catch (e) { if (e.garbled) throw e; }
 
   recordSuccess(provider.name, latency);
-  log(`OK: ${provider.name} ${latency}ms`);
+
+  // Extract usage stats from response
+  let usage = null;
+  try {
+    const parsed = JSON.parse(resp.body);
+    usage = parsed.usage || null;
+  } catch {}
+  const usageStr = usage ? ` usage[in=${usage.prompt_tokens||0} out=${usage.completion_tokens||0} total=${usage.total_tokens||0}]` : "";
+  log(`OK: ${provider.name} ${latency}ms${usageStr}`);
+
+  // Track output tokens for session stats
+  if (usage?.completion_tokens) {
+    const sid = mempalace.getSession(reqBody.messages).id;
+    trackSessionTokens(sid, 0, usage.completion_tokens, provider.name);
+  }
 
   // Session affinity — remember which provider worked
   try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
@@ -1992,6 +2127,7 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
     }, 10_000);
 
     let streamedContent = ""; // accumulate content for garble detection
+    let lastDataChunk = ""; // keep last SSE data for usage extraction
 
     const streamReq = streamRequest(
       provider.url,
@@ -2007,11 +2143,13 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
           const m = text.match(field);
           if (m) streamedContent += m[1];
         }
+        // Keep last data chunk for usage extraction
+        if (/data:\s*\{/.test(text)) lastDataChunk = text;
 
         if (!headersSent) {
           buffered.push(chunk);
-          if (dataChunks >= 2) {
-            // Commit — flush buffered chunks
+          if (dataChunks >= 3) {
+            // Commit — flush buffered chunks after 15 clean chunks (enough to detect garble)
             clientRes.writeHead(200, {
               "Content-Type": "text/event-stream",
               "Cache-Control": "no-cache",
@@ -2023,6 +2161,8 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
             buffered.length = 0;
           }
         } else {
+          // Post-commit: no garble detection — if pre-commit (15 chunks) was clean, trust the stream.
+          // Real garble (hallucinated thinking) starts early and gets caught pre-commit.
           clientRes.write(chunk);
         }
       },
@@ -2030,22 +2170,34 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
         const latency = Date.now() - start;
         clearInterval(watchdog);
 
-        // Detect garbled/garbage output — hallucinated thinking with random symbols
-        if (streamedContent.length > 30) {
-          const cleaned = streamedContent.replace(/\\n|\\t|\\u[0-9a-f]{4}/gi, " ");
-          const isGarbled = detectGarbledText(cleaned);
-          if (isGarbled) {
-            log(`GARBLE-DETECTED: ${provider.name} content="${cleaned.substring(0, 100)}..."`);
-            recordFailure(provider.name, "garbled output");
-            setCooldown(provider.name, 300_000); // 5min cooldown
-          } else {
-            recordSuccess(provider.name, latency);
-          }
-        } else {
-          recordSuccess(provider.name, latency);
+        recordSuccess(provider.name, latency);
+
+        // Detect tiny responses — provider "succeeds" but gives near-empty output
+        if (dataChunks <= 5 && latency > 60000) {
+          log(`TINY-RESPONSE: ${provider.name} only ${dataChunks} chunks in ${latency}ms — likely stalling`);
+          recordStalling(provider.name);
+        } else if (dataChunks > 10) {
+          // Good response — reset stalling tracker for this provider
+          if (stallingTracker[provider.name]) stallingTracker[provider.name] = [];
         }
 
-        log(`STREAM-OK: ${provider.name} ${latency}ms chunks=${dataChunks}`);
+        // Extract usage from last SSE chunk (many providers include it)
+        let streamUsage = null;
+        try {
+          const jsonMatch = lastDataChunk.match(/data:\s*(\{.+\})/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[1]);
+            streamUsage = parsed.usage || null;
+          }
+        } catch {}
+        const usageStr = streamUsage ? ` usage[in=${streamUsage.prompt_tokens||0} out=${streamUsage.completion_tokens||0} total=${streamUsage.total_tokens||0}]` : "";
+        log(`STREAM-OK: ${provider.name} ${latency}ms chunks=${dataChunks}${usageStr}`);
+
+        // Track output tokens
+        if (streamUsage?.completion_tokens) {
+          try { trackSessionTokens(mempalace.getSession(reqBody.messages).id, 0, streamUsage.completion_tokens, provider.name); } catch {}
+        }
+
         try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
         if (headersSent) {
           clientRes.end();
@@ -2093,8 +2245,65 @@ async function handleChatCompletion(reqBody, clientRes) {
   const totalNeeded = estTokens + requestedMaxTokens;
   reqBody._estimatedTokens = totalNeeded; // pass to scoring for context-aware ranking
 
+  // Session compact cache: if IDE sends context we already compacted,
+  // replace old portion with compact version, keep only truly new messages
+  const sid = mempalace.getSession(reqBody.messages)?.id;
+  if (sid && sessionCompactCache[sid] && reqBody.messages?.length > 20) {
+    const cache = sessionCompactCache[sid];
+    const cacheAge = Date.now() - cache.timestamp;
+    if (cacheAge < 600_000 && reqBody.messages.length >= cache.originalMsgCount) {
+      // Find new messages: those that weren't in original set (by role+content hash)
+      const lastCachedMsg = cache.lastOriginalContent;
+      let splitIdx = -1;
+      // Find where old context ends in IDE's messages
+      for (let i = reqBody.messages.length - 1; i >= 0; i--) {
+        const content = typeof reqBody.messages[i].content === "string" ? reqBody.messages[i].content : "";
+        if (content === lastCachedMsg) {
+          splitIdx = i + 1;
+          break;
+        }
+      }
+      if (splitIdx === -1) {
+        // Can't find split point — fall back to position-based
+        splitIdx = cache.originalMsgCount;
+      }
+      const newMsgs = reqBody.messages.slice(splitIdx);
+      reqBody.messages = [...cache.compactedMessages, ...newMsgs];
+      const newEst = estimateTokens(reqBody.messages) + estimateToolsTokens(reqBody.tools);
+      log(`CACHE-HIT: session ${sid} (${cache.originalMsgCount}→${cache.compactedMessages.length} cached + ${newMsgs.length} new = ${reqBody.messages.length} msgs, ${estTokens}→${newEst}tok)`);
+      reqBody._estimatedTokens = newEst + requestedMaxTokens;
+    } else if (cacheAge >= 600_000) {
+      delete sessionCompactCache[sid];
+    }
+  }
+
+  // Re-estimate after potential cache hit
+  const currentTokens = estimateTokens(reqBody.messages) + estimateToolsTokens(reqBody.tools);
+
+  // Early check: if input massively exceeds best available context, tell IDE to compact first.
+  if (isGroup && reqBody.messages?.length > 20) {
+    const bestCtx = Math.max(...PROVIDERS.filter(p => p.key && p.alive !== false).map(p => getEffectiveContext(p)), 0);
+    if (bestCtx > 0 && currentTokens > bestCtx * 0.8) {
+      log(`IDE-COMPACT: input ${currentTokens}tok > 80% of best ctx ${bestCtx} — returning context_length_exceeded`);
+      const body = JSON.stringify({
+        error: {
+          message: `This model's maximum context length is ${bestCtx} tokens. However, you requested ${currentTokens + requestedMaxTokens} tokens (${currentTokens} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,
+          type: "invalid_request_error",
+          param: "messages",
+          code: "context_length_exceeded",
+        },
+      });
+      clientRes.writeHead(400, { "Content-Type": "application/json" });
+      clientRes.end(body);
+      return;
+    }
+  }
+
   // MemPalace: recall memories and inject into context
   const mpSession = mempalace.getSession(reqBody.messages);
+
+  // Track session tokens
+  trackSessionTokens(mpSession.id, estTokens, 0);
   reqBody._sessionLastProvider = mempalace.getLastProvider(mpSession);
   let memoryInjection = "";
   try {
@@ -2182,35 +2391,8 @@ async function handleChatCompletion(reqBody, clientRes) {
       ? getProvidersForAuto(reqBody.messages, totalNeeded, reqBody)
       : getProvidersForGroup(requestedModel, totalNeeded, reqBody);
 
-    // Smart compaction: if no providers fit, compact context and retry
-    if (providers.length === 0 && reqBody.messages?.length > 4) {
-      const allProviders = requestedModel === "auto"
-        ? getProvidersForAuto(reqBody.messages, 0, reqBody)
-        : getProvidersForGroup(requestedModel, 0, reqBody);
-
-      if (allProviders.length > 0) {
-        const maxContext = Math.max(...allProviders.map((p) => getEffectiveContext(p)));
-        const targetTokens = Math.floor(maxContext * 0.7); // aim for 70% of max context
-
-        // Save full context to MemPalace before compaction
-        let mpRefs2 = [];
-        try { mpRefs2 = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
-
-        // Compact messages: keep system + first user + last N messages that fit
-        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs2);
-        if (compacted) {
-          reqBody.messages = compacted.messages;
-          const newEstTokens = estimateTokens(reqBody.messages);
-          const newTotal = newEstTokens + requestedMaxTokens;
-          log(`COMPACT: ${estTokens}tok → ${newEstTokens}tok (removed ${compacted.removed} messages, saved to mempalace)`);
-
-          // Retry provider selection with compacted context
-          providers = requestedModel === "auto"
-            ? getProvidersForAuto(reqBody.messages, newTotal, reqBody)
-            : getProvidersForGroup(requestedModel, newTotal, reqBody);
-        }
-      }
-    }
+    // No pre-routing compaction — let IDE handle context management.
+    // Post-routing compaction in transformRequest() handles per-provider fitting as safety net.
 
     if (providers.length === 0) {
       // Check if providers exist but context is too small even after compaction
@@ -2728,13 +2910,14 @@ const server = http.createServer(async (req, res) => {
       }
       const est = estimateTokens(parsed.messages);
       const model = parsed.model || "auto";
+      const sid = mempalace.getSession(parsed.messages).id;
+      const ss = sessionStats[sid];
+      const sessionInfo = ss ? ` session[reqs=${ss.requests} in=${Math.round(ss.totalInputTokens/1000)}K out=${Math.round(ss.totalOutputTokens/1000)}K age=${Math.round((Date.now()-ss.startTime)/60000)}min]` : "";
       if (model === "auto") {
         const { caps, isAgent } = detectUseCase(parsed.messages, parsed);
-        const sid = mempalace.getSession(parsed.messages).id;
-        log(`Request: model=auto stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent} sid=${sid}`);
+        log(`Request: model=auto stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok caps=[${[...caps]}] agent=${isAgent} sid=${sid}${sessionInfo}`);
       } else {
-        const sid = mempalace.getSession(parsed.messages).id;
-        log(`Request: model=${model} stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok sid=${sid}`);
+        log(`Request: model=${model} stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok sid=${sid}${sessionInfo}`);
       }
       return await handleChatCompletion(parsed, res);
     }
@@ -2762,6 +2945,29 @@ const server = http.createServer(async (req, res) => {
     // GET /discovery
     if (method === "GET" && pathname === "/discovery") {
       return sendJSON(res, handleDiscovery());
+    }
+
+    // GET /stats — session token usage
+    if (method === "GET" && pathname === "/stats") {
+      const sessions = Object.entries(sessionStats).map(([id, s]) => ({
+        session: id,
+        requests: s.requests,
+        input_tokens: s.totalInputTokens,
+        output_tokens: s.totalOutputTokens,
+        total_tokens: s.totalInputTokens + s.totalOutputTokens,
+        started: new Date(s.startTime).toISOString(),
+        last_request: new Date(s.lastRequest).toISOString(),
+        age_minutes: Math.round((Date.now() - s.startTime) / 60000),
+        providers: s.providers || {},
+      }));
+      const totals = {
+        total_sessions: sessions.length,
+        total_requests: sessions.reduce((s, x) => s + x.requests, 0),
+        total_input_tokens: sessions.reduce((s, x) => s + x.input_tokens, 0),
+        total_output_tokens: sessions.reduce((s, x) => s + x.output_tokens, 0),
+      };
+      totals.total_tokens = totals.total_input_tokens + totals.total_output_tokens;
+      return sendJSON(res, { ...totals, sessions });
     }
 
     // 404
@@ -2795,7 +3001,7 @@ server.listen(PORT, () => {
   log(`Active providers: ${active}/${PROVIDERS.length}`);
   log(`Smart groups: ${Object.keys(GROUPS).join(", ")}`);
   log(`Config source: ${fs.existsSync(PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  log(`Endpoints: /v1/chat/completions, /v1/models, /v1/capabilities, /health, /scores, /discovery`);
+  log(`Endpoints: /v1/chat/completions, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
 });
 
 // Run thinking probe immediately on startup, then hourly for new unverified only

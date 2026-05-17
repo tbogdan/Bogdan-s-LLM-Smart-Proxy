@@ -201,51 +201,50 @@ Groups automatically route to the best-scoring provider that matches the capabil
 ## How Routing Works
 
 1. Request arrives (e.g. `model: "auto"` or `model: "auto-coding"`)
-2. Proxy detects use case from messages: tools, coding, thinking, images, agent/IDE mode
+2. **Context check**: if input > 80% of best available provider → immediately returns `context_length_exceeded` so IDE compacts on its side (IDE knows the conversation best)
 3. Recalls relevant memories from MemPalace (project context, preferences, past errors)
 4. Injects category-specific system prompt + recalled memories
 5. Filters providers by: group capability, effective context, cooldown, bans, quota
 6. Scores and ranks providers:
    - Base score: success rate (50%) + latency (30%) + tier (20%)
    - Benchmark scoring: 80+ model patterns rated S/A/B/C per category (coding, reasoning, tools, chat, vision, speed)
-   - Context-aware: providers with more headroom for this request score higher
+   - **Right-sizing**: prefers smallest context that fits the request well (30-70% utilization = sweet spot). Saves large-context providers for when context actually grows. Small requests → fast/cheap models. Large requests → big context models.
    - Heuristic fallback: unknown models scored by name patterns (model family, size, version)
-   - Compat penalty: auto-learned incompatibilities (stream_options, tool_choice, content arrays, max_tokens)
+   - Compat penalty: auto-learned incompatibilities
    - Session affinity: +0.4 for same provider that worked last
 7. Transforms request per provider:
-   - Per-provider context compaction if tokens > 95% of effective context
+   - Per-provider safety compaction if tokens > 95% of effective context
    - Dynamic max_tokens cap (input + output ≤ effective context)
-   - Strips incompatible fields, caps tools, adds thinking params (Qwen3, NVIDIA reasoning)
-   - Fixes empty function names, strips orphaned tool calls/responses
+   - Strips incompatible fields, caps tools, adds thinking params
+   - Fixes orphaned tool calls/responses (atomic group integrity)
    - Deduplicates system prompt lines and consecutive identical messages
+   - Garble detection: aborts and reroutes if output contains garbage text
 8. Routes to highest-scoring provider
 9. On failure: auto-learns incompatibility, reroutes to next provider
    - Rate limit (429) → 30s cooldown
-   - Quota exhausted → 1h cooldown
-   - Stream abort after 1-2 chunks → 1h cooldown (likely quota)
-   - Context too large → mid-loop compaction at 80% of failing provider's effective context
-10. If ALL providers fail with context errors:
-    - Post-compact at 70% of max effective context → retry all
-    - Post-compact at 55% → retry all
-    - Final fallback: `context_length_exceeded` → IDE compacts on its side
+   - Quota/billing exhausted → 1h cooldown
+   - Garbled output → 1h cooldown + reroute
+   - Context too large → mid-loop compaction at 80% of failing provider's context
+10. If ALL providers fail: returns `context_length_exceeded` → IDE compacts
 
-## Smart Context Compaction
+## Context Management Strategy
 
-When context exceeds provider limits, the proxy uses a 3-phase strategy:
+The proxy follows an "IDE-first" compaction philosophy:
 
-**Phase 1 — Smart Extraction** (zero message loss):
-- Old tool responses summarized with regex-based fact extraction (not truncation)
-- File reads → path + imports + function signatures + re-read hint
-- Grep results → top 20 file:line matches
-- Edit/Write → confirmation + file path
-- Bash → exit code + first/last 5 lines
-- Recent messages (last 3 turns) always kept verbatim
+1. **IDE compacts best** — the IDE owns the conversation and can summarize intelligently. When context is too large (>80% of best provider), the proxy returns `context_length_exceeded` immediately so the IDE handles it.
+2. **Per-provider safety net** — when routed to a specific provider, if context barely exceeds its limit, the proxy applies lightweight compaction:
 
-**Phase 2 — Priority-Based Drop**:
-- Each message scored by: recency (exponential), role importance, action content
-- User instructions, decisions, code blocks scored highest
-- Short acks, old tool reads scored lowest
-- Drops lowest-priority messages until context fits
+**Smart Extraction** (per-provider, in transformRequest):
+
+- Old tool responses → regex-based fact extraction (imports, signatures, re-read hints)
+- Atomic group integrity: assistant + tool_calls + tool_responses dropped/kept as a unit
+- Dynamic max_tokens cap when messages can't be compacted further
+
+**Priority-Based Drop** (when context error from provider):
+
+- Groups scored: user instructions=high, decisions=high, old tool reads=low
+- Drops lowest-priority atomic groups first
+- Summary with MemPalace references + re-read hints for dropped files
 
 **Phase 3 — Aggressive**:
 - Keeps only system + first user message + summary + last 4 messages
