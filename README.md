@@ -566,6 +566,17 @@ The proxy injects execution rules into every request automatically. No separate 
 - Date/time awareness, user language detection
 - Smart merge with IDE system prompts (replaces identity, keeps tool instructions)
 
+### User Commands (intercepted by proxy)
+
+Type these in your IDE chat — the proxy intercepts them before routing:
+
+| Command | Description |
+|---------|-------------|
+| `ban ai 2` | Ban the last provider that responded for 2 hours |
+| `ban ai 24` | Ban for 24 hours |
+
+The proxy identifies which provider served your last response (via session tracking) and puts it on cooldown. Future requests route to other providers. The ban response confirms: `Banned **Kilo-DSV4Flash** for 2 hours. Will use other providers.`
+
 ## Local Gateway Proxies (optional — unlock premium models for free)
 
 These Docker-integrated proxies expose IDE/web subscription models as OpenAI-compatible endpoints. Enable with `ENABLE_X=true` in `.env` — setup.sh handles auth automatically.
