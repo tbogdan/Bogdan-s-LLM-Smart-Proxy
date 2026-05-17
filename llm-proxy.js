@@ -407,6 +407,56 @@ function estimateTokens(messages) {
   return Math.ceil(chars / 4);
 }
 
+// Detect garbled/garbage text — hallucinated thinking with random symbols, mixed scripts
+function detectGarbledText(text) {
+  if (!text || text.length < 30) return false;
+
+  // 1. Mixed script detection: CJK + Latin + Arabic in same short segment = garble
+  const hasCJK = /[\u4e00-\u9fff\u3400-\u4dbf]/.test(text);
+  const hasArabic = /[\u0600-\u06ff]/.test(text);
+  const hasLatin = /[a-zA-Z]{3,}/.test(text);
+  const mixedScripts = (hasCJK ? 1 : 0) + (hasArabic ? 1 : 0) + (hasLatin ? 1 : 0);
+
+  // 2. Non-ASCII ratio
+  const nonAscii = (text.match(/[^\x20-\x7E\n\r\t]/g) || []).length;
+  const nonAsciiRatio = nonAscii / text.length;
+
+  // 3. Random symbol clusters (3+ consecutive non-word non-space)
+  const symbolClusters = (text.match(/[^\w\s]{3,}/g) || []).length;
+
+  // 4. Word coherence: real text has avg word length 3-12, garble has random lengths
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  const longGarbleWords = words.filter(w => w.length > 20 && /[^a-zA-Z]/.test(w)).length;
+
+  // 5. Digit-letter soup: numbers mixed randomly into words (7Ad, 13-, 74M, hiY6, 4Q)
+  const digitLetterSoup = (text.match(/\d[a-zA-Z]|[a-zA-Z]\d/g) || []).length;
+
+  // 6. Nonsense fragments: random capitalization mid-word (XICl, hiY, digu)
+  const nonsenseFragments = (text.match(/[a-z][A-Z][a-z]|[A-Z]{2,}[a-z][A-Z]/g) || []).length;
+
+  // 7. High unique-word ratio with short words (garble = many unique random fragments)
+  const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+  const uniqueRatio = words.length > 5 ? uniqueWords.size / words.length : 0;
+
+  // Scoring — each signal adds weight, garble has multiple signals
+  let garbleScore = 0;
+  if (mixedScripts >= 3) garbleScore += 4;
+  else if (mixedScripts >= 2 && nonAsciiRatio > 0.02) garbleScore += 2;
+  if (nonAsciiRatio > 0.15) garbleScore += 3;
+  else if (nonAsciiRatio > 0.03) garbleScore += 1;
+  if (symbolClusters > 5) garbleScore += 2;
+  else if (symbolClusters > 2) garbleScore += 1;
+  if (longGarbleWords > 2) garbleScore += 1;
+  if (digitLetterSoup > 6) garbleScore += 3;
+  else if (digitLetterSoup > 3) garbleScore += 2;
+  else if (digitLetterSoup > 1) garbleScore += 1;
+  if (nonsenseFragments > 3) garbleScore += 2;
+  else if (nonsenseFragments > 1) garbleScore += 1;
+  if (uniqueRatio > 0.95 && words.length > 10) garbleScore += 1; // almost all words unique = random
+
+  return garbleScore >= 3;
+}
+
 // Also estimate tools definition array size
 function estimateToolsTokens(tools) {
   if (!tools?.length) return 0;
@@ -1879,6 +1929,18 @@ async function routeToProvider(provider, reqBody) {
     }
   }
 
+  // Detect garbled output in non-streaming response
+  try {
+    const parsed = JSON.parse(resp.body);
+    const content = (parsed.choices?.[0]?.message?.content || "") + (parsed.choices?.[0]?.message?.reasoning || "") + (parsed.choices?.[0]?.message?.reasoning_content || "");
+    if (content.length > 30 && detectGarbledText(content)) {
+      log(`GARBLE-DETECTED: ${provider.name} content="${content.substring(0, 100)}..."`);
+      recordFailure(provider.name, "garbled output");
+      setCooldown(provider.name, 300_000);
+      throw { status: 502, body: resp.body, latency, garbled: true };
+    }
+  } catch (e) { if (e.garbled) throw e; }
+
   recordSuccess(provider.name, latency);
   log(`OK: ${provider.name} ${latency}ms`);
 
@@ -1929,6 +1991,8 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
       }
     }, 10_000);
 
+    let streamedContent = ""; // accumulate content for garble detection
+
     const streamReq = streamRequest(
       provider.url,
       { method: "POST", headers },
@@ -1937,6 +2001,12 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
         lastChunkTime = Date.now();
         const text = chunk.toString();
         if (/data:\s*\{/.test(text)) dataChunks++;
+
+        // Extract content + reasoning from SSE for garble detection
+        for (const field of [/"content"\s*:\s*"([^"]{0,500})"/, /"reasoning_content"\s*:\s*"([^"]{0,500})"/, /"reasoning"\s*:\s*"([^"]{0,500})"/]) {
+          const m = text.match(field);
+          if (m) streamedContent += m[1];
+        }
 
         if (!headersSent) {
           buffered.push(chunk);
@@ -1959,7 +2029,22 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
       () => {
         const latency = Date.now() - start;
         clearInterval(watchdog);
-        recordSuccess(provider.name, latency);
+
+        // Detect garbled/garbage output — hallucinated thinking with random symbols
+        if (streamedContent.length > 30) {
+          const cleaned = streamedContent.replace(/\\n|\\t|\\u[0-9a-f]{4}/gi, " ");
+          const isGarbled = detectGarbledText(cleaned);
+          if (isGarbled) {
+            log(`GARBLE-DETECTED: ${provider.name} content="${cleaned.substring(0, 100)}..."`);
+            recordFailure(provider.name, "garbled output");
+            setCooldown(provider.name, 300_000); // 5min cooldown
+          } else {
+            recordSuccess(provider.name, latency);
+          }
+        } else {
+          recordSuccess(provider.name, latency);
+        }
+
         log(`STREAM-OK: ${provider.name} ${latency}ms chunks=${dataChunks}`);
         try { mempalace.setLastProvider(mempalace.getSession(reqBody.messages), provider.name); } catch {}
         if (headersSent) {
