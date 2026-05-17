@@ -1157,6 +1157,70 @@
       "no_auth": false,
       "headers": {},
       "seed": true
+    },
+    {
+      "name": "Cline-OwlAlpha",
+      "model": "openrouter/owl-alpha",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-NemotronReasoning",
+      "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "context": 256000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-LagunaM1",
+      "model": "poolside/laguna-m.1:free",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-LagunaXS2",
+      "model": "poolside/laguna-xs.2:free",
+      "context": 131072,
+      "tier": 3,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
     }
   ],
   "groups": {

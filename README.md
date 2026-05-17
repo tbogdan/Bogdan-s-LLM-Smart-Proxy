@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 69+ LLM models across 24 providers with automatic failover, capability-based routing, and smart scoring.
+A zero-dependency Node.js proxy that routes requests to 73+ LLM models across 25 providers with automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **69+ LLM models across 24 providers** with automatic failover on errors
+- **73+ LLM models across 25 providers** with automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
@@ -186,6 +186,10 @@ Groups automatically route to the best-scoring provider that matches the capabil
 | OpenAI | OpenAI-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
 | Kiro | Kiro-ClaudeSonnet | claude-sonnet-4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
 | Kiro | Kiro-ClaudeHaiku45 | claude-haiku-4-5 | 200K | 1 | tools, coding, text, images, thinking | OAuth |
+| Cline | Cline-NemotronReasoning | nemotron-30b-reasoning:free | 256K | 2 | tools, text, thinking | key |
+| Cline | Cline-LagunaM1 | laguna-m.1:free | 131K | 2 | coding | key |
+| Cline | Cline-LagunaXS2 | laguna-xs.2:free | 131K | 3 | coding | key |
+| Cline | Cline-Cobuddy | cobuddy:free | 131K | 3 | tools, text | key |
 | Codex | Codex-GPT54 | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
 | Codex | Codex-GPT55 | gpt-5.5 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
 | Codex | Codex-O3 | o3 | 200K | 1 | tools, coding, text, thinking | OAuth |
@@ -332,8 +336,9 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | **Kilo** | **No key needed** | **8 models (anonymous access)** |
 | **OVH** | **No key needed** | **5 models (open endpoint)** |
 | **LLM7** | **No key needed** | **1 model (open endpoint)** |
-| **Kiro** | **Free AWS Builder ID** | **Claude Sonnet 4, Haiku 4.5 (via kiro-gateway)** |
-| **Codex** | **ChatGPT subscription** | **GPT-5.4/5.5, o3, o4-mini (via OAuth proxy)** |
+| Kiro | Free AWS Builder ID | Claude Sonnet 4, Haiku 4.5 (via kiro-gateway, OAuth) |
+| Codex | ChatGPT subscription | GPT-5.4/5.5, o3, o4-mini (via OAuth proxy) |
+| Cline | Free at app.cline.bot | 28 free models + 356 total (OpenAI-compatible API) |
 
 > ⚠️ **Alibaba free tier**: Each model gets 1M tokens free for 90 days. After that, requests are **charged silently** by default. To stay safe, enable **"Free Quota Only"** mode in the [Alibaba console](https://dashscope.console.aliyun.com) — the proxy will auto-detect the 403 error and disable the provider.
 
@@ -371,6 +376,7 @@ Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any
 | `KIRO_API_KEY` | Kiro gateway API key | `proxy` |
 | `ENABLE_CODEX` | Enable Codex OAuth proxy | `true` / `false` |
 | `CODEX_API_KEY` | Codex proxy API key | `proxy` |
+| `CLINE_API_KEY` | Cline Provider API key (app.cline.bot) | `cline_xxx` |
 
 ## Recommended Tools
 
@@ -508,7 +514,7 @@ node kiro-auth.js
 # Or run setup.sh which does it automatically
 ```
 
-Auth script opens `https://app.kiro.dev/signin` → PKCE flow → captures refresh token → saves to `.env`. Token auto-refreshes inside the container.
+Auth script opens `https://app.kiro.dev/signin` with PKCE challenge → user logs in with free AWS Builder ID → captures refresh token → saves to `.env`. Token auto-refreshes inside the container.
 
 ### OpenAI Codex Proxy — GPT-5.4/5.5, o3, o4-mini
 

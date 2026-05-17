@@ -13,6 +13,7 @@ const mempalace = require("./llm-mempalace");
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.LLM_PROXY_PORT || "18900", 10);
 const DATA_DIR = process.env.DATA_DIR || "/data";
+const DEV_MODE = process.env.DEV_MODE === "true";
 const SCORES_FILE = path.join(DATA_DIR, "scores.json");
 const DISCOVERY_FILE = path.join(DATA_DIR, "discovery.json");
 const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
@@ -409,8 +410,81 @@ function estimateToolsTokens(tools) {
 }
 
 // ---------------------------------------------------------------------------
-// Smart context compaction — save middle to MemPalace, keep edges
+// Smart context compaction — hybrid approach:
+// Phase 1: Compact tool responses in-place (summarize, don't delete)
+// Phase 2: Priority-score messages, drop lowest first
+// Phase 3: If still over target, aggressive drop with summary
 // ---------------------------------------------------------------------------
+
+// Summarize a tool response to essential info
+function compactToolResponse(msg) {
+  const content = typeof msg.content === "string" ? msg.content : "";
+  if (content.length < 200) return msg; // already small
+
+  const name = msg.name || "tool";
+  const lines = content.split("\n").length;
+  const chars = content.length;
+
+  // File read → "Read <file> (N lines)"
+  if (/read|cat|file/i.test(name)) {
+    const fileMatch = content.match(/^(\d+)\t/) ? `${lines} lines` : `${chars} chars`;
+    const preview = content.substring(0, 150).replace(/\n/g, " ");
+    return { ...msg, content: `[Read ${fileMatch}] ${preview}...` };
+  }
+  // Grep/search → "N matches in M files"
+  if (/grep|search|glob|find|ripgrep/i.test(name)) {
+    const matchCount = (content.match(/\n/g) || []).length + 1;
+    const preview = content.substring(0, 200).replace(/\n/g, " | ");
+    return { ...msg, content: `[Search: ${matchCount} results] ${preview}...` };
+  }
+  // Edit/Write → "Edited <file>"
+  if (/edit|write|patch/i.test(name)) {
+    const preview = content.substring(0, 200).replace(/\n/g, " ");
+    return { ...msg, content: `[Edit] ${preview}...` };
+  }
+  // Bash/exec → first/last lines
+  if (/bash|exec|shell|terminal/i.test(name)) {
+    const firstLines = content.split("\n").slice(0, 3).join("\n");
+    const lastLines = content.split("\n").slice(-2).join("\n");
+    return { ...msg, content: `[Command output ${lines} lines]\n${firstLines}\n...\n${lastLines}` };
+  }
+  // Generic: truncate to 300 chars
+  return { ...msg, content: content.substring(0, 300) + `\n...[${chars} chars truncated]` };
+}
+
+// Score a message for retention priority (higher = keep)
+function messagePriority(msg, index, total) {
+  let score = 5; // base
+
+  // Recent messages = high priority (last 20%)
+  const recency = index / total;
+  if (recency > 0.9) score += 8;      // last 10%
+  else if (recency > 0.8) score += 5;  // last 20%
+  else if (recency > 0.6) score += 2;  // last 40%
+
+  const content = typeof msg.content === "string" ? msg.content : "";
+
+  if (msg.role === "user") {
+    score += 6; // user messages always important
+    if (/fix|implement|add|create|update|change|refactor|debug/i.test(content)) score += 3; // task instruction
+  }
+
+  if (msg.role === "assistant") {
+    if (msg.tool_calls?.length > 0) score += 4; // tool-using assistant = action
+    if (/because|decided|chose|architecture|design|approach/i.test(content)) score += 3; // decisions
+    if (/error|fix|bug|issue|problem|solved/i.test(content)) score += 2; // error handling
+    if (content.length < 100 && !msg.tool_calls?.length) score -= 3; // short ack without action
+  }
+
+  if (msg.role === "tool") {
+    score += 1; // tool responses are least important (info already acted on)
+    // But edit/write results are more important
+    if (/edit|write|success/i.test(msg.name || "")) score += 2;
+  }
+
+  return score;
+}
+
 function compactMessages(messages, targetTokens, maxOutputTokens, mempalaceRefs) {
   if (!messages || messages.length < 4) return null;
 
@@ -418,43 +492,85 @@ function compactMessages(messages, targetTokens, maxOutputTokens, mempalaceRefs)
   const nonSystem = messages.filter((m) => m.role !== "system");
   if (nonSystem.length < 6) return null;
 
-  const firstUser = nonSystem[0];
-  const lastN = nonSystem.slice(-4);
-  const middle = nonSystem.slice(1, -4);
+  // Phase 1: Compact tool responses in-place (keep msg, shrink content)
+  let working = nonSystem.map((m) => m.role === "tool" ? compactToolResponse(m) : m);
+  let currentTokens = estimateTokens([...system, ...working]);
+  const phase1Saved = estimateTokens([...system, ...nonSystem]) - currentTokens;
 
-  if (middle.length === 0) return null;
-
-  // Build summary with MemPalace references
-  let summaryText = `[CONTEXT COMPACTED — ${middle.length} messages saved to memory]\n`;
-
-  if (mempalaceRefs?.length > 0) {
-    summaryText += "Saved to MemPalace (use memory recall to load details):\n";
-    for (const ref of mempalaceRefs) {
-      summaryText += `  → ${ref.title} [room: ${ref.room}] — ${ref.summary} (${ref.preview})\n`;
-    }
-  } else {
-    // Fallback inline summary if no refs
-    const middleSummary = middle.map((m) => {
-      const text = typeof m.content === "string" ? m.content : "";
-      const toolInfo = m.tool_calls?.length ? ` [${m.tool_calls.length} tool calls]` : "";
-      return `${m.role}: ${text.substring(0, 80).replace(/\n/g, " ")}${toolInfo}`;
-    }).join("\n");
-    summaryText += middleSummary.substring(0, 800) + "\n";
+  if (currentTokens + maxOutputTokens <= targetTokens) {
+    log(`COMPACT-P1: tool response compaction sufficient (saved ${phase1Saved}tok)`);
+    return { messages: [...system, ...working], removed: 0 };
   }
 
-  summaryText += "Continue from the most recent context below.";
+  // Phase 2: Priority-score all messages, drop lowest priority first
+  // Always keep: first user msg, last 8 msgs
+  const keepFirst = 1;
+  const keepLast = 8;
+  const droppable = working.slice(keepFirst, -keepLast);
+
+  if (droppable.length === 0) return null;
+
+  // Score and sort droppable messages
+  const scored = droppable.map((m, i) => ({
+    msg: m,
+    priority: messagePriority(m, i + keepFirst, working.length),
+    index: i,
+  }));
+  scored.sort((a, b) => a.priority - b.priority); // lowest priority first
+
+  // Drop messages one by one until we fit
+  const dropped = new Set();
+  let droppedCount = 0;
+  for (const item of scored) {
+    if (currentTokens + maxOutputTokens <= targetTokens) break;
+    const msgTokens = estimateTokens([item.msg]);
+    currentTokens -= msgTokens;
+    dropped.add(item.index);
+    droppedCount++;
+  }
+
+  // Rebuild message list preserving order
+  const surviving = [];
+  surviving.push(working[0]); // first user
+  for (let i = 0; i < droppable.length; i++) {
+    if (!dropped.has(i)) surviving.push(droppable[i]);
+  }
+  surviving.push(...working.slice(-keepLast)); // last 8
+
+  // Insert summary of dropped messages
+  let summaryText = `[CONTEXT COMPACTED — ${droppedCount} low-priority messages removed]\n`;
+  if (mempalaceRefs?.length > 0) {
+    summaryText += "Full context saved to MemPalace:\n";
+    for (const ref of mempalaceRefs) {
+      summaryText += `  → ${ref.title} [${ref.room}] — ${ref.summary}\n`;
+    }
+  }
+  summaryText += "Continue from the recent context below.";
 
   const summaryMsg = { role: "assistant", content: summaryText };
-  const compacted = [...system, firstUser, summaryMsg, ...lastN];
-  const newTokens = estimateTokens(compacted);
+  const result = [...system, surviving[0], summaryMsg, ...surviving.slice(1)];
+  const resultTokens = estimateTokens(result);
 
-  if (newTokens + maxOutputTokens > targetTokens) {
-    const lastTwo = nonSystem.slice(-2);
-    const aggressiveCompacted = [...system, firstUser, summaryMsg, ...lastTwo];
-    return { messages: aggressiveCompacted, removed: nonSystem.length - 3 };
+  if (resultTokens + maxOutputTokens <= targetTokens) {
+    log(`COMPACT-P2: priority-based drop (${droppedCount}/${droppable.length} msgs, saved ${phase1Saved + (estimateTokens([...system, ...working]) - resultTokens)}tok)`);
+    return { messages: result, removed: droppedCount };
   }
 
-  return { messages: compacted, removed: middle.length };
+  // Phase 3: Aggressive — keep only system + first user + summary + last 4
+  const lastFour = working.slice(-4);
+  const aggressiveResult = [...system, working[0], summaryMsg, ...lastFour];
+  const aggressiveTokens = estimateTokens(aggressiveResult);
+
+  if (aggressiveTokens + maxOutputTokens <= targetTokens) {
+    log(`COMPACT-P3: aggressive (kept system + first + last 4, dropped ${nonSystem.length - 5} msgs)`);
+    return { messages: aggressiveResult, removed: nonSystem.length - 5 };
+  }
+
+  // Phase 3b: Ultra-aggressive — last 2 only
+  const lastTwo = working.slice(-2);
+  const ultraResult = [...system, working[0], summaryMsg, ...lastTwo];
+  log(`COMPACT-P3b: ultra-aggressive (kept system + first + last 2, dropped ${nonSystem.length - 3} msgs)`);
+  return { messages: ultraResult, removed: nonSystem.length - 3 };
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +761,21 @@ function transformRequest(provider, reqBody) {
         body.messages = compacted.messages;
         log(`POST-COMPACT: ${provider.name} context ${currentTokens}tok → ${estimateTokens(body.messages)}tok (provider limit: ${providerCtx})`);
       }
+    }
+  }
+
+  // Dynamic max_tokens cap — ensure input + output fits provider's effective context
+  if (body.messages && body.max_tokens) {
+    const providerCtx = getEffectiveContext(provider);
+    const inputTokens = estimateTokens(body.messages) + estimateToolsTokens(body.tools);
+    const headroom = providerCtx - inputTokens;
+    if (headroom < body.max_tokens && headroom > 0) {
+      const oldMax = body.max_tokens;
+      body.max_tokens = Math.max(1024, Math.floor(headroom * 0.95)); // 95% of remaining, min 1024
+      log(`MAX-TOK-CAP: ${provider.name} ${oldMax} → ${body.max_tokens} (input=${inputTokens}, ctx=${providerCtx}, headroom=${headroom})`);
+    } else if (headroom <= 0) {
+      // Input alone exceeds context — post-compact will handle
+      log(`MAX-TOK-WARN: ${provider.name} input ${inputTokens} exceeds ctx ${providerCtx}`);
     }
   }
 
@@ -845,6 +976,7 @@ function transformRequest(provider, reqBody) {
         .replace(/IMPORTANT:\s*-?\s*Answer concisely[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
         .replace(/IMPORTANT:\s*Go straight to the point[\s\S]*?(?=\n#|\n\n[A-Z]|$)/i, "")
         .trim();
+
 
       body.messages[0] = { ...body.messages[0], content: PROXY_SYSTEM + "\n\n" + existingSystem };
     } else {
@@ -1114,7 +1246,10 @@ function detectUseCase(messages, reqBody) {
 // S=0.5, A=0.35, B=0.2, C=0.05, null=0
 // ---------------------------------------------------------------------------
 const MODEL_SCORES = [
-  // S-tier coding + reasoning
+  // S-tier coding + reasoning (frontier models)
+  { pat: /claude.*opus.*4[._-]7/i,               coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.15 },
+  { pat: /gpt.*5\.5/i,                           coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.3 },
+  { pat: /gemini.*3\.1.*pro/i,                   coding: 0.5, reasoning: 0.5, tools: 0.35, chat: 0.35, vision: 0.5, speed: 0.3 },
   { pat: /claude.*opus[- _.]4/i,                 coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.15 },
   { pat: /claude.*sonnet[- _.]4[._-]5/i,        coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.5, speed: 0.3 },
   { pat: /claude.*sonnet[- _.]4(?![._-]5)/i,    coding: 0.5, reasoning: 0.5, tools: 0.5, chat: 0.5, vision: 0.35, speed: 0.35 },
@@ -1137,6 +1272,7 @@ const MODEL_SCORES = [
   { pat: /deepseek.*v4.*flash/i,                 coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.4 },
   { pat: /gpt.*oss.*120b/i,                      coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.5 },
   { pat: /qwen.*coder.*(?:plus|next)/i,          coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /qwen.*coder/i,                        coding: 0.35, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /qwen.*3\.5.*122b/i,                    coding: 0.35, reasoning: 0.35, tools: 0.5, chat: 0.35, vision: 0.35, speed: 0.4 },
   { pat: /qwen.*max/i,                           coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   { pat: /deepseek.*v3\.1/i,                     coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
@@ -1163,7 +1299,7 @@ const MODEL_SCORES = [
   { pat: /qwen.*32b/i,                           coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /qwen.*plus/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /deepseek.*v3(?!\.)/i,                  coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
-  { pat: /llama.*3\.3.*70b/i,                    coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /llama.*3[\._-]3.*70b/i,                coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /llama.*4.*maverick/i,                  coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.35, speed: 0.4 },
   { pat: /command.*a/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /kimi.*k2(?!\.)/i,                      coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
@@ -1172,6 +1308,15 @@ const MODEL_SCORES = [
   { pat: /mistral.*small/i,                      coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.5 },
   { pat: /glm.*4/i,                              coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /ring.*2\.6/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /owl.*alpha/i,                          coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.05 },
+  { pat: /nemotron.*(?:30b|nano.*omni)/i,        coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0.2, speed: 0.5 },
+  { pat: /qwen.*coder.*30b/i,                    coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /deepseek.*chat/i,                      coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /gemini.*3\.1.*flash/i,                 coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.35, speed: 0.5 },
+  { pat: /gemini.*3\.0.*pro/i,                   coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0.5, speed: 0.3 },
+  { pat: /grok.*3/i,                             coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
+  { pat: /grok.*code/i,                          coding: 0.35, reasoning: 0.2, tools: 0.35, chat: 0.2, vision: 0, speed: 0.4 },
+  { pat: /mistral.*medium.*3/i,                  coding: 0.35, reasoning: 0.35, tools: 0.35, chat: 0.35, vision: 0, speed: 0.3 },
   // C-tier
   { pat: /llama.*4.*scout/i,                     coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0.2, speed: 0.4 },
   { pat: /command.*r.*plus/i,                    coding: 0.05, reasoning: 0.05, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
@@ -1183,6 +1328,10 @@ const MODEL_SCORES = [
   { pat: /gemma/i,                               coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.4 },
   { pat: /cobuddy/i,                             coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.2, vision: 0, speed: 0.3 },
   { pat: /phi/i,                                 coding: 0.05, reasoning: 0.05, tools: 0.05, chat: 0.05, vision: 0, speed: 0.5 },
+  { pat: /openrouter\/(?:auto|free)/i,           coding: 0.15, reasoning: 0.15, tools: 0.15, chat: 0.15, vision: 0, speed: 0.3 },
+  { pat: /llm7/i,                                coding: 0.15, reasoning: 0.15, tools: 0.15, chat: 0.15, vision: 0, speed: 0.3 },
+  { pat: /perceptron/i,                          coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.3 },
+  { pat: /granite/i,                             coding: 0.2, reasoning: 0.2, tools: 0.2, chat: 0.2, vision: 0, speed: 0.4 },
 ];
 
 // Map group capability → score field
@@ -1415,10 +1564,22 @@ async function routeToProvider(provider, reqBody) {
   const headers = buildHeaders(provider);
   const start = Date.now();
 
+  if (DEV_MODE) {
+    log(`DEV-REQ: ${provider.name} (${provider.model}) ctx=${getEffectiveContext(provider)} body=${bodyStr.length}chars msgs=${body.messages?.length}`);
+    try { fs.writeFileSync(path.join(DATA_DIR, "dev-last-request.json"), bodyStr); } catch {}
+  }
+
   const resp = await makeRequest(provider.url, { method: "POST", headers }, bodyStr);
   const latency = Date.now() - start;
 
+  if (DEV_MODE) {
+    log(`DEV-RESP: ${provider.name} status=${resp.status} ${latency}ms body=${(resp.body || "").length}chars`);
+    try { fs.writeFileSync(path.join(DATA_DIR, "dev-last-response.json"), resp.body || ""); } catch {}
+  }
+
   if (resp.status >= 400) {
+    const errPreview = (resp.body || "").substring(0, 200);
+    log(`FAIL: ${provider.name} status=${resp.status}  ${errPreview}`);
     if (isQuotaExhaustedError(resp.status, resp.body)) {
       disableProviderQuota(provider.name, `HTTP ${resp.status}: quota/billing error`);
     }
@@ -1428,8 +1589,22 @@ async function routeToProvider(provider, reqBody) {
       setCooldown(provider.name);
     }
     detectIncompatibility(provider.name, resp.status, resp.body);
-    try { mempalace.saveError(mempalace.getSession(reqBody.messages), resp.body.substring(0, 200)); } catch {}
+    try { mempalace.saveError(mempalace.getSession(reqBody.messages), errPreview); } catch {}
     throw { status: resp.status, body: resp.body, latency };
+  }
+
+  // Unwrap wrapped responses (Cline wraps in {"data": {...}, "success": true})
+  try {
+    const wrapped = JSON.parse(resp.body);
+    if (wrapped.data?.choices && wrapped.success !== undefined) {
+      resp.body = JSON.stringify(wrapped.data);
+    }
+    // Also handle {"error": "...", "success": false}
+    if (wrapped.success === false && wrapped.error) {
+      throw { status: 502, body: resp.body, latency };
+    }
+  } catch (e) {
+    if (e.status) throw e; // re-throw our own errors
   }
 
   // Validate response is OpenAI-compatible (has choices array)
@@ -1487,6 +1662,11 @@ function routeStreamToProvider(provider, reqBody, clientRes) {
     const bodyStr = JSON.stringify(body);
     const headers = buildHeaders(provider);
     const start = Date.now();
+
+    if (DEV_MODE) {
+      log(`DEV-STREAM-REQ: ${provider.name} (${provider.model}) ctx=${getEffectiveContext(provider)} body=${bodyStr.length}chars msgs=${body.messages?.length}`);
+      try { fs.writeFileSync(path.join(DATA_DIR, "dev-last-request.json"), bodyStr); } catch {}
+    }
     let headersSent = false;
 
     let dataChunks = 0;
@@ -1653,51 +1833,9 @@ async function handleChatCompletion(reqBody, clientRes) {
     }
   }
 
-  // Track compaction frequency per session — if IDE keeps sending huge context after we compact,
-  // force IDE-side compaction by returning context_length_exceeded
-  if (!global._compactTracker) global._compactTracker = {};
-  const ct = global._compactTracker;
-  const compactWindow = 5 * 60_000; // 5 minutes
-  const maxCompactsBeforeForce = 3;
-
-  // Proactive compaction: if context exceeds 90% of best available provider, compact preemptively
-  if (isGroup && reqBody.messages?.length > 6) {
-    const bestProviders = requestedModel === "auto"
-      ? getProvidersForAuto(reqBody.messages, 0, reqBody)
-      : getProvidersForGroup(requestedModel, 0, reqBody);
-    if (bestProviders.length > 0) {
-      // Use the LARGEST effective context among available providers —
-      // only pre-compact if context exceeds even the biggest provider
-      const largestEffCtx = Math.max(...bestProviders.map((p) => getEffectiveContext(p)));
-      const threshold = Math.floor(largestEffCtx * 0.9); // compact at 90% of largest
-      if (totalNeeded > threshold) {
-        // Check if this session is in a compaction loop
-        const now = Date.now();
-        if (!ct[mpSession.id]) ct[mpSession.id] = [];
-        ct[mpSession.id] = ct[mpSession.id].filter((t) => now - t < compactWindow);
-        ct[mpSession.id].push(now);
-
-        if (ct[mpSession.id].length > maxCompactsBeforeForce) {
-          const loopCount = ct[mpSession.id].length;
-          log(`COMPACT-LOOP: session ${mpSession.id} compacted ${loopCount}x in ${compactWindow/1000}s — forcing IDE compaction`);
-          ct[mpSession.id] = []; // reset counter
-          return sendError(clientRes, 400,
-            `Context too large (${estTokens} tokens, compacted ${loopCount}x). Please compact your conversation.`,
-            { code: "context_length_exceeded" });
-        }
-
-        const targetTokens = Math.floor(largestEffCtx * 0.8); // compact to 80% of largest
-        let mpRefs = [];
-        try { mpRefs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
-        const compacted = compactMessages(reqBody.messages, targetTokens, requestedMaxTokens, mpRefs);
-        if (compacted) {
-          reqBody.messages = compacted.messages;
-          const newEst = estimateTokens(reqBody.messages);
-          log(`PRE-COMPACT: ${estTokens}tok → ${newEst}tok (${compacted.removed} msgs saved to mempalace, threshold was ${threshold})`);
-        }
-      }
-    }
-  }
+  // No pre-routing compaction — only compact reactively:
+  // 1. Post-routing in transformRequest (per-provider effective context)
+  // 2. On context_length_exceeded error from provider (retry with compaction)
 
   if (isGroup) {
     // auto group: detect use case, try all providers with smart ordering
@@ -1761,10 +1899,21 @@ async function handleChatCompletion(reqBody, clientRes) {
       return sendError(clientRes, 503, "No providers available for group: " + requestedModel);
     }
 
+    // Log routing decision with scoring rationale
+    if (providers.length > 0) {
+      const top3 = providers.slice(0, 3).map((p) => {
+        const ctx = getEffectiveContext(p);
+        const score = providerScore(p);
+        return `${p.name}(${p.model},ctx=${ctx},score=${score.toFixed(2)})`;
+      });
+      log(`ROUTING: ${requestedModel} candidates=[${top3.join(", ")}] total=${providers.length} input=${estTokens}tok`);
+    }
+
     const errors = [];
     for (const provider of providers) {
       try {
-        log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) via=${provider.name.split("-")[0]} stream_only=${!!getCompat(provider.name).stream_only}`);
+        const pCtx = getEffectiveContext(provider);
+        log(`Route: ${requestedModel} → ${provider.name} (${provider.model}) ctx=${pCtx} stream_only=${!!getCompat(provider.name).stream_only}`);
 
         if (isStreaming) {
           const compat = getCompat(provider.name);
@@ -1815,21 +1964,42 @@ async function handleChatCompletion(reqBody, clientRes) {
         log(`FAIL: ${provider.name} status=${status} ${err.timeout ? "TIMEOUT" : ""} ${errFull}`);
         errors.push({ provider: provider.name, status, error: typeof msg === "string" ? msg.substring(0, 200) : String(msg) });
 
-        // Mid-loop: if 2+ context errors, compact now instead of burning through all providers
-        const isCtxErr = /context.length|too.large|maximum.*token|too large for model/i.test(errFull);
+        // Categorize error for routing decisions
+        const CTX_ERR_RE = /context.length|too.large|maximum.*token|too large for model/i;
+        const isCtxErr = CTX_ERR_RE.test(errFull);
+        const isRateLimit = status === 429 || /rate.limit|too many requests/i.test(errFull);
+        const isQuota = /usage limit|quota|reached the limit|MONTHLY/i.test(errFull);
+        const isTimeout = status === 504 || status === 502 || /timeout|idle/i.test(errFull);
+
         if (isCtxErr) {
-          const ctxErrCount = errors.filter((e) => /context.length|too.large|maximum.*token|too large for model/i.test(e.error)).length;
-          if (ctxErrCount >= 2 && reqBody.messages?.length > 4 && !(reqBody._compactRetries >= 3)) {
-            reqBody._compactRetries = (reqBody._compactRetries || 0) + 1;
-            const ctxs = providers.map((p) => getEffectiveContext(p)).sort((a, b) => a - b);
-            const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.6 - (reqBody._compactRetries - 1) * 0.15));
+          log(`REROUTE: ${provider.name} context too large (${getEffectiveContext(provider)} ctx) → trying next provider with larger context`);
+        } else if (isRateLimit) {
+          log(`REROUTE: ${provider.name} rate limited → trying next provider`);
+        } else if (isQuota) {
+          log(`REROUTE: ${provider.name} quota exhausted → trying next provider (cooldown 1h)`);
+        } else if (isTimeout) {
+          log(`REROUTE: ${provider.name} timeout/502 → trying next provider`);
+        } else {
+          log(`REROUTE: ${provider.name} error ${status} → trying next provider`);
+        }
+
+        // Step 2: Mid-loop — after 2+ context errors from different providers,
+        // compact at 80% of the failing provider's effective context and retry
+        if (isCtxErr) {
+          const ctxErrCount = errors.filter((e) => CTX_ERR_RE.test(e.error)).length;
+          const midRetries = reqBody._midCompactRetries || 0;
+          if (ctxErrCount >= 2 && midRetries < 2 && reqBody.messages?.length > 4) {
+            reqBody._midCompactRetries = midRetries + 1;
+            const failedCtx = getEffectiveContext(provider);
+            const target = Math.floor(failedCtx * 0.8);
+            log(`MID-COMPACT: 2+ context errors → compacting to 80% of ${provider.name} ctx (${failedCtx} → target ${target}tok)`);
             let refs = [];
             try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
             const compacted = compactMessages(reqBody.messages, target, requestedMaxTokens, refs);
             if (compacted) {
               reqBody.messages = compacted.messages;
               const newEst = estimateTokens(reqBody.messages);
-              log(`MID-COMPACT #${reqBody._compactRetries}: ${estTokens}tok → ${newEst}tok (target=${target}, after ${ctxErrCount} context errors)`);
+              log(`MID-COMPACT #${reqBody._midCompactRetries}: ${estTokens}tok → ${newEst}tok → retrying all providers`);
               return await handleChatCompletion(reqBody, clientRes);
             }
           }
@@ -1838,39 +2008,45 @@ async function handleChatCompletion(reqBody, clientRes) {
       }
     }
 
-    // ALL providers failed — check if context/timeout related, compact and retry
-    const contextOrTimeoutErrors = errors.filter((e) =>
-      /context.length|too.long|token.*exceed|max.size.*token|too.large|timeout|idle|502|504/i.test(e.error) || e.status === 502 || e.status === 504
-    );
+    // Step 4: ALL providers failed — progressive compaction at current effective context
+    const CTX_ERR_RE2 = /context.length|too.long|token.*exceed|max.size.*token|too.large|timeout|idle|502|504/i;
+    const contextOrTimeoutErrors = errors.filter((e) => CTX_ERR_RE2.test(e.error) || e.status === 502 || e.status === 504);
     const isContextProblem = contextOrTimeoutErrors.length > errors.length / 3;
 
-    if (isContextProblem && reqBody.messages?.length > 4 && !reqBody._compactRetries) {
-      reqBody._compactRetries = 0;
-    }
-    if (isContextProblem && (reqBody._compactRetries || 0) < 3 && reqBody.messages?.length > 4) {
-      reqBody._compactRetries = (reqBody._compactRetries || 0) + 1;
-      const allP = requestedModel === "auto"
-        ? getProvidersForAuto(reqBody.messages, 0, reqBody)
-        : getProvidersForGroup(requestedModel, 0, reqBody);
-      const ctxs = allP.map((p) => getEffectiveContext(p)).sort((a, b) => a - b);
-      const target = Math.floor((ctxs[Math.floor(ctxs.length / 2)] || 131072) * (0.7 - reqBody._compactRetries * 0.15)); // 70%→55%→40%
+    log(`ALL-FAILED: ${errors.length} errors (${contextOrTimeoutErrors.length} context/timeout, ${errors.length - contextOrTimeoutErrors.length} other) isContextProblem=${isContextProblem}`);
 
-      let refs = [];
-      try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
-      const compacted = compactMessages(reqBody.messages, target, requestedMaxTokens, refs);
-      if (compacted) {
-        reqBody.messages = compacted.messages;
-        const newEst = estimateTokens(reqBody.messages);
-        log(`RETRY-COMPACT #${reqBody._compactRetries}: ${estTokens}tok → ${newEst}tok (target=${target}, removed ${compacted.removed} msgs)`);
-        // Recursive retry with compacted context
-        return await handleChatCompletion(reqBody, clientRes);
+    if (isContextProblem && reqBody.messages?.length > 4) {
+      const postRetries = reqBody._postCompactRetries || 0;
+      const targets = [0.7, 0.55];
+      if (postRetries < targets.length) {
+        reqBody._postCompactRetries = postRetries + 1;
+        reqBody._midCompactRetries = 0;
+        const allP = requestedModel === "auto"
+          ? getProvidersForAuto(reqBody.messages, 0, reqBody)
+          : getProvidersForGroup(requestedModel, 0, reqBody);
+        const maxCtx = Math.max(...allP.map((p) => getEffectiveContext(p)), 131072);
+        const target = Math.floor(maxCtx * targets[postRetries]);
+
+        log(`POST-COMPACT: all providers failed → compact to ${Math.round(targets[postRetries]*100)}% of max ctx ${maxCtx} = ${target}tok (attempt #${postRetries + 1})`);
+        let refs = [];
+        try { refs = await mempalace.saveCompactedContext(mpSession, reqBody.messages) || []; } catch {}
+        const compacted = compactMessages(reqBody.messages, target, requestedMaxTokens, refs);
+        if (compacted) {
+          reqBody.messages = compacted.messages;
+          const newEst = estimateTokens(reqBody.messages);
+          log(`POST-COMPACT #${postRetries + 1}: ${estTokens}tok → ${newEst}tok → retrying all providers`);
+          return await handleChatCompletion(reqBody, clientRes);
+        } else {
+          log(`POST-COMPACT #${postRetries + 1}: compaction failed (messages too short to compact further)`);
+        }
       }
     }
 
-    // Final fallback — return context_length_exceeded to trigger IDE compaction
+    // Step 5: Everything failed — return context_length_exceeded to trigger IDE compaction
     if (isContextProblem) {
       const maxContext = Math.max(...PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => getEffectiveContext(p)), 0);
       const currentEst = estimateTokens(reqBody.messages);
+      log(`CONTEXT-EXCEEDED: all compaction attempts exhausted. ${currentEst}tok + ${requestedMaxTokens}max_tokens > ${maxContext} max_ctx — returning context_length_exceeded to IDE`);
       const body = JSON.stringify({
         error: {
           message: `This model's maximum context length is ${maxContext} tokens. However, you requested ${currentEst + requestedMaxTokens} tokens (${currentEst} in the messages, ${requestedMaxTokens} in the completion). Please reduce the length of the messages or completion.`,

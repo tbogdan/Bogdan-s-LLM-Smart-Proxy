@@ -275,6 +275,18 @@ function getEndpoints() {
     });
   }
 
+  // Cline Provider (public API — 356 models, 28 free)
+  if (process.env.CLINE_API_KEY) {
+    endpoints.push({
+      name: "Cline",
+      modelsUrl: "https://api.cline.bot/api/v1/models",
+      chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+      headers: { Authorization: `Bearer ${process.env.CLINE_API_KEY}` },
+      key_env: "CLINE_API_KEY",
+      filterFree: true,
+    });
+  }
+
   // OpenAI Codex Proxy (ChatGPT subscription OAuth)
   if (process.env.ENABLE_CODEX === "true" && process.env.CODEX_API_KEY) {
     endpoints.push({

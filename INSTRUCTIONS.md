@@ -37,6 +37,7 @@ Edit `.env` and add keys for providers you want. Free keys available at:
 | Ollama Cloud | https://ollama.com |
 | Cloudflare | https://dash.cloudflare.com (also need Account ID) |
 | BigModel | https://open.bigmodel.cn |
+| Cline | https://app.cline.bot (28 free models, 356 total) |
 
 No keys needed for: **Kilo** (anonymous), **OVH**, **LLM7**
 
