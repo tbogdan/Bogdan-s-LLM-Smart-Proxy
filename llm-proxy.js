@@ -706,11 +706,16 @@ function detectIncompatibility(providerName, statusCode, errorBody) {
     }
   }
 
-  // Monthly/quota/usage limit (Kiro 402, Codex 500 "usage limit", etc.)
-  if (body.includes("reached the limit") || body.includes("MONTHLY_REQUEST_COUNT") || body.includes("usage limit has been reached")) {
-    // Long cooldown — quota limits are typically hourly/daily/monthly
+  // Monthly/quota/usage limit (Kiro 402, Codex 500 "usage limit", socket hang up, etc.)
+  if (body.includes("reached the limit") || body.includes("MONTHLY_REQUEST_COUNT") || body.includes("usage limit has been reached") || body.includes("out of") || body.includes("limit will reset")) {
     setCooldown(providerName, 3600_000); // 1 hour cooldown
     log(`QUOTA: ${providerName} quota/usage limit exhausted — cooldown 1h`);
+  }
+
+  // Socket hang up from providers that drop connection on quota (Codex free tier)
+  if (body.includes("socket hang up") && /codex|openai-oauth/i.test(providerName)) {
+    setCooldown(providerName, 3600_000);
+    log(`QUOTA: ${providerName} socket hang up (likely quota) — cooldown 1h`);
   }
 
   // Context window from error (Cloudflare format: "exceeded this model context window limit (24000)")
@@ -749,17 +754,19 @@ function transformRequest(provider, reqBody) {
 
   const compat = getCompat(provider.name);
 
-  // Per-provider context compaction: if messages exceed this provider's effective context,
+  // Per-provider context compaction: if messages + tools + max_tokens exceed effective context,
   // compact to fit (post-routing, provider-specific)
   if (body.messages && body.messages.length > 4) {
     const providerCtx = getEffectiveContext(provider);
-    const currentTokens = estimateTokens(body.messages) + (body.max_tokens || 4096);
+    const currentTokens = estimateTokens(body.messages) + estimateToolsTokens(body.tools) + (body.max_tokens || 4096);
     if (currentTokens > providerCtx * 0.95) {
-      const target = Math.floor(providerCtx * 0.75);
+      const toolsTokens = estimateToolsTokens(body.tools);
+      const target = Math.floor((providerCtx - toolsTokens) * 0.75); // compact messages to 75%, leaving room for tools
+      log(`POST-COMPACT: ${provider.name} needs ${currentTokens}tok (msgs=${estimateTokens(body.messages)}, tools=${toolsTokens}, max_tok=${body.max_tokens||4096}) > ${providerCtx} ctx → compacting to ${target}tok`);
       const compacted = compactMessages(body.messages, target, body.max_tokens || 4096, []);
       if (compacted) {
         body.messages = compacted.messages;
-        log(`POST-COMPACT: ${provider.name} context ${currentTokens}tok → ${estimateTokens(body.messages)}tok (provider limit: ${providerCtx})`);
+        log(`POST-COMPACT: ${provider.name} done: ${estimateTokens(body.messages)}tok msgs + ${toolsTokens}tok tools = ${estimateTokens(body.messages)+toolsTokens}tok (limit: ${providerCtx})`);
       }
     }
   }
@@ -1968,15 +1975,17 @@ async function handleChatCompletion(reqBody, clientRes) {
         const CTX_ERR_RE = /context.length|too.large|maximum.*token|too large for model/i;
         const isCtxErr = CTX_ERR_RE.test(errFull);
         const isRateLimit = status === 429 || /rate.limit|too many requests/i.test(errFull);
-        const isQuota = /usage limit|quota|reached the limit|MONTHLY/i.test(errFull);
+        const isQuota = /usage limit|quota|reached the limit|MONTHLY|out of.*messages/i.test(errFull);
+        const isSocketDrop = /socket hang up/i.test(errFull) && /codex/i.test(provider.name);
         const isTimeout = status === 504 || status === 502 || /timeout|idle/i.test(errFull);
 
         if (isCtxErr) {
           log(`REROUTE: ${provider.name} context too large (${getEffectiveContext(provider)} ctx) → trying next provider with larger context`);
         } else if (isRateLimit) {
           log(`REROUTE: ${provider.name} rate limited → trying next provider`);
-        } else if (isQuota) {
+        } else if (isQuota || isSocketDrop) {
           log(`REROUTE: ${provider.name} quota exhausted → trying next provider (cooldown 1h)`);
+          setCooldown(provider.name, 3600_000);
         } else if (isTimeout) {
           log(`REROUTE: ${provider.name} timeout/502 → trying next provider`);
         } else {
