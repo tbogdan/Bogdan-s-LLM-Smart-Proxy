@@ -555,7 +555,7 @@ Key sub-skills: `brainstorming`, `test-driven`, `dispatching`, `verification`, `
 
 ### Autonomous Execution (built into proxy)
 
-The proxy injects execution rules into every request automatically. No separate installation needed. See `skills/autonomous-loop/SKILL.md` for the full reference.
+The proxy injects execution rules into every request automatically. No separate installation needed. Rules live in `lib/transforms.js` (system prompt section).
 
 **Injected automatically:**
 

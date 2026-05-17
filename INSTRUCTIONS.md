@@ -212,7 +212,7 @@ The proxy automatically injects execution rules into every request:
 - Decision making: discover tech → recall preferences → confirm once → build
 - Anti-stalling, violation detection, smart IDE prompt merging
 
-Full reference: `skills/autonomous-loop/SKILL.md`
+Full reference: injected by `lib/transforms.js` (system prompt section)
 
 ## Architecture
 
