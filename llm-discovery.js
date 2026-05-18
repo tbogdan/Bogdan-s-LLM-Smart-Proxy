@@ -18,6 +18,11 @@ const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
 const SCAN_INTERVAL = 2 * 60 * 60_000; // 2 hours
 const REQUEST_TIMEOUT = 30_000;
+const SUPPORTED_PROTOCOLS = {
+  claude: "anthropic",
+  codex: "openai",
+  windsurf: "windsurf",
+};
 
 // Thinking model patterns
 const THINKING_PATTERNS = [
@@ -25,8 +30,6 @@ const THINKING_PATTERNS = [
   /gemini-2\.5/i, /gemini-3/i, /magistral/i, /\b(o1|o3|o4)\b/i, /nemotron.*reason/i,
   /gpt-5/i, /claude.*sonnet[- _.]4/i, /claude.*opus/i, /claude.*haiku[- _.]4/i,
 ];
-
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 // ---------------------------------------------------------------------------
 // URL resolution (e.g. Cloudflare accounts/me → actual account ID)
@@ -166,8 +169,12 @@ function providersFromEndpointModels(ep, models) {
     return windsurfCloud.buildWindsurfProviders();
   }
 
-  return (models || []).map((modelData) => {
+  return (models || []).filter((modelData) => {
+    if (!modelData || typeof modelData !== "object" || Array.isArray(modelData)) return false;
     const upstream = modelData.id || modelData.name;
+    return typeof upstream === "string" && upstream.trim().length > 0;
+  }).map((modelData) => {
+    const upstream = (modelData.id || modelData.name).trim();
     const modelId = `${ep.family}/${upstream}`;
     const caps = detectCaps(modelId, modelData);
     const tc = caps.includes("thinking") || THINKING_PATTERNS.some((pattern) => pattern.test(modelId));
@@ -319,25 +326,29 @@ function loadDiscovery() {
 }
 
 function saveDiscovery(data) {
-  try { fs.writeFileSync(DISCOVERY_FILE, JSON.stringify(data, null, 2)); } catch {}
+  try {
+    ensureDataDir();
+    fs.writeFileSync(DISCOVERY_FILE, JSON.stringify(data, null, 2));
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
 // Write providers.json: merge seed + discovered
 // ---------------------------------------------------------------------------
-function writeProvidersFile(seed, discoveredProviders) {
-  // Start with EXISTING providers.json to preserve previously discovered providers
+function isSupportedProvider(provider) {
+  if (!provider || typeof provider !== "object") return false;
+  if (!providerConfig.SUPPORTED_FAMILIES.includes(provider.family)) return false;
+  if (provider.protocol !== SUPPORTED_PROTOCOLS[provider.family]) return false;
+  return typeof provider.model === "string" && provider.model.startsWith(`${provider.family}/`);
+}
+
+function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
   const providerMap = new Map();
 
-  // Load existing file first (preserves providers from previous scan cycles)
-  try {
-    if (fs.existsSync(PROVIDERS_FILE)) {
-      const existing = JSON.parse(fs.readFileSync(PROVIDERS_FILE, "utf8"));
-      for (const p of (existing.providers || [])) {
-        providerMap.set(p.name, p);
-      }
-    }
-  } catch {}
+  // Load existing supported providers first (preserves prior scoped scan cycles).
+  for (const p of (existingConfig?.providers || [])) {
+    if (isSupportedProvider(p)) providerMap.set(p.name, p);
+  }
 
   // Layer seed providers on top (source of truth for seed config)
   for (const sp of (seed.providers || [])) {
@@ -357,19 +368,36 @@ function writeProvidersFile(seed, discoveredProviders) {
       existing.alive = dp.alive;
       existing.last_tested = dp.last_tested;
       providerMap.set(dp.name, existing);
-    } else {
+    } else if (isSupportedProvider(dp)) {
       providerMap.set(dp.name, { ...dp, seed: false });
     }
   }
 
-  const config = {
+  return {
     version: Date.now(),
     generated: new Date().toISOString(),
     providers: Array.from(providerMap.values()),
     groups: seed.groups || providerConfig.GROUPS,
   };
+}
+
+function ensureDataDir() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function writeProvidersFile(seed, discoveredProviders) {
+  let existingConfig = null;
 
   try {
+    if (fs.existsSync(PROVIDERS_FILE)) {
+      existingConfig = JSON.parse(fs.readFileSync(PROVIDERS_FILE, "utf8"));
+    }
+  } catch {}
+
+  const config = mergeProvidersConfig(seed, discoveredProviders, existingConfig);
+
+  try {
+    ensureDataDir();
     fs.writeFileSync(PROVIDERS_FILE, JSON.stringify(config, null, 2));
     log(`Wrote providers.json: ${config.providers.length} providers (version ${config.version})`);
   } catch (err) {
@@ -389,6 +417,16 @@ function loadProvidersFromFile() {
     }
   } catch {}
   return null;
+}
+
+function shouldProbeSeedProvider(provider, env = process.env) {
+  if (!provider || typeof provider !== "object") return false;
+  const key = (provider.key_env ? env[provider.key_env] : null) || provider.default_key || "";
+  if (!key && !provider.no_auth) return true;
+  if (!/^https?:\/\//.test(String(provider.url || ""))) return false;
+  if (provider.family === "claude" || provider.family === "windsurf") return false;
+  if (provider.protocol === "anthropic" || provider.protocol === "windsurf") return false;
+  return true;
 }
 
 async function testSeedProviders(seed) {
@@ -414,6 +452,17 @@ async function testSeedProviders(seed) {
         last_tested: new Date().toISOString(),
         reason: "no_key",
       });
+      continue;
+    }
+
+    if (!shouldProbeSeedProvider(sp)) {
+      results.push({
+        name: sp.name,
+        alive: true,
+        last_tested: existingProviders.get(sp.name)?.last_tested || null,
+        reason: "adapter_probe_skipped",
+      });
+      log(`  SKIP:  ${sp.name} (adapter probe not implemented)`);
       continue;
     }
 
@@ -576,6 +625,7 @@ function generateInitialProvidersFile() {
   };
 
   try {
+    ensureDataDir();
     fs.writeFileSync(PROVIDERS_FILE, JSON.stringify(config, null, 2));
     log(`Generated initial providers.json with ${providers.length} seed providers`);
   } catch (err) {
@@ -594,6 +644,7 @@ function log(msg) {
 // Main loop
 // ---------------------------------------------------------------------------
 async function main() {
+  ensureDataDir();
   log("LLM Discovery daemon starting...");
   log(`Scan interval: ${SCAN_INTERVAL / 3600000}h`);
   log(`Data dir: ${DATA_DIR}`);
@@ -617,6 +668,8 @@ async function main() {
 module.exports = {
   getEndpoints,
   providersFromEndpointModels,
+  shouldProbeSeedProvider,
+  mergeProvidersConfig,
   loadSeed,
   writeProvidersFile,
   generateInitialProvidersFile,
