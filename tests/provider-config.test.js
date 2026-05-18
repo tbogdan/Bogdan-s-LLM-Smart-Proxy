@@ -114,3 +114,33 @@ test("provider adapters delegate OpenAI-compatible non-streaming routes", async 
   assert.equal(delegatedProvider, provider);
   assert.equal(delegatedBody, reqBody);
 });
+
+test("provider adapters prepare OpenAI-compatible requests with upstream model for streaming", () => {
+  const adapters = require("../lib/provider-adapters");
+  const provider = {
+    name: "Codex-GPT55",
+    model: "codex/gpt-5.5",
+    upstream_model: "gpt-5.5",
+  };
+  const body = adapters.prepareOpenAICompatibleRequest(
+    provider,
+    { model: "codex/gpt-5.5", stream_options: { include_usage: true }, messages: [{ role: "user", content: "Hello" }] },
+    true,
+  );
+
+  assert.equal(body.model, "gpt-5.5");
+  assert.equal(body.stream, true);
+  assert.deepEqual(body.stream_options, { include_usage: true });
+});
+
+test("provider adapters convert Windsurf status errors to route responses", () => {
+  const adapters = require("../lib/provider-adapters");
+  const body = JSON.stringify({ error: "quota exceeded" });
+  const response = adapters.windsurfErrorToResponse({ status: 429, headers: { "retry-after": "60" }, body });
+
+  assert.deepEqual(response, {
+    status: 429,
+    headers: { "retry-after": "60" },
+    body,
+  });
+});
