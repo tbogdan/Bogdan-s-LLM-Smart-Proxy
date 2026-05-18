@@ -32,6 +32,19 @@ test("converts OpenAI chat request to Anthropic Messages request", () => {
   assert.equal(output.tools[0].name, "read_file");
 });
 
+test("defaults max_tokens when OpenAI request omits it", () => {
+  const output = anthropic.toAnthropicRequest(
+    { upstream_model: "claude-sonnet-4-5" },
+    {
+      model: "claude/claude-sonnet-4-5",
+      messages: [{ role: "user", content: "Hello" }],
+    }
+  );
+
+  assert.equal(anthropic.DEFAULT_MAX_TOKENS, 4096);
+  assert.equal(output.max_tokens, 4096);
+});
+
 test("converts Anthropic response to OpenAI chat completion", () => {
   const output = anthropic.toOpenAIResponse("claude/claude-sonnet-4-5", {
     id: "msg_123",
