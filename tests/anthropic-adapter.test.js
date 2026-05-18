@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const http = require("node:http");
 const anthropic = require("../lib/anthropic-adapter");
 
 test("converts OpenAI chat request to Anthropic Messages request", () => {
@@ -9,9 +10,9 @@ test("converts OpenAI chat request to Anthropic Messages request", () => {
   const input = {
     model: "claude/claude-sonnet-4-5",
     messages: [
-      { role: "system", content: "System A" },
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hi" },
+      { role: "system", content: [{ type: "text", text: "System A" }] },
+      { role: "user", content: [{ type: "text", text: "Hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "Hi" }] },
       { role: "user", content: [{ type: "text", text: "Use tool" }] },
     ],
     tools: [{ type: "function", function: { name: "read_file", description: "Read file", parameters: { type: "object" } } }],
@@ -53,4 +54,43 @@ test("builds Anthropic headers from OAuth token", () => {
   assert.equal(headers.Authorization, "Bearer oauth-token");
   assert.equal(headers["anthropic-version"], "2023-06-01");
   assert.equal(headers["content-type"], "application/json");
+});
+
+test("postAnthropic returns raw HTTP response details", async () => {
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      assert.equal(request.method, "POST");
+      assert.equal(request.headers.authorization, "Bearer oauth-token");
+      assert.equal(request.headers["anthropic-version"], "2023-06-01");
+      assert.equal(body, JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 1 }));
+      response.writeHead(429, { "content-type": "application/json", "x-request-id": "req_123" });
+      response.end('{"error":"rate_limited"}');
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const output = await anthropic.postAnthropic(
+      { key: "oauth-token", url: `http://127.0.0.1:${port}/v1/messages` },
+      { model: "claude-sonnet-4-5", max_tokens: 1 }
+    );
+
+    assert.equal(output.status, 429);
+    assert.equal(output.headers["content-type"], "application/json");
+    assert.equal(output.headers["x-request-id"], "req_123");
+    assert.equal(output.body, '{"error":"rate_limited"}');
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
 });
