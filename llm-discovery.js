@@ -6,6 +6,7 @@ const http = require("http");
 const { URL } = require("url");
 const fs = require("fs");
 const path = require("path");
+const anthropicAdapter = require("./lib/anthropic-adapter");
 const providerConfig = require("./lib/provider-config");
 const windsurfCloud = require("./lib/windsurf-cloud");
 
@@ -23,6 +24,8 @@ const SUPPORTED_PROTOCOLS = {
   codex: "openai",
   windsurf: "windsurf",
 };
+const PROBE_PROMPT = "Say hello in one word.";
+const PROBE_MAX_TOKENS = 50;
 
 // Thinking model patterns
 const THINKING_PATTERNS = [
@@ -35,10 +38,11 @@ const THINKING_PATTERNS = [
 // URL resolution (e.g. Cloudflare accounts/me → actual account ID)
 // ---------------------------------------------------------------------------
 function resolveUrl(url) {
-  if (url.includes("cloudflare.com") && url.includes("/accounts/me/") && process.env.CLOUDFLARE_ACCOUNT_ID) {
-    return url.replace("/accounts/me/", `/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/`);
+  const resolved = String(url || "");
+  if (resolved.includes("cloudflare.com") && resolved.includes("/accounts/me/") && process.env.CLOUDFLARE_ACCOUNT_ID) {
+    return resolved.replace("/accounts/me/", `/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/`);
   }
-  return url;
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,14 +247,67 @@ function detectCaps(modelId, modelData) {
 // ---------------------------------------------------------------------------
 // Test a model with basic chat
 // ---------------------------------------------------------------------------
-async function testChat(chatUrl, headers, model) {
+function probeRequest(provider) {
+  return {
+    model: provider.model,
+    messages: [{ role: "user", content: PROBE_PROMPT }],
+    max_tokens: PROBE_MAX_TOKENS,
+  };
+}
+
+function parseResponseBody(response) {
+  if (response?.data) return response.data;
+  if (typeof response?.body !== "string") return response?.body;
   try {
-    const resp = await postJSON(chatUrl, headers, {
-      model,
-      messages: [{ role: "user", content: "Say hello in one word." }],
-      max_tokens: 50,
-    });
-    return resp.status < 400 && resp.data?.choices?.length > 0;
+    return JSON.parse(response.body);
+  } catch {
+    return null;
+  }
+}
+
+function openAIChatOk(response) {
+  return response?.status < 400 && response?.data?.choices?.length > 0;
+}
+
+function anthropicChatOk(response) {
+  if (!response || response.status >= 400) return false;
+  const data = parseResponseBody(response);
+  return Array.isArray(data?.content) && data.content.some((part) => part?.type === "text" && part.text);
+}
+
+function buildOpenAIHeaders(provider, key) {
+  const headers = { ...(provider.headers || {}) };
+  if (key && !(provider.no_auth && key === "anonymous" && !provider.kilo)) {
+    if (provider.auth_style === "token") {
+      headers.Authorization = `token ${key}`;
+    } else {
+      headers.Authorization = `Bearer ${key}`;
+    }
+  }
+  return headers;
+}
+
+async function probeSeedProvider(provider, key, options = {}) {
+  const postJSONFn = options.postJSONFn || postJSON;
+  const postAnthropicFn = options.postAnthropicFn || anthropicAdapter.postAnthropic;
+  const callWindsurfCloudFn = options.callWindsurfCloudFn || windsurfCloud.callWindsurfCloud;
+  const request = probeRequest(provider);
+  const keyedProvider = { ...provider, key, key_env: providerConfig.resolveKeyEnv(provider) };
+
+  try {
+    if (provider.family === "claude" || provider.protocol === "anthropic") {
+      const response = await postAnthropicFn(keyedProvider, anthropicAdapter.toAnthropicRequest(keyedProvider, request));
+      return anthropicChatOk(response);
+    }
+
+    if (provider.family === "windsurf" || provider.protocol === "windsurf") {
+      const response = await callWindsurfCloudFn(keyedProvider, request);
+      return response?.choices?.length > 0;
+    }
+
+    const url = resolveUrl(providerConfig.resolveProviderUrl(provider));
+    const response = await postJSONFn(url, buildOpenAIHeaders(provider, key), request);
+    return openAIChatOk(response);
   } catch {
     return false;
   }
@@ -435,9 +492,10 @@ function shouldProbeSeedProvider(provider, env = process.env) {
   const keyEnv = providerConfig.resolveKeyEnv(provider, env);
   const key = (keyEnv ? env[keyEnv] : null) || provider.default_key || "";
   if (!key && !provider.no_auth) return true;
-  if (!/^https?:\/\//.test(String(provider.url || ""))) return false;
-  if (provider.family === "claude" || provider.family === "windsurf") return false;
-  if (provider.protocol === "anthropic" || provider.protocol === "windsurf") return false;
+  if (provider.family === "claude" || provider.family === "windsurf") return true;
+  if (provider.protocol === "anthropic" || provider.protocol === "windsurf") return true;
+  const url = providerConfig.resolveProviderUrl(provider);
+  if (!/^https?:\/\//.test(String(url || ""))) return false;
   return true;
 }
 
@@ -495,17 +553,7 @@ async function testSeedProviders(seed) {
       }
     }
 
-    // Build headers for test
-    const headers = { ...(sp.headers || {}) };
-    if (key && !(sp.no_auth && key === "anonymous" && !sp.kilo)) {
-      if (sp.auth_style === "token") {
-        headers["Authorization"] = `token ${key}`;
-      } else {
-        headers["Authorization"] = `Bearer ${key}`;
-      }
-    }
-
-    const chatOk = await testChat(resolveUrl(sp.url), headers, sp.model);
+    const chatOk = await probeSeedProvider({ ...sp, key_env: keyEnv }, key);
 
     results.push({
       name: sp.name,
@@ -682,6 +730,7 @@ module.exports = {
   getEndpoints,
   providersFromEndpointModels,
   shouldProbeSeedProvider,
+  probeSeedProvider,
   mergeProvidersConfig,
   loadSeed,
   writeProvidersFile,

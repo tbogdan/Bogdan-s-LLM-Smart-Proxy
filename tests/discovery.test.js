@@ -154,19 +154,90 @@ test("providersFromEndpointModels maps Windsurf providers with discovery names",
   assert.equal(providers.every((provider) => provider.name), true);
 });
 
-test("shouldProbeSeedProvider skips sentinel adapter providers with credentials", () => {
+test("shouldProbeSeedProvider probes sentinel adapter providers with credentials", () => {
   assert.equal(
     discovery.shouldProbeSeedProvider({ family: "windsurf", protocol: "windsurf", url: "windsurf", key_env: "WINDSURF_API_KEY" }, { WINDSURF_API_KEY: "ws-key" }),
-    false,
+    true,
   );
   assert.equal(
     discovery.shouldProbeSeedProvider({ family: "claude", protocol: "anthropic", url: "claude", key_env: "CLAUDE_CODE_OAUTH_TOKEN" }, { CLAUDE_CODE_OAUTH_TOKEN: "claude-key" }),
-    false,
+    true,
   );
   assert.equal(
     discovery.shouldProbeSeedProvider({ family: "codex", protocol: "openai", url: "http://codex-proxy:10531/v1/chat/completions", key_env: "CODEX_API_KEY" }, { CODEX_API_KEY: "codex-key" }),
     true,
   );
+});
+
+test("probeSeedProvider uses Anthropic Messages probe for Claude providers", async () => {
+  let capturedProvider = null;
+  let capturedRequest = null;
+  const ok = await discovery.probeSeedProvider(
+    {
+      name: "Claude-Sonnet45",
+      family: "claude",
+      protocol: "anthropic",
+      url: "claude",
+      key_env: "ANTHROPIC_API_KEY",
+      model: "claude/claude-sonnet-4-5",
+      upstream_model: "claude-sonnet-4-5",
+    },
+    "sk-ant-api03-test",
+    {
+      postAnthropicFn: async (provider, request) => {
+        capturedProvider = provider;
+        capturedRequest = request;
+        return {
+          status: 200,
+          body: JSON.stringify({
+            id: "msg_test",
+            role: "assistant",
+            content: [{ type: "text", text: "Hello" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 8, output_tokens: 1 },
+          }),
+        };
+      },
+    },
+  );
+
+  assert.equal(ok, true);
+  assert.equal(capturedProvider.key, "sk-ant-api03-test");
+  assert.equal(capturedProvider.key_env, "ANTHROPIC_API_KEY");
+  assert.equal(capturedRequest.model, "claude-sonnet-4-5");
+  assert.deepEqual(capturedRequest.messages, [{ role: "user", content: "Say hello in one word." }]);
+  assert.equal(capturedRequest.max_tokens, 50);
+});
+
+test("probeSeedProvider uses Windsurf cloud probe for Windsurf providers", async () => {
+  let capturedProvider = null;
+  let capturedInput = null;
+  const ok = await discovery.probeSeedProvider(
+    {
+      name: "Windsurf-SWE16Fast",
+      family: "windsurf",
+      protocol: "windsurf",
+      url: "windsurf",
+      key_env: "WINDSURF_API_KEY",
+      model: "windsurf/swe-1.6-fast",
+      upstream_model: "swe-1.6-fast",
+      windsurf_model_uid: "swe-1-6-fast",
+    },
+    "ws-key",
+    {
+      callWindsurfCloudFn: async (provider, input) => {
+        capturedProvider = provider;
+        capturedInput = input;
+        return { choices: [{ message: { role: "assistant", content: "Hello" } }] };
+      },
+    },
+  );
+
+  assert.equal(ok, true);
+  assert.equal(capturedProvider.key, "ws-key");
+  assert.equal(capturedInput.model, "windsurf/swe-1.6-fast");
+  assert.deepEqual(capturedInput.messages, [{ role: "user", content: "Say hello in one word." }]);
+  assert.equal(capturedInput.max_tokens, 50);
 });
 
 test("mergeProvidersConfig drops unsupported existing providers but keeps supported entries", () => {
