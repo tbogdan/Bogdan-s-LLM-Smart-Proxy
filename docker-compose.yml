@@ -3,45 +3,24 @@ services:
     build: .
     ports:
       - "18900:18900"
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       - MEMPALACE_URL=http://mempalace-mcp:8891
     volumes:
       - ./data:/data
     restart: unless-stopped
-    depends_on:
-      - mempalace-mcp
 
   llm-discovery:
     build: .
     command: ["node", "llm-discovery.js"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/data
     restart: unless-stopped
-
-  mempalace-mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile.mempalace
-    volumes:
-      - ./palace:/palace
-      - ./data:/data
-    ports:
-      - "8891:8891"
-    restart: unless-stopped
-
-  kiro-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile.kiro
-    env_file: .env
-    volumes:
-      - ./.env:/app/.env:ro
-    ports:
-      - "10088:10088"
-    restart: unless-stopped
-    profiles: [kiro]
 
   codex-proxy:
     build:
@@ -53,3 +32,15 @@ services:
       - "10531:10531"
     restart: unless-stopped
     profiles: [codex]
+
+  mempalace-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mempalace
+    volumes:
+      - ./palace:/palace
+      - ./data:/data
+    ports:
+      - "8891:8891"
+    restart: unless-stopped
+    profiles: [memory]
