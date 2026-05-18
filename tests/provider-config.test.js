@@ -59,7 +59,7 @@ test("providerForModel maps representative provider contracts", () => {
 
   const claude = config.providerForModel("claude", config.FALLBACK_MODELS.claude[0]);
   assert.equal(claude.protocol, "anthropic");
-  assert.equal(claude.key_env, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.equal(claude.key_env, "ANTHROPIC_API_KEY");
 
   const windsurf = config.providerForModel("windsurf", config.FALLBACK_MODELS.windsurf[0]);
   assert.equal(windsurf.protocol, "windsurf");

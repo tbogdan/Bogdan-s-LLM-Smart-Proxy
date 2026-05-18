@@ -184,8 +184,17 @@ test("converts buffered Anthropic tool stream deltas to OpenAI SSE", () => {
 });
 
 test("builds Anthropic headers from OAuth token", () => {
-  const headers = anthropic.buildHeaders({ key: "oauth-token" });
+  const headers = anthropic.buildHeaders({ key: "oauth-token", key_env: "CLAUDE_CODE_OAUTH_TOKEN" });
   assert.equal(headers.Authorization, "Bearer oauth-token");
+  assert.equal(headers["x-api-key"], undefined);
+  assert.equal(headers["anthropic-version"], "2023-06-01");
+  assert.equal(headers["content-type"], "application/json");
+});
+
+test("builds Anthropic headers from Platform API key", () => {
+  const headers = anthropic.buildHeaders({ key: "sk-ant-api03-test", key_env: "ANTHROPIC_API_KEY" });
+  assert.equal(headers["x-api-key"], "sk-ant-api03-test");
+  assert.equal(headers.Authorization, undefined);
   assert.equal(headers["anthropic-version"], "2023-06-01");
   assert.equal(headers["content-type"], "application/json");
 });
@@ -211,7 +220,7 @@ test("postAnthropic returns raw HTTP response details", async () => {
   try {
     const { port } = server.address();
     const output = await anthropic.postAnthropic(
-      { key: "oauth-token", url: `http://127.0.0.1:${port}/v1/messages` },
+      { key: "oauth-token", key_env: "CLAUDE_CODE_OAUTH_TOKEN", url: `http://127.0.0.1:${port}/v1/messages` },
       { model: "claude-sonnet-4-5", max_tokens: 1 }
     );
 

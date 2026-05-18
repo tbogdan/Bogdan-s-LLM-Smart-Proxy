@@ -16,6 +16,7 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
     WINDSURF_API_KEY: "ws-key",
     ENABLE_CLAUDE: "true",
     CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
+    ANTHROPIC_API_KEY: "platform-key",
     ENABLE_CODEX: "true",
     CODEX_API_KEY: "codex-key",
     GROQ_API_KEY: "old-groq",
@@ -27,7 +28,20 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
   assert.deepEqual(endpoints.map((endpoint) => endpoint.name), ["Claude", "Codex", "Windsurf"]);
   assert.deepEqual(endpoints.map((endpoint) => endpoint.family), ["claude", "codex", "windsurf"]);
   assert.deepEqual(endpoints.map((endpoint) => endpoint.protocol), ["anthropic", "openai", "windsurf"]);
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
+  assert.equal(endpoints[0].headers["x-api-key"], "platform-key");
+  assert.equal(endpoints[0].headers.Authorization, undefined);
+});
+
+test("getEndpoints falls back to Claude Code OAuth when Platform key is absent", () => {
+  const endpoints = discovery.getEndpoints({
+    ENABLE_CLAUDE: "true",
+    CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
+  });
+
+  assert.equal(endpoints[0].key_env, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.equal(endpoints[0].headers.Authorization, "Bearer claude-oauth");
+  assert.equal(endpoints[0].headers["x-api-key"], undefined);
 });
 
 test("getEndpoints ignores old provider keys without supported enable flags", () => {

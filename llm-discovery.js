@@ -111,8 +111,11 @@ function loadSeed() {
 function getEndpoints(env = process.env) {
   const endpoints = [];
 
-  if (env.ENABLE_CLAUDE === "true" && (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY)) {
-    const keyEnv = env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY";
+  if (env.ENABLE_CLAUDE === "true" && (env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN)) {
+    const keyEnv = env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "CLAUDE_CODE_OAUTH_TOKEN";
+    const authHeaders = keyEnv === "ANTHROPIC_API_KEY"
+      ? { "x-api-key": env[keyEnv] }
+      : { Authorization: `Bearer ${env[keyEnv]}` };
     endpoints.push({
       name: "Claude",
       family: "claude",
@@ -120,7 +123,7 @@ function getEndpoints(env = process.env) {
       modelsUrl: "https://api.anthropic.com/v1/models",
       chatUrl: "https://api.anthropic.com/v1/messages",
       headers: {
-        Authorization: `Bearer ${env[keyEnv]}`,
+        ...authHeaders,
         "anthropic-version": "2023-06-01",
       },
       key_env: keyEnv,
