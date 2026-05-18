@@ -6,6 +6,8 @@ const http = require("http");
 const { URL } = require("url");
 const fs = require("fs");
 const path = require("path");
+const providerConfig = require("./lib/provider-config");
+const windsurfCloud = require("./lib/windsurf-cloud");
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -103,215 +105,90 @@ function loadSeed() {
 // ---------------------------------------------------------------------------
 // Provider endpoints to scan for new models
 // ---------------------------------------------------------------------------
-function getEndpoints() {
+function getEndpoints(env = process.env) {
   const endpoints = [];
 
-  // Groq
-  if (process.env.GROQ_API_KEY) {
+  if (env.ENABLE_CLAUDE === "true" && (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY)) {
+    const keyEnv = env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY";
     endpoints.push({
-      name: "Groq",
-      modelsUrl: "https://api.groq.com/openai/v1/models",
-      chatUrl: "https://api.groq.com/openai/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      key_env: "GROQ_API_KEY",
-    });
-  }
-
-  // Cerebras
-  if (process.env.CEREBRAS_API_KEY) {
-    endpoints.push({
-      name: "Cerebras",
-      modelsUrl: "https://api.cerebras.ai/v1/models",
-      chatUrl: "https://api.cerebras.ai/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}` },
-      key_env: "CEREBRAS_API_KEY",
-    });
-  }
-
-  // SambaNova
-  if (process.env.SAMBANOVA_API_KEY) {
-    endpoints.push({
-      name: "SambaNova",
-      modelsUrl: "https://api.sambanova.ai/v1/models",
-      chatUrl: "https://api.sambanova.ai/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.SAMBANOVA_API_KEY}` },
-      key_env: "SAMBANOVA_API_KEY",
-    });
-  }
-
-  // NVIDIA
-  if (process.env.NVIDIA_API_KEY) {
-    endpoints.push({
-      name: "NVIDIA",
-      modelsUrl: "https://integrate.api.nvidia.com/v1/models",
-      chatUrl: "https://integrate.api.nvidia.com/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
-      key_env: "NVIDIA_API_KEY",
-    });
-  }
-
-  // OpenRouter
-  if (process.env.OPENROUTER_API_KEY) {
-    endpoints.push({
-      name: "OpenRouter",
-      modelsUrl: "https://openrouter.ai/api/v1/models",
-      chatUrl: "https://openrouter.ai/api/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
-      key_env: "OPENROUTER_API_KEY",
-      filterFree: true,
-    });
-  }
-
-  // Kilo (via OpenRouter models list, but proxied chat endpoint)
-  if (process.env.KILO_TOKEN) {
-    endpoints.push({
-      name: "Kilo",
-      modelsUrl: "https://openrouter.ai/api/v1/models",
-      chatUrl: "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      name: "Claude",
+      family: "claude",
+      protocol: "anthropic",
+      modelsUrl: "https://api.anthropic.com/v1/models",
+      chatUrl: "https://api.anthropic.com/v1/messages",
       headers: {
-        Authorization: `Bearer ${process.env.KILO_TOKEN}`,
-        "User-Agent": "Kilo-Code/7.2.0",
-        "HTTP-Referer": "https://kilocode.ai",
-        "X-Title": "Kilo Code",
+        Authorization: `Bearer ${env[keyEnv]}`,
+        "anthropic-version": "2023-06-01",
       },
-      key_env: "KILO_TOKEN",
-      filterFree: true,
-      kilo: true,
-      extraHeaders: {
-        "User-Agent": "Kilo-Code/7.2.0",
-        "HTTP-Referer": "https://kilocode.ai",
-        "X-Title": "Kilo Code",
-      },
+      key_env: keyEnv,
     });
   }
 
-  // SiliconFlow
-  if (process.env.SILICONFLOW_API_KEY) {
-    endpoints.push({
-      name: "SiliconFlow",
-      modelsUrl: "https://api.siliconflow.com/v1/models",
-      chatUrl: "https://api.siliconflow.com/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}` },
-      key_env: "SILICONFLOW_API_KEY",
-    });
-  }
-
-  // Mistral
-  if (process.env.MISTRAL_API_KEY) {
-    endpoints.push({
-      name: "Mistral",
-      modelsUrl: "https://api.mistral.ai/v1/models",
-      chatUrl: "https://api.mistral.ai/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.MISTRAL_API_KEY}` },
-      key_env: "MISTRAL_API_KEY",
-    });
-  }
-
-  // DeepSeek
-  if (process.env.DEEPSEEK_API_KEY) {
-    endpoints.push({
-      name: "DeepSeek",
-      modelsUrl: "https://api.deepseek.com/v1/models",
-      chatUrl: "https://api.deepseek.com/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` },
-      key_env: "DEEPSEEK_API_KEY",
-    });
-  }
-
-  // Alibaba / DashScope
-  if (process.env.ALIBABA_API_KEY) {
-    endpoints.push({
-      name: "Alibaba",
-      modelsUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
-      chatUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.ALIBABA_API_KEY}` },
-      key_env: "ALIBABA_API_KEY",
-    });
-  }
-
-  // OpenAI
-  if (process.env.OPENAI_API_KEY) {
-    endpoints.push({
-      name: "OpenAI",
-      modelsUrl: "https://api.openai.com/v1/models",
-      chatUrl: "https://api.openai.com/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      key_env: "OPENAI_API_KEY",
-    });
-  }
-
-  // Cohere
-  if (process.env.COHERE_API_KEY) {
-    endpoints.push({
-      name: "Cohere",
-      modelsUrl: "https://api.cohere.ai/compatibility/v1/models",
-      chatUrl: "https://api.cohere.ai/compatibility/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.COHERE_API_KEY}` },
-      key_env: "COHERE_API_KEY",
-    });
-  }
-
-  // Hugging Face
-  if (process.env.HF_TOKEN) {
-    endpoints.push({
-      name: "HuggingFace",
-      modelsUrl: "https://router.huggingface.co/v1/models",
-      chatUrl: "https://router.huggingface.co/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` },
-      key_env: "HF_TOKEN",
-    });
-  }
-
-  // --- Local Gateway Proxies (Docker internal network) ---
-
-  // Kiro Gateway
-  if (process.env.ENABLE_KIRO === "true" && process.env.KIRO_API_KEY) {
-    endpoints.push({
-      name: "Kiro",
-      modelsUrl: "http://kiro-gateway:10088/v1/models",
-      chatUrl: "http://kiro-gateway:10088/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.KIRO_API_KEY}` },
-      key_env: "KIRO_API_KEY",
-      local_gateway: true,
-    });
-  }
-
-  // ModelScope (Alibaba model hub — 65 free models)
-  if (process.env.MODELSCOPE_API_KEY) {
-    endpoints.push({
-      name: "ModelScope",
-      modelsUrl: "https://api-inference.modelscope.ai/v1/models",
-      chatUrl: "https://api-inference.modelscope.ai/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.MODELSCOPE_API_KEY}` },
-      key_env: "MODELSCOPE_API_KEY",
-    });
-  }
-
-  // Cline Provider (public API — 356 models, 28 free)
-  if (process.env.CLINE_API_KEY) {
-    endpoints.push({
-      name: "Cline",
-      modelsUrl: "https://api.cline.bot/api/v1/ai/cline/models",
-      chatUrl: "https://api.cline.bot/api/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.CLINE_API_KEY}` },
-      key_env: "CLINE_API_KEY",
-      filterFree: true,
-    });
-  }
-
-  // OpenAI Codex Proxy (ChatGPT subscription OAuth)
-  if (process.env.ENABLE_CODEX === "true" && process.env.CODEX_API_KEY) {
+  if (env.ENABLE_CODEX === "true" && env.CODEX_API_KEY) {
     endpoints.push({
       name: "Codex",
+      family: "codex",
+      protocol: "openai",
       modelsUrl: "http://codex-proxy:10531/v1/models",
       chatUrl: "http://codex-proxy:10531/v1/chat/completions",
-      headers: { Authorization: `Bearer ${process.env.CODEX_API_KEY}` },
+      headers: { Authorization: `Bearer ${env.CODEX_API_KEY}` },
       key_env: "CODEX_API_KEY",
       local_gateway: true,
     });
   }
 
-  return endpoints;
+  if (env.ENABLE_WINDSURF === "true" && env.WINDSURF_API_KEY) {
+    endpoints.push({
+      name: "Windsurf",
+      family: "windsurf",
+      protocol: "windsurf",
+      modelsUrl: null,
+      chatUrl: "windsurf",
+      headers: {},
+      key_env: "WINDSURF_API_KEY",
+    });
+  }
+
+  return endpoints.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function providerName(endpointName, upstreamModel) {
+  const shortName = String(upstreamModel || "")
+    .split("/")
+    .pop()
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .substring(0, 20);
+  return `${endpointName}-${shortName}`;
+}
+
+function providersFromEndpointModels(ep, models) {
+  if (ep.protocol === "windsurf" || ep.family === "windsurf") {
+    return windsurfCloud.buildWindsurfProviders();
+  }
+
+  return (models || []).map((modelData) => {
+    const upstream = modelData.id || modelData.name;
+    const modelId = `${ep.family}/${upstream}`;
+    const caps = detectCaps(modelId, modelData);
+    const tc = caps.includes("thinking") || THINKING_PATTERNS.some((pattern) => pattern.test(modelId));
+    return {
+      name: providerName(ep.name, upstream),
+      family: ep.family,
+      protocol: ep.protocol,
+      url: ep.chatUrl,
+      key_env: ep.key_env,
+      model: modelId,
+      upstream_model: upstream,
+      context: modelData.context_length || modelData.max_tokens || 4096,
+      tier: 2,
+      tc,
+      caps,
+      headers: {},
+      alive: true,
+      seed: false,
+      last_tested: new Date().toISOString(),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -489,15 +366,7 @@ function writeProvidersFile(seed, discoveredProviders) {
     version: Date.now(),
     generated: new Date().toISOString(),
     providers: Array.from(providerMap.values()),
-    groups: seed.groups || {
-        "auto-tools": "tools",
-      "auto-coding": "coding",
-      "auto-images": "images",
-      "auto-video": "video",
-      "auto-text": "text",
-      "auto-max": "max",
-      "auto-thinking": "thinking",
-    },
+    groups: seed.groups || providerConfig.GROUPS,
   };
 
   try {
@@ -621,101 +490,39 @@ async function runDiscoveryScan() {
   for (const ep of endpoints) {
     log(`Scanning ${ep.name}...`);
     try {
-      const resp = await fetchJSON(ep.modelsUrl, ep.headers);
-      if (resp.status >= 400 || !resp.data?.data) {
-        log(`  ${ep.name}: failed (HTTP ${resp.status})`);
-        continue;
-      }
-
-      let models = resp.data.data;
-
-      // Filter free models for OpenRouter/Kilo
-      if (ep.filterFree) {
-        models = models.filter((m) => {
-          const pricing = m.pricing || {};
-          return (pricing.prompt === "0" || pricing.prompt === 0) &&
-                 (pricing.completion === "0" || pricing.completion === 0);
-        });
-      }
-
-      log(`  ${ep.name}: ${models.length} models found`);
-
-      for (const m of models) {
-        const modelId = m.id || m.name;
-
-        // Skip models that are already in seed (they are handled separately)
-        const matchesSeed = (seed.providers || []).some(
-          (sp) => sp.model === modelId && sp.url === ep.chatUrl
-        );
-        if (matchesSeed) continue;
-
-        // Test basic chat
-        const chatHeaders = { ...ep.headers };
-        const chatOk = await testChat(ep.chatUrl, chatHeaders, modelId);
-        if (!chatOk) continue;
-
-        // Detect capabilities
-        const caps = detectCaps(modelId, m);
-
-        // Test thinking if pattern matches
-        let thinkingVerified = false;
-        if (THINKING_PATTERNS.some((p) => p.test(modelId))) {
-          thinkingVerified = await testThinking(ep.chatUrl, chatHeaders, modelId);
-          if (thinkingVerified && !caps.includes("thinking")) {
-            caps.push("thinking");
-          }
+      let models = [];
+      if (ep.modelsUrl) {
+        const resp = await fetchJSON(ep.modelsUrl, ep.headers);
+        if (resp.status >= 400 || !resp.data?.data) {
+          log(`  ${ep.name}: failed (HTTP ${resp.status})`);
+          continue;
         }
+        models = resp.data.data;
+        log(`  ${ep.name}: ${models.length} models found`);
+      } else {
+        log(`  ${ep.name}: using built-in provider definitions`);
+      }
 
-        // Determine thinking capable
-        const tc = thinkingVerified || THINKING_PATTERNS.some((p) => p.test(modelId));
+      for (const provider of providersFromEndpointModels(ep, models)) {
+        if (!provider.name || seedNames.has(provider.name)) continue;
 
-        // Build provider name — unique per source+model
-        const shortName = modelId.split("/").pop().replace(/[^a-zA-Z0-9]/g, "").substring(0, 20);
-        let providerName = `${ep.name}-${shortName}`;
-
-        // Unique key = source + provider name + model ID
-        // Same model from different sources (Kilo, Codex, NVIDIA) = different providers, keep all
-        const uniqueKey = `${ep.name}|${providerName}|${modelId}`;
+        const uniqueKey = `${ep.name}|${provider.name}|${provider.model}`;
         if (knownModels.has(uniqueKey)) continue;
 
-        // If name collides with seed, suffix to avoid overwrite
-        if (seedNames.has(providerName)) {
-          providerName = `${providerName}-d`; // -d = discovered duplicate
-        }
-
-        const entry = {
+        discovery.models.push({
           provider: ep.name,
-          name: providerName,
-          model: modelId,
-          context_length: m.context_length || m.max_tokens || 4096,
-          capabilities: caps,
-          thinking_verified: thinkingVerified,
+          name: provider.name,
+          model: provider.model,
+          upstream_model: provider.upstream_model,
+          context_length: provider.context,
+          capabilities: provider.caps,
           discovered_at: new Date().toISOString(),
-          chat_tested: true,
-        };
-
-        discovery.models.push(entry);
+          chat_tested: false,
+        });
         knownModels.add(uniqueKey);
+        discoveredProviders.push(provider);
         newCount++;
-        log(`  NEW: ${ep.name}/${modelId} caps=[${caps.join(",")}] thinking=${thinkingVerified}`);
-
-        // Also add as a provider entry for providers.json
-        const newProvider = {
-          name: providerName,
-          url: ep.chatUrl,
-          key_env: ep.key_env,
-          model: modelId,
-          context: m.context_length || m.max_tokens || 4096,
-          tier: 2,
-          tc,
-          caps,
-          headers: ep.extraHeaders || {},
-          kilo: !!ep.kilo,
-          alive: true,
-          seed: false,
-          last_tested: new Date().toISOString(),
-        };
-        discoveredProviders.push(newProvider);
+        log(`  NEW: ${provider.name} (${provider.model}) caps=[${provider.caps.join(",")}]`);
       }
     } catch (err) {
       log(`  ${ep.name}: error - ${err.message}`);
@@ -765,15 +572,7 @@ function generateInitialProvidersFile() {
     version: 1,
     generated: new Date().toISOString(),
     providers,
-    groups: seed.groups || {
-        "auto-tools": "tools",
-      "auto-coding": "coding",
-      "auto-images": "images",
-      "auto-video": "video",
-      "auto-text": "text",
-      "auto-max": "max",
-      "auto-thinking": "thinking",
-    },
+    groups: seed.groups || providerConfig.GROUPS,
   };
 
   try {
@@ -815,4 +614,15 @@ async function main() {
   }, SCAN_INTERVAL);
 }
 
-main();
+module.exports = {
+  getEndpoints,
+  providersFromEndpointModels,
+  loadSeed,
+  writeProvidersFile,
+  generateInitialProvidersFile,
+  runDiscoveryScan,
+};
+
+if (require.main === module) {
+  main();
+}
