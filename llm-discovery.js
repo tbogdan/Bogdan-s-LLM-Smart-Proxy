@@ -111,8 +111,8 @@ function loadSeed() {
 function getEndpoints(env = process.env) {
   const endpoints = [];
 
-  if (env.ENABLE_CLAUDE === "true" && (env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN)) {
-    const keyEnv = env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "CLAUDE_CODE_OAUTH_TOKEN";
+  if (env.ENABLE_CLAUDE === "true" && (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY)) {
+    const keyEnv = env.CLAUDE_CODE_OAUTH_TOKEN ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY";
     const authHeaders = keyEnv === "ANTHROPIC_API_KEY"
       ? { "x-api-key": env[keyEnv] }
       : { Authorization: `Bearer ${env[keyEnv]}` };
@@ -432,7 +432,8 @@ function loadProvidersFromFile() {
 
 function shouldProbeSeedProvider(provider, env = process.env) {
   if (!provider || typeof provider !== "object") return false;
-  const key = (provider.key_env ? env[provider.key_env] : null) || provider.default_key || "";
+  const keyEnv = providerConfig.resolveKeyEnv(provider, env);
+  const key = (keyEnv ? env[keyEnv] : null) || provider.default_key || "";
   if (!key && !provider.no_auth) return true;
   if (!/^https?:\/\//.test(String(provider.url || ""))) return false;
   if (provider.family === "claude" || provider.family === "windsurf") return false;
@@ -455,7 +456,8 @@ async function testSeedProviders(seed) {
   }
 
   for (const sp of (seed.providers || [])) {
-    const key = (sp.key_env ? process.env[sp.key_env] : null) || sp.default_key || "";
+    const keyEnv = providerConfig.resolveKeyEnv(sp);
+    const key = (keyEnv ? process.env[keyEnv] : null) || sp.default_key || "";
     if (!key && !sp.no_auth) {
       results.push({
         name: sp.name,

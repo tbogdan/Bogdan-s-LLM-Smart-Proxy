@@ -28,20 +28,20 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
   assert.deepEqual(endpoints.map((endpoint) => endpoint.name), ["Claude", "Codex", "Windsurf"]);
   assert.deepEqual(endpoints.map((endpoint) => endpoint.family), ["claude", "codex", "windsurf"]);
   assert.deepEqual(endpoints.map((endpoint) => endpoint.protocol), ["anthropic", "openai", "windsurf"]);
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
-  assert.equal(endpoints[0].headers["x-api-key"], "platform-key");
-  assert.equal(endpoints[0].headers.Authorization, undefined);
-});
-
-test("getEndpoints falls back to Claude Code OAuth when Platform key is absent", () => {
-  const endpoints = discovery.getEndpoints({
-    ENABLE_CLAUDE: "true",
-    CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
-  });
-
-  assert.equal(endpoints[0].key_env, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
   assert.equal(endpoints[0].headers.Authorization, "Bearer claude-oauth");
   assert.equal(endpoints[0].headers["x-api-key"], undefined);
+});
+
+test("getEndpoints falls back to Claude Platform API key when setup-token is absent", () => {
+  const endpoints = discovery.getEndpoints({
+    ENABLE_CLAUDE: "true",
+    ANTHROPIC_API_KEY: "platform-key",
+  });
+
+  assert.equal(endpoints[0].key_env, "ANTHROPIC_API_KEY");
+  assert.equal(endpoints[0].headers["x-api-key"], "platform-key");
+  assert.equal(endpoints[0].headers.Authorization, undefined);
 });
 
 test("getEndpoints ignores old provider keys without supported enable flags", () => {
@@ -73,6 +73,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
 test("providersFromEndpointModels maps Claude models to namespaced provider entries", () => {
   const endpoint = discovery.getEndpoints({
     ENABLE_CLAUDE: "true",
+    CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth",
     ANTHROPIC_API_KEY: "anthropic-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
@@ -85,7 +86,7 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
   assert.equal(providers[0].name, "Claude-claudesonnet45");
   assert.equal(providers[0].family, "claude");
   assert.equal(providers[0].protocol, "anthropic");
-  assert.equal(providers[0].key_env, "ANTHROPIC_API_KEY");
+  assert.equal(providers[0].key_env, "CLAUDE_CODE_OAUTH_TOKEN");
   assert.deepEqual(providers[0].headers, {});
   assert.equal(providers[0].alive, true);
   assert.equal(providers[0].seed, false);

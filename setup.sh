@@ -69,17 +69,18 @@ if [[ "$ENABLE_CLAUDE_INPUT" =~ ^[Yy]$ ]]; then
   CLAUDE_TOKEN="$(get_env CLAUDE_CODE_OAUTH_TOKEN)"
   ANTHROPIC_TOKEN="$(get_env ANTHROPIC_API_KEY)"
   if [ -z "$CLAUDE_TOKEN" ] && [ -z "$ANTHROPIC_TOKEN" ]; then
-    echo "Claude enabled. Create a Platform API key at:"
-    echo "  https://platform.claude.com/settings/keys"
-    read -p "Paste ANTHROPIC_API_KEY, or press Enter to use Claude Code OAuth instead: " ANTHROPIC_KEY_INPUT
-    if [ -n "$ANTHROPIC_KEY_INPUT" ]; then
-      set_env ANTHROPIC_API_KEY "$ANTHROPIC_KEY_INPUT"
+    echo "Claude enabled. Primary link flow:"
+    echo "  claude setup-token"
+    echo "Complete the browser authorization with the Platform option, then copy the printed token."
+    read -p "Paste CLAUDE_CODE_OAUTH_TOKEN, or press Enter to use Platform API key instead: " CLAUDE_CODE_TOKEN_INPUT
+    if [ -n "$CLAUDE_CODE_TOKEN_INPUT" ]; then
+      set_env CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_TOKEN_INPUT"
     else
-      echo "Fallback OAuth path:"
-      echo "  claude setup-token"
-      read -p "Paste CLAUDE_CODE_OAUTH_TOKEN, or press Enter to skip: " CLAUDE_CODE_TOKEN_INPUT
-      if [ -n "$CLAUDE_CODE_TOKEN_INPUT" ]; then
-        set_env CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_TOKEN_INPUT"
+      echo "Fallback Platform API key:"
+      echo "  https://platform.claude.com/settings/keys"
+      read -p "Paste ANTHROPIC_API_KEY, or press Enter to skip: " ANTHROPIC_KEY_INPUT
+      if [ -n "$ANTHROPIC_KEY_INPUT" ]; then
+        set_env ANTHROPIC_API_KEY "$ANTHROPIC_KEY_INPUT"
       fi
     fi
   fi

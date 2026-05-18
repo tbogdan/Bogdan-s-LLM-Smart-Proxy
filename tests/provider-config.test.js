@@ -59,7 +59,7 @@ test("providerForModel maps representative provider contracts", () => {
 
   const claude = config.providerForModel("claude", config.FALLBACK_MODELS.claude[0]);
   assert.equal(claude.protocol, "anthropic");
-  assert.equal(claude.key_env, "ANTHROPIC_API_KEY");
+  assert.equal(claude.key_env, "CLAUDE_CODE_OAUTH_TOKEN");
 
   const windsurf = config.providerForModel("windsurf", config.FALLBACK_MODELS.windsurf[0]);
   assert.equal(windsurf.protocol, "windsurf");
@@ -87,6 +87,37 @@ test("hydrateSeedProviders preserves runtime protocol metadata", () => {
   assert.equal(hydrated.providers[0].family, "claude");
   assert.equal(hydrated.providers[0].protocol, "anthropic");
   assert.equal(hydrated.providers[0].upstream_model, "claude-sonnet-4-5");
+});
+
+test("hydrateSeedProviders uses Claude Platform API key when setup-token is absent", () => {
+  const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const previousApiKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.ANTHROPIC_API_KEY = "sk-ant-api03-test";
+
+  try {
+    const hydrated = providers.hydrateSeedProviders({
+      providers: [
+        {
+          name: "Claude-Sonnet45",
+          family: "claude",
+          protocol: "anthropic",
+          url: "claude",
+          key_env: "CLAUDE_CODE_OAUTH_TOKEN",
+          model: "claude/claude-sonnet-4-5",
+          upstream_model: "claude-sonnet-4-5",
+        },
+      ],
+    });
+
+    assert.equal(hydrated.providers[0].key_env, "ANTHROPIC_API_KEY");
+    assert.equal(hydrated.providers[0].key, "sk-ant-api03-test");
+  } finally {
+    if (previousOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousOauth;
+    if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousApiKey;
+  }
 });
 
 test("provider adapters identify OpenAI-compatible protocols", () => {
