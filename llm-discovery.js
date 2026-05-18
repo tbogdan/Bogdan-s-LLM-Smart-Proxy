@@ -164,9 +164,17 @@ function providerName(endpointName, upstreamModel) {
   return `${endpointName}-${shortName}`;
 }
 
+function withDiscoveryName(endpointName, provider) {
+  if (provider.name) return provider;
+  return {
+    ...provider,
+    name: providerName(endpointName, provider.upstream_model || provider.model || provider.windsurf_model_uid),
+  };
+}
+
 function providersFromEndpointModels(ep, models) {
   if (ep.protocol === "windsurf" || ep.family === "windsurf") {
-    return windsurfCloud.buildWindsurfProviders();
+    return windsurfCloud.buildWindsurfProviders().map((provider) => withDiscoveryName(ep.name || "Windsurf", provider));
   }
 
   return (models || []).filter((modelData) => {

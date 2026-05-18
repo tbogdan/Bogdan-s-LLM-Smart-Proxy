@@ -115,14 +115,27 @@ test("providersFromEndpointModels skips malformed model entries", () => {
   assert.equal(providers.some((provider) => provider.model === "codex/undefined"), false);
 });
 
-test("providersFromEndpointModels maps Windsurf through windsurfCloud.buildWindsurfProviders", () => {
+test("providersFromEndpointModels maps Windsurf providers with discovery names", () => {
   const endpoint = discovery.getEndpoints({
     ENABLE_WINDSURF: "true",
     WINDSURF_API_KEY: "windsurf-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [{ id: "ignored" }]);
+  const cloudProviders = windsurfCloud.buildWindsurfProviders();
 
-  assert.deepEqual(providers, windsurfCloud.buildWindsurfProviders());
+  assert.equal(providers.length, cloudProviders.length);
+  for (const provider of providers) {
+    const cloudProvider = cloudProviders.find((candidate) => candidate.model === provider.model);
+    assert.ok(cloudProvider);
+    assert.equal(typeof provider.name, "string");
+    assert.equal(provider.name.length > 0, true);
+    assert.equal(provider.name.startsWith("Windsurf-"), true);
+    assert.equal(provider.family, cloudProvider.family);
+    assert.equal(provider.protocol, cloudProvider.protocol);
+    assert.equal(provider.upstream_model, cloudProvider.upstream_model);
+    assert.equal(provider.windsurf_model_uid, cloudProvider.windsurf_model_uid);
+  }
+  assert.equal(providers.every((provider) => provider.name), true);
 });
 
 test("shouldProbeSeedProvider skips sentinel adapter providers with credentials", () => {
