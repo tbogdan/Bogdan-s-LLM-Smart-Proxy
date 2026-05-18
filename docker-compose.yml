@@ -2,12 +2,14 @@ services:
   llm-proxy:
     build: .
     ports:
-      - "18900:18900"
+      - "${LLM_PROXY_PORT:-18900}:18900"
     env_file:
       - path: .env
         required: false
     environment:
-      - MEMPALACE_URL=http://mempalace-mcp:8891
+      LLM_PROXY_PORT: "18900"
+      MEMPALACE_ENABLED: ${MEMPALACE_ENABLED:-false}
+      MEMPALACE_URL: http://mempalace-mcp:8891
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -18,6 +20,9 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      MEMPALACE_ENABLED: ${MEMPALACE_ENABLED:-false}
+      MEMPALACE_URL: http://mempalace-mcp:8891
     volumes:
       - ./data:/data
     restart: unless-stopped
