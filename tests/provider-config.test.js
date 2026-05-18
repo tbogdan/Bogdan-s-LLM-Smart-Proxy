@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const config = require("../lib/provider-config");
+const providers = require("../lib/providers");
 
 test("supported families are exactly windsurf, claude, and codex", () => {
   assert.deepEqual(config.SUPPORTED_FAMILIES, ["windsurf", "claude", "codex"]);
@@ -63,4 +64,53 @@ test("providerForModel maps representative provider contracts", () => {
   const windsurf = config.providerForModel("windsurf", config.FALLBACK_MODELS.windsurf[0]);
   assert.equal(windsurf.protocol, "windsurf");
   assert.equal(windsurf.key_env, "WINDSURF_API_KEY");
+});
+
+test("hydrateSeedProviders preserves runtime protocol metadata", () => {
+  const hydrated = providers.hydrateSeedProviders({
+    providers: [
+      {
+        name: "Claude-Sonnet45",
+        family: "claude",
+        protocol: "anthropic",
+        url: "claude",
+        key_env: "CLAUDE_CODE_OAUTH_TOKEN",
+        model: "claude/claude-sonnet-4-5",
+        upstream_model: "claude-sonnet-4-5",
+        context: 200000,
+        tier: 1,
+        caps: ["text", "coding", "tools"],
+      },
+    ],
+  });
+
+  assert.equal(hydrated.providers[0].family, "claude");
+  assert.equal(hydrated.providers[0].protocol, "anthropic");
+  assert.equal(hydrated.providers[0].upstream_model, "claude-sonnet-4-5");
+});
+
+test("provider adapters identify OpenAI-compatible protocols", () => {
+  const adapters = require("../lib/provider-adapters");
+
+  assert.equal(adapters.isOpenAIProtocol({ protocol: "openai" }), true);
+  assert.equal(adapters.isOpenAIProtocol({}), true);
+  assert.equal(adapters.isOpenAIProtocol({ protocol: "anthropic" }), false);
+});
+
+test("provider adapters delegate OpenAI-compatible non-streaming routes", async () => {
+  const adapters = require("../lib/provider-adapters");
+  const provider = { name: "Codex-GPT55", protocol: "openai" };
+  const reqBody = { model: "codex/gpt-5.5", messages: [{ role: "user", content: "Hello" }] };
+  let delegatedProvider = null;
+  let delegatedBody = null;
+
+  const result = await adapters.routeNonStreaming(provider, reqBody, async (p, body) => {
+    delegatedProvider = p;
+    delegatedBody = body;
+    return { status: 200, headers: {}, body: "{}" };
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(delegatedProvider, provider);
+  assert.equal(delegatedBody, reqBody);
 });
