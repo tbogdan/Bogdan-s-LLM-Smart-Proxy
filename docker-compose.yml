@@ -32,7 +32,7 @@ services:
       context: .
       dockerfile: Dockerfile.codex
     volumes:
-      - ./data/codex-auth.json:/root/.codex/auth.json:ro
+      - ./data/codex-auth.json:/root/.codex/auth.json
     ports:
       - "10531:10531"
     restart: unless-stopped

@@ -8,7 +8,7 @@ Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exac
 | --- | --- | --- | --- |
 | Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | `windsurf/swe-1.6-fast`, `windsurf/swe-1.6`, `windsurf/swe-1.5-fast` |
 | Claude | `claude auth login --console`, then `node claude-auth.js --env-path .env` to extract `ANTHROPIC_API_KEY` | Anthropic Messages adapter | `claude/...` from discovery/seed |
-| Codex | `npx @openai/codex login`, then copy `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2` |
+| Codex | `npx @openai/codex login`; setup copies `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2` |
 
 ## Quick Start
 
@@ -18,6 +18,7 @@ chmod +x setup.sh
 ```
 
 The setup script copies `.env.example` to `.env` when needed, prompts for the provider families to enable, and starts Docker Compose with the required profiles.
+When Codex is enabled, it also copies `${CODEX_HOME:-$HOME/.codex}/auth.json` into `data/codex-auth.json` if the file exists.
 
 ## Manual Setup
 
@@ -120,7 +121,7 @@ docker compose --profile codex --profile memory up -d --build
 
 - Missing `WINDSURF_API_KEY`: run `node windsurf-auth.js --env-file .env`, then restart the proxy.
 - Missing Claude credentials: run `claude auth login --console`, choose Anthropic Console, then run `node claude-auth.js --env-path .env` and restart the proxy. If the helper says you are logged in with a subscription account, run `claude auth logout` and repeat the Console login.
-- Missing `data/codex-auth.json`: run `npx @openai/codex login`, then `mkdir -p data && cp ~/.codex/auth.json data/codex-auth.json`.
+- Missing `data/codex-auth.json`: run `npx @openai/codex login`, then rerun `./setup.sh`; setup copies the auth file into Docker's bind mount target.
 - Empty `/v1/models`: confirm at least one provider family is enabled in `.env`, required credentials are present, and the matching Docker profile is running for Codex.
 
 ## References

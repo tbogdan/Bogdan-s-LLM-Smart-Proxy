@@ -147,6 +147,7 @@ test("providersFromEndpointModels maps Windsurf providers with discovery names",
     assert.equal(provider.name.startsWith("Windsurf-"), true);
     assert.equal(provider.family, cloudProvider.family);
     assert.equal(provider.protocol, cloudProvider.protocol);
+    assert.equal(provider.url, "windsurf");
     assert.equal(provider.upstream_model, cloudProvider.upstream_model);
     assert.equal(provider.windsurf_model_uid, cloudProvider.windsurf_model_uid);
   }

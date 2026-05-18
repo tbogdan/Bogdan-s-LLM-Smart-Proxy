@@ -175,3 +175,19 @@ test("Claude setup docs prefer Console login and local key extraction", () => {
   assert.doesNotMatch(docs, /claude setup-token/);
   assert.doesNotMatch(docs, /claude\.ai/i);
 });
+
+test("setup copies existing Codex auth into the Docker bind mount target", () => {
+  const setup = read("setup.sh");
+
+  assert.match(setup, /CODEX_SOURCE_AUTH="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/auth\.json"/);
+  assert.match(setup, /cp "\$CODEX_SOURCE_AUTH" "data\/codex-auth\.json"/);
+  assert.match(setup, /\[ -d "data\/codex-auth\.json" \]/);
+  assert.match(setup, /rmdir "data\/codex-auth\.json"/);
+});
+
+test("Codex auth bind mount stays writable for token refresh", () => {
+  const compose = read("docker-compose.yml");
+
+  assert.match(compose, /- \.\/data\/codex-auth\.json:\/root\/\.codex\/auth\.json\s*$/m);
+  assert.doesNotMatch(compose, /codex-auth\.json:\/root\/\.codex\/auth\.json:ro/);
+});

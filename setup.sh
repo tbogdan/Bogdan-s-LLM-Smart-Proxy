@@ -50,6 +50,35 @@ get_env() {
   awk -F= -v key="$KEY" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' .env 2>/dev/null
 }
 
+CODEX_SOURCE_AUTH="${CODEX_HOME:-$HOME/.codex}/auth.json"
+
+ensure_codex_auth() {
+  if [ -f "data/codex-auth.json" ]; then
+    echo "Codex auth already available at data/codex-auth.json."
+    return
+  fi
+
+  if [ -d "data/codex-auth.json" ]; then
+    if rmdir "data/codex-auth.json" 2>/dev/null; then
+      echo "Removed empty data/codex-auth.json directory created by Docker bind mount."
+    else
+      echo "ERROR: data/codex-auth.json is a non-empty directory. Remove it and rerun setup after Codex login."
+      exit 1
+    fi
+  fi
+
+  if [ -f "$CODEX_SOURCE_AUTH" ]; then
+    cp "$CODEX_SOURCE_AUTH" "data/codex-auth.json"
+    chmod 600 "data/codex-auth.json" 2>/dev/null || true
+    echo "Copied Codex auth into data/codex-auth.json."
+  else
+    echo "Codex enabled. Create auth with:"
+    echo "  npx @openai/codex login"
+    echo "Then rerun setup, or copy it into this project:"
+    echo "  cp ~/.codex/auth.json data/codex-auth.json"
+  fi
+}
+
 PROFILES=""
 
 echo ""
@@ -83,14 +112,10 @@ read -p "Enable Codex proxy? (y/N): " ENABLE_CODEX_INPUT
 if [[ "$ENABLE_CODEX_INPUT" =~ ^[Yy]$ ]]; then
   set_env ENABLE_CODEX true
   PROFILES="$PROFILES --profile codex"
-  if [ ! -f "data/codex-auth.json" ]; then
-    echo "Codex enabled. Create auth with:"
-    echo "  npx @openai/codex login"
-    echo "Then copy it into this project:"
-    echo "  cp ~/.codex/auth.json data/codex-auth.json"
-  fi
+  ensure_codex_auth
 elif grep -q "^ENABLE_CODEX=true" .env 2>/dev/null; then
   PROFILES="$PROFILES --profile codex"
+  ensure_codex_auth
 fi
 
 if grep -q "^MEMPALACE_ENABLED=true" .env 2>/dev/null; then

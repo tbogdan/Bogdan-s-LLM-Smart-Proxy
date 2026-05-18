@@ -89,6 +89,43 @@ test("hydrateSeedProviders preserves runtime protocol metadata", () => {
   assert.equal(hydrated.providers[0].upstream_model, "claude-sonnet-4-5");
 });
 
+test("hydrateProvidersFile supplies runtime URLs for discovered providers missing url", () => {
+  const hydrated = providers.hydrateProvidersFile({
+    providers: [
+      {
+        name: "Windsurf-adaptive",
+        family: "windsurf",
+        protocol: "windsurf",
+        key_env: "WINDSURF_API_KEY",
+        model: "windsurf/adaptive",
+        upstream_model: "adaptive",
+      },
+      {
+        name: "Claude-Discovered",
+        family: "claude",
+        protocol: "anthropic",
+        key_env: "ANTHROPIC_API_KEY",
+        model: "claude/claude-sonnet-4-5",
+        upstream_model: "claude-sonnet-4-5",
+      },
+      {
+        name: "Codex-Discovered",
+        family: "codex",
+        protocol: "openai",
+        key_env: "CODEX_API_KEY",
+        model: "codex/gpt-5.4",
+        upstream_model: "gpt-5.4",
+      },
+    ],
+  });
+
+  assert.deepEqual(hydrated.providers.map((provider) => provider.url), [
+    "windsurf",
+    "claude",
+    "http://codex-proxy:10531/v1/chat/completions",
+  ]);
+});
+
 test("hydrateSeedProviders can fall back to Claude OAuth token for legacy provider files", () => {
   const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const previousApiKey = process.env.ANTHROPIC_API_KEY;
