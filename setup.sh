@@ -66,22 +66,14 @@ echo ""
 read -p "Enable Claude provider? (y/N): " ENABLE_CLAUDE_INPUT
 if [[ "$ENABLE_CLAUDE_INPUT" =~ ^[Yy]$ ]]; then
   set_env ENABLE_CLAUDE true
-  CLAUDE_TOKEN="$(get_env CLAUDE_CODE_OAUTH_TOKEN)"
   ANTHROPIC_TOKEN="$(get_env ANTHROPIC_API_KEY)"
-  if [ -z "$CLAUDE_TOKEN" ] && [ -z "$ANTHROPIC_TOKEN" ]; then
-    echo "Claude enabled. Primary link flow:"
-    echo "  claude setup-token"
-    echo "Complete the browser authorization with the Platform option, then copy the printed token."
-    read -p "Paste CLAUDE_CODE_OAUTH_TOKEN, or press Enter to use Platform API key instead: " CLAUDE_CODE_TOKEN_INPUT
-    if [ -n "$CLAUDE_CODE_TOKEN_INPUT" ]; then
-      set_env CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_TOKEN_INPUT"
-    else
-      echo "Fallback Platform API key:"
-      echo "  https://platform.claude.com/settings/keys"
-      read -p "Paste ANTHROPIC_API_KEY, or press Enter to skip: " ANTHROPIC_KEY_INPUT
-      if [ -n "$ANTHROPIC_KEY_INPUT" ]; then
-        set_env ANTHROPIC_API_KEY "$ANTHROPIC_KEY_INPUT"
-      fi
+  if [ -z "$ANTHROPIC_TOKEN" ]; then
+    echo "Claude enabled. Authenticate with Anthropic Console, then extract the managed key:"
+    echo "  claude auth login --console"
+    echo "  node claude-auth.js --env-path .env"
+    read -p "Run extraction now if you already completed Console login? (y/N): " CLAUDE_EXTRACT_INPUT
+    if [[ "$CLAUDE_EXTRACT_INPUT" =~ ^[Yy]$ ]]; then
+      node claude-auth.js --env-path .env
     fi
   fi
 fi

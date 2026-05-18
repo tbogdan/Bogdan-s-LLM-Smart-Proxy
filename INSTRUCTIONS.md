@@ -22,13 +22,14 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
 
    ```bash
    node windsurf-auth.js --env-file .env
-   claude setup-token
+   claude auth login --console
+   node claude-auth.js --env-path .env
    npx @openai/codex login
    mkdir -p data
    cp ~/.codex/auth.json data/codex-auth.json
    ```
 
-   Complete the browser authorization flow with the Platform option, then put the token printed by `claude setup-token` into `CLAUDE_CODE_OAUTH_TOKEN` in `.env`. If you prefer a direct Platform API key, create it at `https://platform.claude.com/settings/keys` and set `ANTHROPIC_API_KEY`.
+   Choose the Anthropic Console account in the Claude browser flow. The helper extracts Claude Code's login-managed API key and writes `ANTHROPIC_API_KEY` into `.env`; if needed, you can manually create a key at `https://platform.claude.com/settings/keys`.
 
 4. Start Docker.
 

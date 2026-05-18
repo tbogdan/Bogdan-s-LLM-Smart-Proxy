@@ -7,7 +7,7 @@ Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exac
 | Provider family | Host authentication | Runtime adapter | Models |
 | --- | --- | --- | --- |
 | Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | `windsurf/swe-1.6-fast`, `windsurf/swe-1.6`, `windsurf/swe-1.5-fast` |
-| Claude | `claude setup-token`, then set `CLAUDE_CODE_OAUTH_TOKEN`; fallback: `ANTHROPIC_API_KEY` from `https://platform.claude.com/settings/keys` | Anthropic Messages adapter | `claude/...` from discovery/seed |
+| Claude | `claude auth login --console`, then `node claude-auth.js --env-path .env` to extract `ANTHROPIC_API_KEY` | Anthropic Messages adapter | `claude/...` from discovery/seed |
 | Codex | `npx @openai/codex login`, then copy `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2` |
 
 ## Quick Start
@@ -37,13 +37,14 @@ Authenticate enabled providers on the host:
 
 ```bash
 node windsurf-auth.js --env-file .env
-claude setup-token
+claude auth login --console
+node claude-auth.js --env-path .env
 npx @openai/codex login
 mkdir -p data
 cp ~/.codex/auth.json data/codex-auth.json
 ```
 
-For Claude, run `claude setup-token`, complete the browser authorization flow with the Platform option, and put the printed token into `CLAUDE_CODE_OAUTH_TOKEN` in `.env`. If you prefer a direct Platform API key, create it at `https://platform.claude.com/settings/keys` and put it into `ANTHROPIC_API_KEY`.
+For Claude, choose the Anthropic Console account in the browser flow. The helper reads the login-managed API key from Claude Code's local credential store and writes it to `ANTHROPIC_API_KEY` in `.env`. As a manual fallback, create a key at `https://platform.claude.com/settings/keys` and put it into `ANTHROPIC_API_KEY`.
 
 Start Docker with the Codex profile when Codex is enabled:
 
@@ -118,7 +119,7 @@ docker compose --profile codex --profile memory up -d --build
 ## Troubleshooting
 
 - Missing `WINDSURF_API_KEY`: run `node windsurf-auth.js --env-file .env`, then restart the proxy.
-- Missing Claude credentials: run `claude setup-token`, paste the printed token into `CLAUDE_CODE_OAUTH_TOKEN`, then restart the proxy. As a fallback, create a Platform API key at `https://platform.claude.com/settings/keys` and set `ANTHROPIC_API_KEY`.
+- Missing Claude credentials: run `claude auth login --console`, choose Anthropic Console, then run `node claude-auth.js --env-path .env` and restart the proxy. If the helper says you are logged in with a subscription account, run `claude auth logout` and repeat the Console login.
 - Missing `data/codex-auth.json`: run `npx @openai/codex login`, then `mkdir -p data && cp ~/.codex/auth.json data/codex-auth.json`.
 - Empty `/v1/models`: confirm at least one provider family is enabled in `.env`, required credentials are present, and the matching Docker profile is running for Codex.
 

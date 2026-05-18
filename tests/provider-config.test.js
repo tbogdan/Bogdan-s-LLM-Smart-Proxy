@@ -59,7 +59,7 @@ test("providerForModel maps representative provider contracts", () => {
 
   const claude = config.providerForModel("claude", config.FALLBACK_MODELS.claude[0]);
   assert.equal(claude.protocol, "anthropic");
-  assert.equal(claude.key_env, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.equal(claude.key_env, "ANTHROPIC_API_KEY");
 
   const windsurf = config.providerForModel("windsurf", config.FALLBACK_MODELS.windsurf[0]);
   assert.equal(windsurf.protocol, "windsurf");
@@ -89,11 +89,11 @@ test("hydrateSeedProviders preserves runtime protocol metadata", () => {
   assert.equal(hydrated.providers[0].upstream_model, "claude-sonnet-4-5");
 });
 
-test("hydrateSeedProviders uses Claude Platform API key when setup-token is absent", () => {
+test("hydrateSeedProviders can fall back to Claude OAuth token for legacy provider files", () => {
   const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const previousApiKey = process.env.ANTHROPIC_API_KEY;
-  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  process.env.ANTHROPIC_API_KEY = "sk-ant-api03-test";
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-token";
+  delete process.env.ANTHROPIC_API_KEY;
 
   try {
     const hydrated = providers.hydrateSeedProviders({
@@ -103,15 +103,15 @@ test("hydrateSeedProviders uses Claude Platform API key when setup-token is abse
           family: "claude",
           protocol: "anthropic",
           url: "claude",
-          key_env: "CLAUDE_CODE_OAUTH_TOKEN",
+          key_env: "ANTHROPIC_API_KEY",
           model: "claude/claude-sonnet-4-5",
           upstream_model: "claude-sonnet-4-5",
         },
       ],
     });
 
-    assert.equal(hydrated.providers[0].key_env, "ANTHROPIC_API_KEY");
-    assert.equal(hydrated.providers[0].key, "sk-ant-api03-test");
+    assert.equal(hydrated.providers[0].key_env, "CLAUDE_CODE_OAUTH_TOKEN");
+    assert.equal(hydrated.providers[0].key, "oauth-token");
   } finally {
     if (previousOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousOauth;

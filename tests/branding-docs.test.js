@@ -165,12 +165,13 @@ test("README documents supported provider families and smart groups", () => {
   }
 });
 
-test("Claude setup docs prefer setup-token link authentication with Platform fallback", () => {
+test("Claude setup docs prefer Console login and local key extraction", () => {
   const docs = `${read("README.md")}\n${read("INSTRUCTIONS.md")}\n${read("setup.sh")}`;
 
   assert.match(docs, /platform\.claude\.com/);
-  assert.match(docs, /claude setup-token/);
+  assert.match(docs, /claude auth login --console/);
+  assert.match(docs, /claude-auth\.js --env-path/);
   assert.match(docs, /ANTHROPIC_API_KEY/);
-  assert.match(docs, /CLAUDE_CODE_OAUTH_TOKEN/);
+  assert.doesNotMatch(docs, /claude setup-token/);
   assert.doesNotMatch(docs, /claude\.ai/i);
 });
