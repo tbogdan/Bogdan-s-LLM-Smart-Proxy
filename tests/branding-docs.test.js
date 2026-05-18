@@ -69,6 +69,41 @@ const removedProviderDocPatterns = [
   /\bCline Provider\b/,
 ];
 
+const neutralRemovalPattern = /\b(?:removed|unsupported|no longer|deprecated|legacy|previously|formerly)\b/i;
+const providerSetupContextPattern = /(?:^\s*[-*]\s+|^\s*\|.*\||\b(?:auth|authenticate|authentication|setup|enable|provider|providers|model|models|gateway|compose|docker|profile|env|api key|token|free key|supported|runtime|adapter|get .*key|console|dashboard)\b|[A-Z0-9_]+_(?:API_KEY|TOKEN)|ENABLE_[A-Z0-9_]+)/i;
+
+const staleProviderSetupLines = (text) => text
+  .split("\n")
+  .filter((line) => removedProviderDocPatterns.some((pattern) => pattern.test(line)))
+  .filter((line) => providerSetupContextPattern.test(line))
+  .filter((line) => !neutralRemovalPattern.test(line));
+
+test("stale provider line classifier allows neutral migration prose", () => {
+  const lines = staleProviderSetupLines([
+    "Groq was removed from this proxy.",
+    "OpenRouter is no longer supported.",
+    "ModelScope used to be available, but is unsupported now.",
+  ].join("\n"));
+
+  assert.deepEqual(lines, []);
+});
+
+test("stale provider line classifier rejects old setup/listing contexts", () => {
+  const lines = staleProviderSetupLines([
+    "| Groq | https://console.groq.com |",
+    "- OpenRouter API key: set OPENROUTER_API_KEY",
+    "Enable ModelScope provider in .env.",
+    "Run Kiro auth before Docker Compose.",
+  ].join("\n"));
+
+  assert.deepEqual(lines, [
+    "| Groq | https://console.groq.com |",
+    "- OpenRouter API key: set OPENROUTER_API_KEY",
+    "Enable ModelScope provider in .env.",
+    "Run Kiro auth before Docker Compose.",
+  ]);
+});
+
 test("public docs and setup use current Project branding", () => {
   const contents = Object.fromEntries(requiredFiles.map((file) => [file, read(file)]));
 
@@ -103,8 +138,8 @@ test("public docs do not market or set up removed provider families", () => {
   const contents = Object.fromEntries(publicDocsFiles.map((file) => [file, read(file)]));
 
   for (const [file, text] of Object.entries(contents)) {
-    for (const pattern of removedProviderDocPatterns) {
-      assert.doesNotMatch(text, pattern, `${file} contains removed provider docs: ${pattern}`);
+    for (const line of staleProviderSetupLines(text)) {
+      assert.fail(`${file} contains removed provider setup/listing docs: ${line}`);
     }
   }
 });
