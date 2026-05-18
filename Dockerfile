@@ -1,6 +1,8 @@
 FROM node:22-slim
 WORKDIR /app
-COPY llm-proxy.js llm-discovery.js llm-mempalace.js seed-providers.json package.json ./
+COPY package.json ./
+RUN npm install --production
+COPY llm-proxy.js llm-discovery.js llm-mempalace.js seed-providers.json ./
 COPY lib/ lib/
 COPY .env.example .env.example
 EXPOSE 18900

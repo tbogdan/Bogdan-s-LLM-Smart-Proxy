@@ -8,5 +8,8 @@
     "discovery": "node llm-discovery.js",
     "kiro-auth": "node kiro-auth.js"
   },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
   "license": "MIT"
 }

@@ -12,6 +12,8 @@ const providersMod = require("./lib/providers");
 const compaction = require("./lib/compaction");
 const transforms = require("./lib/transforms");
 const routing = require("./lib/routing");
+const responses = require("./lib/responses");
+const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
 // Entry-point config
@@ -43,6 +45,7 @@ function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) 
 // Wire late-bound dependencies into routing
 // ---------------------------------------------------------------------------
 routing.init({ sendError, trackSessionTokens });
+responses.init({ handleChatCompletion: routing.handleChatCompletion });
 
 // ---------------------------------------------------------------------------
 // Thinking probe
@@ -283,6 +286,13 @@ const server = http.createServer(async (req, res) => {
       return await routing.handleChatCompletion(parsed, res);
     }
 
+    // POST /v1/responses (Responses API — for Codex CLI)
+    if (method === "POST" && pathname === "/v1/responses") {
+      const body = await readBody(req);
+      state.log(`Responses API: POST body=${body.length}chars`);
+      return await responses.handleResponsesHTTP(req, res, body);
+    }
+
     // GET /v1/models
     if (method === "GET" && pathname === "/v1/models") {
       return sendJSON(res, handleModels(urlObj.searchParams));
@@ -408,7 +418,20 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /v1/chat/completions, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /v1/chat/completions, /v1/responses (WS+SSE), /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+});
+
+// WebSocket server for /v1/responses (Codex CLI)
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  if (url.pathname === "/v1/responses") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      responses.handleResponsesWS(ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
 });
 
 probeThinking().catch(() => {});
