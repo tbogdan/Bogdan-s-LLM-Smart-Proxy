@@ -80,7 +80,8 @@ function validateClaudeStatus(status, { allowClaudeAi = false } = {}) {
   if (!status || status.loggedIn !== true) {
     throw new Error("Claude is not logged in. Run `claude auth login --console` first.");
   }
-  if (!allowClaudeAi && status.authMethod === "claude.ai") {
+  const hasApiKeySource = typeof status.apiKeySource === "string" && status.apiKeySource.length > 0 && status.apiKeySource !== "none";
+  if (!allowClaudeAi && status.authMethod === "claude.ai" && !hasApiKeySource) {
     throw new Error("Claude is logged in with Claude.ai. Run `claude auth logout`, then `claude auth login --console` and choose Anthropic Console.");
   }
 }

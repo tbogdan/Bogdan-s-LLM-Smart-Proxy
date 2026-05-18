@@ -16,9 +16,17 @@ test("keychainServiceName matches Claude Code managed API key service", () => {
   );
 });
 
-test("validateClaudeStatus rejects Claude.ai login unless explicitly allowed", () => {
+test("validateClaudeStatus accepts Console login even when authMethod is reported as claude.ai", () => {
+  assert.doesNotThrow(() => claudeAuth.validateClaudeStatus({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiKeySource: "/login managed key",
+  }));
+});
+
+test("validateClaudeStatus rejects subscription login unless explicitly allowed", () => {
   assert.throws(
-    () => claudeAuth.validateClaudeStatus({ loggedIn: true, authMethod: "claude.ai", apiKeySource: "/login managed key" }),
+    () => claudeAuth.validateClaudeStatus({ loggedIn: true, authMethod: "claude.ai" }),
     /Anthropic Console/,
   );
   assert.doesNotThrow(() => claudeAuth.validateClaudeStatus({ loggedIn: true, authMethod: "claude.ai" }, { allowClaudeAi: true }));
