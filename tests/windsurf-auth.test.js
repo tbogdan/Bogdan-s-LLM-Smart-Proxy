@@ -57,11 +57,44 @@ test("parseCallbackUrl returns forwarded one-time token and validates state when
     auth.parseCallbackUrl("http://127.0.0.1/callback-token?access_token=ott%24token&state=state-123", "state-123"),
     { token: "ott$token" },
   );
+  assert.deepEqual(
+    auth.parseCallbackUrl("http://127.0.0.1/callback#access_token=ott%24token&state=state-123", "state-123"),
+    { token: "ott$token" },
+  );
   assert.deepEqual(auth.parseCallbackUrl("http://127.0.0.1/callback?code=raw-code"), { token: "ott$raw-code" });
   assert.throws(
     () => auth.parseCallbackUrl("http://127.0.0.1/callback-token?access_token=ott%24token&state=wrong", "state-123"),
     /state/i,
   );
+  assert.throws(
+    () => auth.parseCallbackUrl("http://127.0.0.1/callback#access_token=ott%24token&state=wrong", "state-123"),
+    /state/i,
+  );
+});
+
+test("loopback callback page forwards original fragment params without overwriting state", async () => {
+  const loopback = auth.startLoopbackAuth({ state: "server-state", timeoutMs: 1000 });
+  const ready = await loopback.ready;
+
+  try {
+    const html = await new Promise((resolve, reject) => {
+      http
+        .get(ready.redirectUri, (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => resolve(body));
+        })
+        .on("error", reject);
+    });
+
+    assert.match(html, /location\.hash\.slice\(1\)/);
+    assert.doesNotMatch(html, /params\.set\(['"]state['"]/);
+  } finally {
+    loopback.close();
+  }
 });
 
 test("protobuf helpers encode strings and parse string fields", () => {

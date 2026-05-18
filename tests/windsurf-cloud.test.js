@@ -235,6 +235,33 @@ test("callWindsurfCloud wraps local non-JSON response body as assistant text", a
   }
 });
 
+test("postWindsurf local HTTP seam rejects on timeout", async () => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"output":"late"}');
+      }, 50);
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    await assert.rejects(
+      () =>
+        cloud.postWindsurf(
+          { key: "host-token", url: `http://127.0.0.1:${port}/v1/chat/completions`, timeout_ms: 5 },
+          { model: "swe-1.6-fast", messages: [] },
+        ),
+      /timeout/i,
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("toOpenAIResponse preserves OpenAI-like choices and normalizes usage tokens", () => {
   const output = cloud.toOpenAIResponse("windsurf/swe-1.6", {
     id: "chatcmpl-existing",
@@ -276,4 +303,13 @@ test("toOpenAIResponse parses Connect envelopes by concatenating field 3 text an
   const output = cloud.toOpenAIResponse("windsurf/swe-1.6", body);
 
   assert.equal(output.choices[0].message.content, "Hello there");
+});
+
+test("toOpenAIResponse treats trailer bit flags as error metadata", () => {
+  const body = Buffer.concat([
+    cloud.connectEnvelope(cloud.encodeString(3, "partial text")),
+    cloud.connectEnvelope(Buffer.from('{"error":"permission_denied"}'), 3),
+  ]);
+
+  assert.throws(() => cloud.toOpenAIResponse("windsurf/swe-1.6", body), /permission_denied/);
 });
