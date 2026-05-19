@@ -435,6 +435,33 @@ server.on("upgrade", (req, socket, head) => {
 
 probeThinking().catch(() => {});
 setInterval(() => { probeThinking().catch(() => {}); }, THINKING_PROBE_INTERVAL);
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = 24 * 3600_000;
+  const compactMaxAge = 30 * 60_000;
+  let evicted = 0;
+
+  for (const [id, stats] of Object.entries(state.sessionStats)) {
+    if (now - (stats.lastRequest || 0) > maxAge) {
+      delete state.sessionStats[id];
+      evicted++;
+    }
+  }
+  for (const [id, cache] of Object.entries(state.sessionCompactCache)) {
+    if (now - (cache.timestamp || 0) > compactMaxAge) {
+      delete state.sessionCompactCache[id];
+      evicted++;
+    }
+  }
+  for (const id of Object.keys(state.compactionDropCache)) {
+    if (!state.sessionStats[id]) {
+      delete state.compactionDropCache[id];
+      evicted++;
+    }
+  }
+
+  if (evicted > 0) state.log(`SESSION-CLEANUP: evicted ${evicted} expired cache entries`);
+}, 3600_000);
 
 process.on("SIGTERM", () => { scoring.saveScores(); process.exit(0); });
 process.on("SIGINT", () => { scoring.saveScores(); process.exit(0); });

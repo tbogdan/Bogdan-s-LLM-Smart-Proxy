@@ -469,7 +469,7 @@ function mempalaceHealth() {
   };
 }
 
-setInterval(() => {
+const reconnectTimer = setInterval(() => {
   if (MEMPALACE_ENABLED && !mpcAvailable) {
     sseConnection = null;
     mpcSessionId = null;
@@ -477,6 +477,7 @@ setInterval(() => {
     mpcConnect();
   }
 }, 60_000);
+if (typeof reconnectTimer.unref === "function") reconnectTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Exports
