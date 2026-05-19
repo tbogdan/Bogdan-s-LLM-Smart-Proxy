@@ -1,10 +1,10 @@
 # Bogdan's LLM Smart Proxy
 
-A zero-dependency Node.js proxy that routes requests to 150+ LLM models across 17 providers and 26 sources with auto-discovery with automatic failover, capability-based routing, and smart scoring.
+A Node.js proxy that routes requests to 80+ LLM models across 26 sources with auto-discovery, automatic failover, capability-based routing, and smart scoring.
 
 ## What It Does
 
-- **150+ LLM models across 17 providers and 26 sources with auto-discovery** with automatic failover on errors
+- **80+ LLM models across 26 sources with auto-discovery** and automatic failover on errors
 - **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
 - **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
 - **Capability detection**: tools, coding, images, video, thinking, context size
