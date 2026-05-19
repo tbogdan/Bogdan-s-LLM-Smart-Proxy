@@ -155,8 +155,7 @@ Discovered models from the last auto-scan.
 
 | Group | Routes to | Description |
 |-------|-----------|-------------|
-| `auto` | All providers (smart) | Detects use case from message, routes to best match, tries all as fallback |
-| `auto` | All providers (smart) | Detects use case, routes to benchmark-best model, full fallback |
+| `auto` | All providers (smart) | Detects use case from message, routes to benchmark-best model with full failover |
 | `auto-tools` | Providers with tool calling | Function calling / tool use |
 | `auto-coding` | Providers tagged "coding" | Code generation and editing |
 | `auto-images` | Providers with vision | Image understanding |
