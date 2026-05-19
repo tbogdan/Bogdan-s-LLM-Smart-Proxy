@@ -1,780 +1,131 @@
 # Bogdan's LLM Smart Proxy
 
-A Node.js proxy that routes requests to 80+ LLM models across 26 sources with auto-discovery, automatic failover, capability-based routing, and smart scoring.
+Routes requests to 80+ LLM models across 26 sources with automatic failover, smart scoring, and capability-based routing.
 
-## What It Does
+## Features
 
-- **80+ LLM models across 26 sources with auto-discovery** and automatic failover on errors
-- **Smart groups**: route by capability (`auto-coding`, `auto-thinking`, etc.) instead of picking a specific model
-- **Auto-scoring**: tracks latency, success rate, and ranks providers dynamically
-- **Capability detection**: tools, coding, images, video, thinking, context size
-- **Thinking detection**: probes for `reasoning_content`, `<think>` tags, and `thinking` fields
-- **Request transformation**: adds `enable_thinking` for Qwen3 models, passes `reasoning_effort`
-- **Auto-discovery**: scans provider `/models` endpoints every 6h for new free models
-- **Codex CLI support**: WebSocket + HTTP SSE `/v1/responses` endpoint (Responses API bridge)
-- **Smart context compaction**: 4-layer progressive reduction (90%→75%→50%→20%) with drop cache for instant replay
-- **Garble detection**: 10-signal scoring (mixed scripts, repetitive content, sentence loops, cognitive stalling)
-- **Provider quality control**: stalling detection, no-tools detection, empty response retry, tool call JSON repair
-- **User commands**: `ban ai 24` to ban current provider for N hours (intercepted by proxy)
-- **Admin API**: `/ban`, `/unban`, `/banned` endpoints for runtime provider management
-- **Modular architecture**: split into `lib/` modules (state, scoring, providers, compaction, transforms, routing, responses)
-- **Stable truncation cache**: tool response truncations cached by content hash for consistent cross-request behavior
-- **Cross-provider compatibility**: auto-strips `strict`, sanitizes tool_call IDs, injects `thought_signature`, fixes role ordering
+- **80+ models, 26 sources** — auto-discovery every 6h, zero-config for 14 anonymous models
+- **Smart groups** — `auto-coding`, `auto-thinking`, `auto-tools` etc. route to best-scored provider
+- **Auto-scoring** — tracks latency, success rate, stalling; providers ranked dynamically
+- **Auto-learning** — detects provider quirks from errors, adapts requests automatically
+- **Codex CLI support** — WebSocket + HTTP SSE `/v1/responses` (Responses API bridge)
+- **Context compaction** — 4-layer progressive reduction with drop cache for instant replay
+- **Quality control** — garble detection, stalling detection, empty response retry, JSON repair
+- **Admin API** — `/ban`, `/unban`, `/banned` for runtime provider management
+- **User commands** — type `ban ai 24` in IDE chat to ban current provider for 24h
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/tbogdan/Bogdan-s-LLM-Smart-Proxy && cd Bogdan-s-LLM-Smart-Proxy
-chmod +x setup.sh && ./setup.sh
+cp .env.example .env   # add your API keys
+docker compose up -d   # runs at http://localhost:18900
 ```
 
-Or manually:
+## API Endpoints
 
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-docker compose up -d
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/chat/completions` | Main routing (OpenAI-compatible) |
+| POST | `/v1/responses` | Responses API (WS + SSE, for Codex CLI) |
+| GET | `/v1/models` | List models + groups. `?cap=coding` filter |
+| GET | `/v1/capabilities` | Capability summary |
+| GET | `/health` | System status |
+| GET | `/scores` | Provider scoring data |
+| GET | `/stats` | Session token usage |
+| GET | `/banned` | Cooldowns + bans with reasons |
+| GET | `/discovery` | Auto-discovered models |
+| POST | `/ban` | Ban provider: `{"pattern":"DSV4Flash","hours":12}` |
+| POST | `/unban` | Clear cooldowns: `{"pattern":"all"}` |
 
-The proxy runs at `http://localhost:18900`.
+**Model field accepts:** group name (`auto-coding`), model ID (`gpt-4o`), or provider name (`Groq-GPTOSS120B`).
 
-## Test It
-
-```bash
-# Simple chat
-curl http://localhost:18900/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'
-
-# Streaming
-curl http://localhost:18900/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto-coding","messages":[{"role":"user","content":"Write a fibonacci function"}],"stream":true}'
-
-# Thinking mode
-curl http://localhost:18900/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto-thinking","messages":[{"role":"user","content":"Solve: what is 15*37?"}]}'
-```
-
-## API Reference
-
-### POST /v1/chat/completions
-
-Main routing endpoint. OpenAI-compatible request format.
-
-**Request body:**
-```json
-{
-  "model": "auto",
-  "messages": [{"role": "user", "content": "Hello"}],
-  "stream": false,
-  "max_tokens": 1000,
-  "reasoning_effort": "medium"
-}
-```
-
-The `model` field accepts:
-- **Smart group name**: `auto`, `auto-tools`, `auto-coding`, `auto-images`, `auto-video`, `auto-text`, `auto-max`, `auto-thinking`
-- **Provider model ID**: e.g., `gpt-4o`, `llama-3.3-70b-versatile`, `qwen3-235b-a22b`
-- **Provider name**: e.g., `Groq-Llama70B`, `Gemini-2.5-Pro`
-
-Response includes `X-LLM-Provider` header showing which provider handled the request.
-
-### GET /v1/models
-
-List all available models. Supports `?cap=X` filter.
-
-```bash
-curl http://localhost:18900/v1/models
-curl http://localhost:18900/v1/models?cap=thinking
-curl http://localhost:18900/v1/models?cap=coding
-```
-
-### GET /v1/capabilities
-
-Capability summary with provider counts per capability.
-
-### GET /health
-
-Full system status: uptime, provider counts, group availability.
-
-### POST /v1/responses (WebSocket + HTTP SSE)
-
-OpenAI Responses API endpoint for Codex CLI. Supports both WebSocket (persistent multi-turn) and HTTP SSE (single-turn streaming).
-
-**WebSocket:** Connect to `ws://proxy:18900/v1/responses` — Codex CLI connects here automatically.
-
-**HTTP SSE:** POST with `Accept: text/event-stream` — returns Responses API streaming events.
-
-The proxy translates between Responses API format and Chat Completions format internally. All routing, scoring, and compaction features work identically.
-
-### GET /scores
-
-Provider scoring data: latency, success rate, stalling count, thinking verification.
-
-### GET /banned
-
-Currently banned/cooled providers with reasons and expiry times.
-
-```bash
-curl http://localhost:18900/banned
-```
-
-Returns: `cooldowns[]`, `quota_disabled[]`, `group_bans{}`, `total_banned`, `total_active`.
-
-### POST /ban
-
-Ban a provider by name or regex pattern.
-
-```bash
-curl -X POST http://localhost:18900/ban \
-  -H "Content-Type: application/json" \
-  -d '{"pattern": "DSV4Flash", "hours": 12, "reason": "garbled output"}'
-```
-
-### POST /unban
-
-Clear cooldowns by pattern or all.
-
-```bash
-curl -X POST http://localhost:18900/unban \
-  -H "Content-Type: application/json" \
-  -d '{"pattern": "all"}'
-```
-
-### GET /stats
-
-Session token usage: per-session, per-provider, per-model aggregations.
-
-### GET /discovery
-
-Discovered models from the last auto-scan.
+Response includes `X-LLM-Provider`, `X-LLM-Model`, `X-LLM-Tokens-Used` headers.
 
 ## Smart Groups
 
-| Group | Routes to | Description |
-|-------|-----------|-------------|
-| `auto` | All providers (smart) | Detects use case from message, routes to benchmark-best model with full failover |
-| `auto-tools` | Providers with tool calling | Function calling / tool use |
-| `auto-coding` | Providers tagged "coding" | Code generation and editing |
-| `auto-images` | Providers with vision | Image understanding |
-| `auto-video` | Providers with video | Video understanding |
-| `auto-text` | Providers tagged "text" | General text tasks |
-| `auto-max` | Providers tagged "max" | Largest context / best quality |
-| `auto-thinking` | Providers with reasoning | Chain-of-thought / reasoning |
+| Group | Routes to |
+|-------|-----------|
+| `auto` | Best match based on message analysis |
+| `auto-coding` | Best coding model |
+| `auto-thinking` | Best reasoning model |
+| `auto-tools` | Best tool-calling model |
+| `auto-images` | Best vision model |
+| `auto-text` | Best text/chat model |
+| `auto-max` | Best quality overall |
 
-Groups automatically route to the best-scoring provider that matches the capability. If a provider fails (429, 502, timeout), the proxy immediately tries the next provider in the group. Only returns an error if ALL providers in the group fail.
+## IDE Integration
 
-## Provider List
-
-- **Source** = API service (Groq, NVIDIA, Kilo, etc.) — where you create account and get key
-- **Provider** = unique proxy identifier (source + model) — each tracked independently for scoring, cooldowns, rate limits
-- Same model from different sources = different providers = independent rate limits
-
-| Source | Provider | Model | Context | Tier | Capabilities | Auth |
-|----------|------|-------|---------|------|-------------|------|
-| GitHub Copilot | Copilot-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| GitHub Copilot | Copilot-GPT5mini | gpt-5-mini | 128K | 1 | tools, coding, text, thinking | key |
-| GitHub Models | GitHubModels-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| GitHub Models | GitHubModels-GPT41 | gpt-4.1 | 8K | 1 | tools, coding, text | key |
-| Mistral | Mistral-Small | mistral-small-latest | 32K | 2 | tools, text | key |
-| Mistral | Mistral-Medium | mistral-medium-latest | 32K | 1 | tools, coding, text | key |
-| Groq | Groq-Llama70B | llama-3.3-70b-versatile | 131K | 2 | tools, text | key |
-| Groq | Groq-GPTOSS120B | openai/gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| Groq | Groq-Qwen332B | qwen/qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
-| Groq | Groq-Llama4Scout | llama-4-scout-17b-16e | 131K | 2 | tools, text, images | key |
-| Cerebras | Cerebras-Qwen235B | qwen-3-235b-a22b-instruct-2507 | 8K | 2 | tools, coding, text, thinking | key |
-| SambaNova | SambaNova-Llama70B | Meta-Llama-3.3-70B-Instruct | 131K | 2 | tools, text | key |
-| SambaNova | SambaNova-GPTOSS120B | gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| SambaNova | SambaNova-DSV32 | DeepSeek-V3.2 | 131K | 1 | tools, coding, text, thinking | key |
-| SambaNova | SambaNova-Maverick | Llama-4-Maverick-17B | 131K | 2 | tools, text, images | key |
-| NVIDIA | NVIDIA-Llama70B | llama-3.3-70b-instruct | 131K | 2 | tools, text | key |
-| NVIDIA | NVIDIA-Nemotron120B | nemotron-super-49b-v1 | 131K | 1 | tools, coding, text, max | key |
-| NVIDIA | NVIDIA-DSV4Flash | deepseek-ai/deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
-| Gemini | Gemini-2.5-Flash | gemini-2.5-flash | 1M | 1 | tools, coding, text, images, video, thinking | key |
-| Gemini | Gemini-2.5-Pro | gemini-2.5-pro | 1M | 1 | tools, coding, text, images, video, max, thinking | key |
-| Gemini | Gemini-3-Flash | gemini-3-flash-preview | 1M | 1 | tools, coding, text, images, video | key |
-| **LLM7** | **LLM7-Auto** | llm7/auto | 131K | 1 | tools, coding, text, thinking | **none** |
-| **OVH** | **OVH-Llama70B** | Meta-Llama-3_3-70B | 131K | 2 | tools, text | **none** |
-| **OVH** | **OVH-Qwen332B** | Qwen3-32B | 131K | 2 | tools, coding, text, thinking | **none** |
-| **OVH** | **OVH-Qwen3Coder** | Qwen3-Coder-30B | 131K | 1 | tools, coding, text, thinking | **none** |
-| **OVH** | **OVH-GPTOSS120B** | gpt-oss-120b | 131K | 1 | tools, coding, text, max, thinking | **none** |
-| **OVH** | **OVH-MistralSmall** | Mistral-Small-3.2-24B | 131K | 2 | tools, text | **none** |
-| OpenRouter | OR-Qwen3Coder | qwen/qwen3-coder:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OpenRouter | OR-GPTOSS120B | openai/gpt-oss-120b:free | 131K | 1 | tools, coding, text, max, thinking | key |
-| OpenRouter | OR-Nemotron120B | nvidia/nemotron-3-super-120b-a12b:free | 131K | 1 | tools, coding, text, max | key |
-| OpenRouter | OpenRouter-Free | openrouter/auto | 131K | 2 | tools, text | key |
-| OpenRouter | OR-MiniMaxM25 | minimax/minimax-m2.5:free | 131K | 2 | tools, text | key |
-| Cloudflare | Cloudflare-Llama70B | llama-3.3-70b-fp8-fast | 131K | 2 | tools, text | key |
-| SiliconFlow | SiliconFlow-DSV4Flash | DeepSeek-V4-Flash | 131K | 1 | tools, coding, text, thinking | key |
-| SiliconFlow | SiliconFlow-Qwen8B | Qwen3-8B | 32K | 3 | tools, text, thinking | key |
-| BigModel | BigModel-GLM4 | glm-4-flash | 131K | 2 | tools, text | key |
-| **Kilo** | **Kilo-DSV4Flash** | deepseek-v4-flash:free | 256K | 2 | tools, coding, text, thinking | **none** |
-| **Kilo** | **Kilo-Nemotron120B** | nemotron-120b:free | 262K | 2 | tools, coding, text, max | **none** |
-| **Kilo** | **Kilo-NemotronReasoning** | nemotron-30b-reasoning:free | 256K | 2 | tools, text, thinking | **none** |
-| **Kilo** | **Kilo-Ring1T** | ring-2.6-1t:free | 262K | 2 | tools, coding, text, max | **none** |
-| **Kilo** | **Kilo-LagunaM1** | laguna-m.1:free | 131K | 2 | coding | **none** |
-| **Kilo** | **Kilo-LagunaXS2** | laguna-xs.2:free | 131K | 3 | coding | **none** |
-| **Kilo** | **Kilo-Cobuddy** | cobuddy:free | 131K | 3 | tools, text | **none** |
-| **Kilo** | **Kilo-Auto** | openrouter/free | 131K | 3 | text | **none** |
-| DeepSeek | DeepSeek-V4Flash | deepseek-v4-flash | 131K | 1 | tools, coding, text, thinking | key |
-| DeepSeek | DeepSeek-V3 | deepseek-chat | 131K | 1 | tools, coding, text, thinking | key |
-| Alibaba | Alibaba-QwenMax | qwen-max | 131K | 1 | tools, coding, text, max, thinking | key |
-| Alibaba | Alibaba-QwenPlus | qwen-plus | 131K | 2 | tools, coding, text, thinking | key |
-| Alibaba | Alibaba-QwenTurbo | qwen-turbo | 131K | 2 | tools, text | key |
-| Alibaba | Alibaba-Qwen3-235B | qwen3-235b-a22b | 131K | 1 | tools, coding, text, max, thinking | key |
-| Alibaba | Alibaba-Qwen3-32B | qwen3-32b | 131K | 2 | tools, coding, text, thinking | key |
-| Alibaba | Alibaba-Qwen3Coder | qwen3-coder-plus | 131K | 1 | tools, coding, max, thinking | key |
-| Cohere | Cohere-CommandA | command-a-03-2025 | 131K | 1 | tools, coding, text | key |
-| Cohere | Cohere-CommandRPlus | command-r-plus | 131K | 1 | tools, coding, text | key |
-| Cohere | Cohere-CommandR7B | command-r7b | 131K | 2 | tools, text | key |
-| Ollama Cloud | Ollama-GPTOSS120B | gpt-oss:120b | 131K | 1 | tools, coding, text, thinking | key |
-| Ollama Cloud | Ollama-Qwen3Coder | qwen3-coder:480b | 131K | 1 | tools, coding, text, max, thinking | key |
-| Ollama Cloud | Ollama-DSV31 | deepseek-v3.1:671b | 131K | 1 | tools, coding, text, thinking | key |
-| Hugging Face | HF-GPTOSS120B | openai/gpt-oss-120b | 131K | 1 | tools, coding, text, thinking | key |
-| Hugging Face | HF-Qwen3Coder | Qwen3-Coder-480B | 131K | 1 | tools, coding, text, max, thinking | key |
-| Hugging Face | HF-DeepSeekR1 | DeepSeek-R1 | 131K | 1 | tools, coding, text, thinking | key |
-| OpenAI | OpenAI-GPT4oMini | gpt-4o-mini | 128K | 1 | tools, coding, text, images | key |
-| OpenAI | OpenAI-GPT4o | gpt-4o | 128K | 1 | tools, coding, text, images | key |
-| Kiro | Kiro-ClaudeSonnet | claude-sonnet-4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
-| Kiro | Kiro-ClaudeHaiku45 | claude-haiku-4-5 | 200K | 1 | tools, coding, text, images, thinking | OAuth |
-| Cline | Cline-NemotronReasoning | nemotron-30b-reasoning:free | 256K | 2 | tools, text, thinking | key |
-| Cline | Cline-LagunaM1 | laguna-m.1:free | 131K | 2 | coding | key |
-| Cline | Cline-LagunaXS2 | laguna-xs.2:free | 131K | 3 | coding | key |
-| Cline | Cline-Cobuddy | cobuddy:free | 131K | 3 | tools, text | key |
-| Codex | Codex-GPT55 | gpt-5.5 | 1M | 1 | tools, coding, text, images, max, thinking | OAuth |
-| Codex | Codex-GPT54 | gpt-5.4 | 200K | 1 | tools, coding, text, images, max, thinking | OAuth |
-| Codex | Codex-GPT54Mini | gpt-5.4-mini | 200K | 1 | tools, coding, text, thinking | OAuth |
-| Codex | Codex-GPT53Codex | gpt-5.3-codex | 200K | 1 | tools, coding, text, max, thinking | OAuth |
-| Codex | Codex-GPT52 | gpt-5.2 | 200K | 1 | tools, coding, text, images, thinking | OAuth |
-
-## How Routing Works
-
-1. Request arrives (e.g. `model: "auto"` or `model: "auto-coding"`)
-2. **Context check**: if input > 80% of best available provider → immediately returns `context_length_exceeded` so IDE compacts on its side (IDE knows the conversation best)
-3. Recalls relevant memories from MemPalace (project context, preferences, past errors)
-4. Injects category-specific system prompt + recalled memories
-5. Filters providers by: group capability, effective context, cooldown, bans, quota
-6. Scores and ranks providers:
-   - Base score: success rate (50%) + latency (30%) + tier (20%)
-   - Benchmark scoring: 80+ model patterns rated S/A/B/C per category (coding, reasoning, tools, chat, vision, speed)
-   - **Right-sizing**: prefers smallest context that fits the request well (30-70% utilization = sweet spot). Saves large-context providers for when context actually grows. Small requests → fast/cheap models. Large requests → big context models.
-   - Heuristic fallback: unknown models scored by name patterns (model family, size, version)
-   - Compat penalty: auto-learned incompatibilities
-   - Session affinity: +0.4 for same provider that worked last
-7. Transforms request per provider:
-   - Per-provider safety compaction if tokens > 95% of effective context
-   - Dynamic max_tokens cap (input + output ≤ effective context)
-   - Strips incompatible fields, caps tools, adds thinking params
-   - Fixes orphaned tool calls/responses (atomic group integrity)
-   - Deduplicates system prompt lines and consecutive identical messages
-   - Garble detection: aborts and reroutes if output contains garbage text
-8. Routes to highest-scoring provider
-9. On failure: auto-learns incompatibility, reroutes to next provider
-   - Rate limit (429) → 30s cooldown
-   - Quota/billing exhausted → 1h cooldown
-   - Garbled output → 1h cooldown + reroute
-   - Context too large → mid-loop compaction at 80% of failing provider's context
-10. If ALL providers fail: returns `context_length_exceeded` → IDE compacts
-
-## Context Management Strategy
-
-The proxy follows an "IDE-first" compaction philosophy:
-
-1. **IDE compacts best** — the IDE owns the conversation and can summarize intelligently. When context is too large (>80% of best provider), the proxy returns `context_length_exceeded` immediately so the IDE handles it.
-2. **Per-provider safety net** — when routed to a specific provider, if context barely exceeds its limit, the proxy applies lightweight compaction:
-
-**Smart Extraction** (per-provider, in transformRequest):
-
-- Old tool responses → regex-based fact extraction (imports, signatures, re-read hints)
-- Atomic group integrity: assistant + tool_calls + tool_responses dropped/kept as a unit
-- Dynamic max_tokens cap when messages can't be compacted further
-
-**Priority-Based Drop** (when context error from provider):
-
-- Groups scored: user instructions=high, decisions=high, old tool reads=low
-- Drops lowest-priority atomic groups first
-- Summary with MemPalace references + re-read hints for dropped files
-
-**Phase 3 — Aggressive**:
-- Keeps only system + first user message + summary + last 4 messages
-- Summary includes: MemPalace references, files read (with re-read hints), files edited, key decisions
-
-## Category-Specific Behavior
-
-| Group | System Prompt Extension |
-|-------|------------------------|
-| `auto-coding` | Default — full coding workflow (FLOW, tool strategy, code quality) |
-| `auto-thinking` | Chain-of-thought reasoning, step verification, assumption challenging |
-| `auto-images` | Vision analysis + image generation (DALL-E, mockups, diagrams) |
-| `auto-text` | Clarity, structure, language matching, source citations |
-| `auto-tools` | Prioritize tool execution, parallel calls, verify results |
-| `auto-max` | Extra accuracy, edge cases, comprehensive analysis |
-
-## Auto-Discovery
-
-Every 6 hours, the discovery daemon scans all provider `/v1/models` endpoints:
-- Tests each model with a chat request
-- Detects capabilities: coding, tools, images, video, thinking (verified with reasoning test)
-- New providers available to proxy immediately via incremental hot-reload
-- Same model from different sources = separate providers with independent rate limits
-- Benchmark scores auto-assigned via heuristic (model family, size, version patterns)
-
-## Auto-Learning
-
-The proxy learns provider-specific quirks from errors and adapts:
-
-| Error | What's Learned | Action |
-|-------|---------------|--------|
-| `stream_options rejected` | Provider needs stream_options stripped when stream=false | Auto-strip on future requests |
-| `tool_choice not supported` | Provider can't handle tool_choice param | Auto-strip |
-| `content array not string` | Provider needs flattened content (Cloudflare, BigModel) | Auto-flatten |
-| `max_tokens too large` | Provider has lower max_tokens cap | Auto-cap to learned limit |
-| `context window exceeded` | Provider's real context is smaller than advertised | Update effective context |
-| `function_response.name empty` | Provider rejects empty tool names | Auto-fix to "unknown_tool" |
-| `Tool results missing` | Server-side state mismatch | 5min cooldown |
-| Stream abort after 1-2 chunks | Likely quota exhaustion | 1h cooldown |
-
-## Adding New Providers
-
-Add to `seed-providers.json` in the `providers` array:
-
-```json
-{
-  "name": "MyProvider-ModelName",
-  "url": "https://api.example.com/v1/chat/completions",
-  "key_env": "MY_PROVIDER_KEY",
-  "model": "model-id",
-  "context": 131072,
-  "tier": 1,
-  "tc": true,
-  "caps": ["tools", "coding", "text", "thinking"],
-  "no_auth": false
-}
-```
-
-Then add key to `.env` and restart. Discovery auto-detects new models from configured endpoints.
-
-## IDE & Agent Integration
-
-### Claude Code (VS Code / JetBrains)
-
-```bash
-# Add as OpenAI-compatible provider in settings
-# Settings > AI Provider > Custom > OpenAI Compatible
-# Base URL: http://YOUR_SERVER:18900/v1
-# API Key: any (proxy ignores it)
-# Model: auto (or any group/provider name)
-```
-
-Or in `settings.json`:
-
-```json
-{
-  "anthropic.baseUrl": "http://YOUR_SERVER:18900/v1"
-}
-```
-
-### Cursor
-
-Settings > Models > OpenAI API Key: `proxy` > Base URL: `http://YOUR_SERVER:18900/v1`
-
-Model names: `auto`, `auto-coding`, `auto-thinking`, or any specific provider like `Groq-GPTOSS120B`.
-
-### DeerFlow / LangChain / LangGraph
-
-```yaml
-# config.yaml
-models:
-  - name: auto-thinking
-    use: langchain_openai:ChatOpenAI
-    model: auto-thinking
-    api_key: "proxy"
-    base_url: http://YOUR_SERVER:18900/v1
-```
-
-### OpenAI Python SDK
+**Any OpenAI-compatible client:** Base URL `http://YOUR_SERVER:18900/v1`, API key `proxy`, model `auto-coding`.
 
 ```python
+# Python
 from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://YOUR_SERVER:18900/v1",
-    api_key="proxy",  # any string works
-)
-
-response = client.chat.completions.create(
-    model="auto-coding",
-    messages=[{"role": "user", "content": "Write fibonacci"}],
-)
+client = OpenAI(base_url="http://YOUR_SERVER:18900/v1", api_key="proxy")
+client.chat.completions.create(model="auto-coding", messages=[{"role":"user","content":"Hello"}])
 ```
 
-### OpenAI Node.js SDK
-
-```javascript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  baseURL: "http://YOUR_SERVER:18900/v1",
-  apiKey: "proxy",
-});
-
-const response = await client.chat.completions.create({
-  model: "auto-thinking",
-  messages: [{ role: "user", content: "Explain quantum computing" }],
-});
-```
-
-### Any OpenAI-compatible client
-
-Just change the base URL to `http://YOUR_SERVER:18900/v1`. The proxy accepts any API key (it uses its own keys per provider). Model = group name or provider name from `/v1/models`.
-
-## Get Free API Keys
-
-14 models across 3 sources work with zero keys (Kilo, OVH, LLM7). Add keys + sources for wider coverage:
-
-| Provider | Get free key at | Models |
-|----------|----------------|--------|
-| Groq | https://console.groq.com | Llama 70B, GPT-OSS 120B, Qwen3 32B, Llama 4 Scout |
-| Gemini | https://aistudio.google.com | Gemini 2.5 Flash/Pro, Gemini 3 Flash |
-| OpenRouter | https://openrouter.ai/keys | 20+ free models (Qwen3 Coder, GPT-OSS, Nemotron) |
-| SambaNova | https://cloud.sambanova.ai | Llama 70B, GPT-OSS 120B, DeepSeek V3.2, Maverick |
-| Cerebras | https://cloud.cerebras.ai | Qwen3 235B (fastest inference) |
-| NVIDIA | https://build.nvidia.com | Llama 70B, Nemotron 120B, DeepSeek V4 Flash |
-| Alibaba | https://dashscope.console.aliyun.com | Qwen Max, Qwen3 235B/32B, Qwen3 Coder ⚠️ |
-| Mistral | https://console.mistral.ai | Mistral Small, Medium |
-| DeepSeek | https://platform.deepseek.com | DeepSeek V3, V4 Flash |
-| SiliconFlow | https://cloud.siliconflow.com | DeepSeek V4 Flash, Qwen3 8B |
-| Cohere | https://dashboard.cohere.com | Command A 111B, Command R+, Command R7B |
-| Hugging Face | https://huggingface.co/settings/tokens | GPT-OSS 120B, Qwen3 Coder 480B, DeepSeek R1 |
-| Ollama Cloud | https://ollama.com | GPT-OSS 120B, Qwen3 Coder, DeepSeek V3.1 |
-| OpenAI | https://platform.openai.com | GPT-4o, GPT-4o-mini |
-| Cloudflare | https://dash.cloudflare.com | Llama 70B |
-| BigModel | https://open.bigmodel.cn | GLM-4 Flash |
-| **Kilo** | **No key needed** | **8 models (anonymous access)** |
-| **OVH** | **No key needed** | **5 models (open endpoint)** |
-| **LLM7** | **No key needed** | **1 model (open endpoint)** |
-| Kiro | Free AWS Builder ID | Claude Sonnet 4, Haiku 4.5 (via kiro-gateway, OAuth) |
-| Codex | ChatGPT subscription | GPT-5.5/5.4/5.3/5.2 (via OAuth proxy) |
-| Cline | Free at app.cline.bot | 28 free models + 356 total (OpenAI-compatible API) |
-| ModelScope | Free at [modelscope.ai/my/access/token](https://www.modelscope.ai/my/access/token) | 65 free models — DeepSeek V3.2/V4, Qwen3 Coder, R1 |
-
-> ⚠️ **Alibaba free tier**: Each model gets 1M tokens free for 90 days. After that, requests are **charged silently** by default. To stay safe, enable **"Free Quota Only"** mode in the [Alibaba console](https://dashscope.console.aliyun.com) — the proxy will auto-detect the 403 error and disable the provider.
-
-## Environment Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `COPILOT_TOKEN` | GitHub Copilot token | `gho_xxxx` |
-| `MISTRAL_API_KEY` | Mistral AI API key | `xxx` |
-| `GROQ_API_KEY` | Groq API key | `gsk_xxxx` |
-| `CEREBRAS_API_KEY` | Cerebras API key | `csk-xxxx` |
-| `SAMBANOVA_API_KEY` | SambaNova API key | `xxx` |
-| `NVIDIA_API_KEY` | NVIDIA API key | `nvapi-xxxx` |
-| `GEMINI_API_KEY` | Google Gemini API key | `AIzaxxxx` |
-| `OPENROUTER_API_KEY` | OpenRouter API key | `sk-or-v1-xxxx` |
-| `CLOUDFLARE_API_KEY` | Cloudflare Workers AI token | `cfut_xxxx` |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (required for Workers AI) | `e0c9xxxx` |
-| `SILICONFLOW_API_KEY` | SiliconFlow API key | `sk-xxxx` |
-| `BIGMODEL_API_KEY` | BigModel (GLM) API key | `xxx` |
-| `DEEPSEEK_API_KEY` | DeepSeek API key | `sk-xxxx` |
-| `COHERE_API_KEY` | Cohere API key | `xxx` |
-| `HF_TOKEN` | Hugging Face token | `hf_xxxx` |
-| `OPENAI_API_KEY` | OpenAI API key | `sk-proj-xxxx` |
-| `OLLAMA_API_KEY` | Ollama Cloud API key | `xxx` |
-| `KILO_TOKEN` | Kilo Code token (optional, uses anonymous by default) | `anonymous` |
-| `ALIBABA_API_KEY` | Alibaba DashScope API key | `sk-xxxx` |
-| `LLM7_API_KEY` | LLM7 (optional, works without — key gives higher limits) | |
-| `OVH_API_KEY` | OVH AI (no key needed, works without) | |
-| `LLM_PROXY_PORT` | Proxy port (default: 18900) | `18900` |
-| `DATA_DIR` | Data directory (default: /data) | `/data` |
-| **Gateway Proxies** | | |
-| `ENABLE_KIRO` | Enable Kiro gateway (free Claude) | `true` / `false` |
-| `REFRESH_TOKEN` | Kiro refresh token (from `node kiro-auth.js`) | `aorAAAAA...` |
-| `PROFILE_ARN` | Kiro profile ARN | `arn:aws:...` |
-| `KIRO_API_KEY` | Kiro gateway API key | `proxy` |
-| `ENABLE_CODEX` | Enable Codex OAuth proxy | `true` / `false` |
-| `CODEX_API_KEY` | Codex proxy API key | `proxy` |
-| `CLINE_API_KEY` | Cline Provider API key (app.cline.bot) | `cline_xxx` |
-| `MODELSCOPE_API_KEY` | ModelScope API key ([get token](https://www.modelscope.ai/my/access/token)) | `ms-xxx` |
-
-## Recommended Tools
-
-Tools that complement the proxy. See [`INSTRUCTIONS.md`](INSTRUCTIONS.md) for an LLM-readable version that AI agents can follow to auto-install everything.
-
-### MemPalace -- Persistent AI Memory
-
-Stores context, decisions, and progress across sessions.
-
-```bash
-# Install package
-pip install mempalace
-
-# Initialize palace in your project
-mempalace init .
-
-# Add MCP server to Claude Code
-claude mcp add mempalace -- python -m mempalace.mcp_server
-
-# Install Claude Code skill + hooks (auto-memory on every session)
-claude plugin add mempalace
-
-# Verify
-mempalace status
-```
-
-**For other agents (DeerFlow, Cursor, OpenCode):**
-
-```bash
-# MCP server config (add to your agent's MCP config):
-{
-  "command": "python3",
-  "args": ["-m", "mempalace.mcp_server"],
-  "env": { "MEMPALACE_DIR": "/path/to/palace" }
-}
-
-# Or run as standalone HTTP MCP:
-python -m mempalace mcp --http --port 8891
-```
-
-Key tools: `mempalace_search`, `mempalace_add_drawer`, `mempalace_list_rooms`, `mempalace_get_drawer`
-
-Docs: [mempalace.tech/guides/setup](https://www.mempalace.tech/guides/setup) | [GitHub](https://github.com/MemPalace/mempalace)
-
-### RTK -- Rust Token Killer (60-90% token savings)
-
-CLI proxy that compresses command output before it reaches AI context.
-
-```bash
-# macOS
-brew install rtk-ai/tap/rtk
-
-# Linux/macOS (quick install)
-curl -fsSL https://rtk-ai.app/install.sh | sh
-
-# Or via Cargo
-cargo install rtk
-
-# Setup Claude Code hook (one-time, auto-rewrites bash commands)
-rtk init --global
-
-# Restart Claude Code after init
-```
-
-Savings: cargo test 91%, git status 80%, find 78%.
-
-Docs: [rtk-ai.app](https://www.rtk-ai.app/) | [GitHub](https://github.com/rtk-ai/rtk)
-
-### Caveman Mode -- Terse Responses (~75% fewer tokens)
-
-Compresses AI responses to essentials during active work.
-
-```bash
-# Install in Claude Code (one-time)
-claude install-skill caveman https://github.com/anthropics/claude-code-skills
-
-# Or add to CLAUDE.md:
-# @caveman — activate with /caveman full
-
-# Activate per session:
-/caveman full
-
-# Levels: lite, full (default), ultra
-# Disable: "stop caveman" or "normal mode"
-```
-
-**For other agents:** Add to system prompt:
-> "Respond terse. Drop articles/filler. Fragments OK. Technical terms exact. Code unchanged."
-
-### Superpowers -- Advanced Agent Capabilities
-
-Eval-first execution, parallel agents, git worktrees.
-
-```bash
-# Install in Claude Code (one-time)
-claude install-skill superpowers https://github.com/anthropics/claude-code-skills
-
-# Or add to CLAUDE.md:
-# @superpowers — brainstorming, TDD, dispatching, verification
-
-# Activate per session:
-/superpowers
-```
-
-Key sub-skills: `brainstorming`, `test-driven`, `dispatching`, `verification`, `writing-plans`
-
-### Autonomous Execution (built into proxy)
-
-The proxy injects execution rules into every request automatically. No separate installation needed. Rules live in `lib/transforms.js` (system prompt section).
-
-**Injected automatically:**
-
-- Senior engineer identity with UNDERSTAND → PLAN → CONFIRM → EXECUTE → VERIFY → SAVE cycle
-- MemPalace integration (auto-save/recall, context compaction, resume protocol)
-- Decision making (discover tech → recall preferences → confirm once → build)
-- Anti-stalling rules and violation detection
-- Date/time awareness, user language detection
-- Smart merge with IDE system prompts (replaces identity, keeps tool instructions)
-
-### User Commands (intercepted by proxy)
-
-Type these in your IDE chat — the proxy intercepts them before routing:
-
-| Command | Description |
-|---------|-------------|
-| `ban ai 2` | Ban the last provider that responded for 2 hours |
-| `ban ai 24` | Ban for 24 hours |
-
-The proxy identifies which provider served your last response (via session tracking) and puts it on cooldown. Future requests route to other providers. The ban response confirms: `Banned **Kilo-DSV4Flash** for 2 hours. Will use other providers.`
-
-## Local Gateway Proxies (optional — unlock premium models for free)
-
-These Docker-integrated proxies expose IDE/web subscription models as OpenAI-compatible endpoints. Enable with `ENABLE_X=true` in `.env` — setup.sh handles auth automatically.
-
-### Kiro Gateway — free Claude Sonnet 4, Haiku 4.5
-
-Powered by [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) by [@jwadow](https://github.com/jwadow). Uses free AWS Builder ID (sign up at [kiro.dev](https://kiro.dev)).
-
-```bash
-# Enable in .env
-ENABLE_KIRO=true
-
-# Auth (browser OAuth via AWS — opens URL, click Allow):
-node kiro-auth.js
-
-# Or run setup.sh which does it automatically
-```
-
-Auth script opens `https://app.kiro.dev/signin` with PKCE challenge → user logs in with free AWS Builder ID → captures refresh token → saves to `.env`. Token auto-refreshes inside the container.
-
-### OpenAI Codex Proxy — GPT-5.5/5.4/5.3/5.2
-
-Uses ChatGPT subscription via OAuth. Powered by [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) by [@EvanZhouDev](https://github.com/EvanZhouDev).
-
-```bash
-# Enable in .env
-ENABLE_CODEX=true
-
-# One-time auth (opens browser for ChatGPT login):
-npx @openai/codex login
-
-# Copy token for Docker:
-cp ~/.codex/auth.json data/codex-auth.json
-
-# Or run setup.sh which handles it automatically
-```
-
-Requires ChatGPT Plus/Pro/Team subscription. Token auto-refreshes. Models available depend on subscription tier.
-
-### Codex CLI Through Proxy
-
-Route Codex CLI through the smart proxy instead of direct OpenAI. Config in `~/.codex/config.toml`:
-
+**Codex CLI** (`~/.codex/config.toml`):
 ```toml
 model = "auto-coding"
-openai_base_url = "http://homebridge.local:18900/v1"
-experimental_realtime_ws_base_url = "ws://homebridge.local:18900/v1"
+openai_base_url = "http://YOUR_SERVER:18900/v1"
+experimental_realtime_ws_base_url = "ws://YOUR_SERVER:18900/v1"
 ```
 
-And `~/.codex/auth.json`:
+## Free API Keys
 
-```json
-{"auth_mode": "apikey", "OPENAI_API_KEY": "proxy"}
-```
+14 models work with zero keys (Kilo, OVH, LLM7). Add keys for more:
 
-Codex CLI connects via WebSocket to `/v1/responses`. Proxy translates Responses API → Chat Completions, routes through best available provider with full failover, then translates back. Multi-turn conversation history maintained per WebSocket connection.
+| Provider | Free key | Models |
+|----------|----------|--------|
+| Groq | [console.groq.com](https://console.groq.com) | GPT-OSS 120B, Llama 70B, Qwen3 32B |
+| Gemini | [aistudio.google.com](https://aistudio.google.com) | Gemini 2.5/3 Flash, 2.5 Pro |
+| OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | 20+ free models |
+| SambaNova | [cloud.sambanova.ai](https://cloud.sambanova.ai) | GPT-OSS 120B, DeepSeek V3.2 |
+| NVIDIA | [build.nvidia.com](https://build.nvidia.com) | Nemotron 120B, DeepSeek V4 |
+| Cerebras | [cloud.cerebras.ai](https://cloud.cerebras.ai) | Qwen3 235B (fastest) |
+| Kiro | [kiro.dev](https://kiro.dev) (free AWS ID) | Claude Sonnet 4, Haiku 4.5 |
+| Codex | ChatGPT subscription | GPT-5.5/5.4/5.3/5.2 |
 
-### How Gateway Proxies Work
-
-1. `ENABLE_X=true` in `.env` activates the Docker profile
-2. `setup.sh` detects missing tokens → runs auth script automatically
-3. Auth scripts open browser URLs for login (no manual cookie/token extraction)
-4. Tokens saved to `.env` or token files, auto-refresh where supported
-5. Discovery daemon scans gateway `/v1/models` every 6h — new models auto-provisioned
-6. Providers scored via benchmark system — Claude/GPT/Gemini models get S/A-tier routing priority
-
-## Memory (MemPalace)
-
-The proxy includes an optional persistent memory system. When enabled, it:
-- **Auto-saves** session progress, task state, architecture decisions, error resolutions, and user preferences
-- **Auto-recalls** relevant memories and injects them into the system prompt on each request
-- **Resumes context** when user says "continue" -- loads last task state and session progress
-
-Memory runs as a Docker service (`mempalace-mcp` on port 8891). IDEs can also connect directly.
-
-Disable with `MEMPALACE_ENABLED=false` in `.env`. Proxy works normally without it.
+Full list: see `.env.example` for all supported providers.
 
 ## Architecture
 
 ```
-Client Request (IDE / Codex CLI / API)
-     |
-     v
-[LLM Smart Proxy :18900]
-     |
-     +-- /v1/chat/completions --> lib/routing.js (handleChatCompletion)
-     |       |
-     |       +-- Ban AI intercept (strip "ban ai XX" from messages)
-     |       +-- Drop cache replay (instant removal of previously compacted msgs)
-     |       +-- 4-layer pre-routing compaction (90%→75%→50%→20% of original)
-     |       +-- Provider selection (benchmark scoring + compat + stalling decay)
-     |       +-- lib/transforms.js (request transformation)
-     |       |     +-- Tool name sanitization, tool_call ID normalization
-     |       |     +-- Role sanitization, orphan stripping, dedup
-     |       |     +-- System prompt injection (autonomous agent rules)
-     |       |     +-- Per-provider compat fixes (strict, content arrays, etc.)
-     |       +-- Stream to provider → garble/stalling/empty detection → failover
-     |       +-- Emergency provider release if <=2 available
-     |
-     +-- /v1/responses (WS+SSE) --> lib/responses.js (Codex CLI bridge)
-     |       +-- WebSocket: multi-turn with conversation history
-     |       +-- HTTP SSE: single-turn streaming
-     |       +-- Translates Responses API ↔ Chat Completions
-     |
-     +-- /v1/models           --> List all providers + groups
-     +-- /v1/capabilities     --> Capability summary
-     +-- /health              --> System status + MemPalace status
-     +-- /scores              --> Scoring data
-     +-- /banned              --> Cooldowns, quota blocks, group bans
-     +-- /ban, /unban         --> Runtime provider management
-     +-- /stats               --> Session token usage
-     +-- /discovery           --> Discovered models
+Client (IDE / Codex CLI / API)
+     │
+     ▼
+[Smart Proxy :18900]
+     ├── /v1/chat/completions → routing.js
+     │     ├── 4-layer compaction (90%→75%→50%→20%)
+     │     ├── Provider selection (benchmark + compat + stalling decay)
+     │     ├── Request transform (tool sanitization, role fixes, dedup)
+     │     ├── Stream → garble/stalling/empty detection → failover
+     │     └── Emergency provider release if <=2 available
+     │
+     ├── /v1/responses → responses.js (Codex CLI bridge)
+     │     ├── WebSocket: multi-turn with history
+     │     └── HTTP SSE: single-turn streaming
+     │
+     └── /health, /scores, /banned, /ban, /unban, /stats
 
-Modules (lib/):
-  state.js      — Shared mutable state, constants, log()
-  scoring.js    — Scores, cooldowns, quota, compat detection, stalling
-  providers.js  — Provider loading, MODEL_SCORES benchmark data
-  compaction.js — Token estimation, garble detection, 4-phase compaction, truncation cache
-  transforms.js — Request transforms, system prompt, use-case detection, tool sanitization
-  routing.js    — Provider selection, stream/non-stream routing, failover, ban commands
-  responses.js  — Responses API bridge (WS + HTTP SSE) for Codex CLI
+Modules: state.js, scoring.js, providers.js, compaction.js,
+         transforms.js, routing.js, responses.js
 
-[MemPalace MCP :8891]         --> Persistent memory (sessions, tasks, errors, preferences)
-
-[Gateway Proxies (optional)]
-     +-- Kiro Gateway :10088     --> Claude Sonnet 4, Haiku 4.5 (free AWS Builder ID)
-     +-- Codex Proxy :10531      --> GPT-5.5/5.4/5.3/5.2 (ChatGPT subscription)
-
-[LLM Discovery Daemon]
-     |
-     +-- Every 6h: scan /models endpoints (API + local gateways)
-     +-- Test new models: chat, thinking, context
-     +-- Auto-provision new providers with heuristic scoring
-     +-- Save to /data/discovery.json
+[MemPalace MCP :8891]  — persistent memory (optional)
+[Kiro Gateway :10088]  — free Claude (optional)
+[Codex Proxy :10531]   — GPT-5.x (optional)
+[Discovery Daemon]     — scans /models every 6h
 ```
 
 ## Credits
 
-This project integrates several open source tools as Docker services:
-
-| Tool | Author | License | Used for |
-|------|--------|---------|----------|
-| [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) | [@jwadow](https://github.com/jwadow) | AGPL-3.0 | Kiro → OpenAI-compatible API for free AWS Claude |
-| [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) | [@EvanZhouDev](https://github.com/EvanZhouDev) | MIT | ChatGPT subscription → OpenAI-compatible API |
-| [MemPalace](https://github.com/MemPalace/mempalace) | MemPalace | MIT | Persistent AI memory via MCP |
-| [supergateway](https://www.npmjs.com/package/supergateway) | — | MIT | stdio-to-SSE MCP bridge |
-| [RTK](https://github.com/rtk-ai/rtk) | [@rtk-ai](https://github.com/rtk-ai) | MIT | CLI output compression (60-90% token savings) |
+| Tool | Used for |
+|------|----------|
+| [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) | Free Claude via AWS |
+| [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) | ChatGPT OAuth proxy |
+| [MemPalace](https://github.com/MemPalace/mempalace) | Persistent AI memory |
+| [RTK](https://github.com/rtk-ai/rtk) | CLI output compression |
 
 ## License
 
