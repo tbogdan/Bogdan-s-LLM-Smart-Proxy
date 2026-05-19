@@ -116,7 +116,7 @@ function handleModels(query) {
     tier: 0,
     thinking_capable: g === "auto-thinking",
     is_group: true,
-    provider_count: routing.getProvidersForGroup(g).length,
+    provider_count: routing.getProvidersForGroup(g, 0, null).length,
   }));
 
   // Add auto group (smart use-case detection)
@@ -157,7 +157,7 @@ function handleCapabilities() {
     groups: Object.keys(state.GROUPS).map((g) => ({
       name: g,
       capability: state.GROUPS[g],
-      provider_count: routing.getProvidersForGroup(g).length,
+      provider_count: routing.getProvidersForGroup(g, 0, null).length,
     })),
     total_providers: state.PROVIDERS.filter((p) => p.key && p.alive !== false).length,
     total_capabilities: allCaps.size,
@@ -185,7 +185,7 @@ function handleHealth() {
     },
     groups: Object.keys(state.GROUPS).map((g) => ({
       name: g,
-      available: routing.getProvidersForGroup(g).length,
+      available: routing.getProvidersForGroup(g, 0, null).length,
     })),
     quota_disabled: Object.keys(state.quotaDisabled).length > 0 ? state.quotaDisabled : undefined,
     compat_overrides: Object.keys(state.providerCompat).length > 0 ? Object.keys(state.providerCompat).length : undefined,
@@ -548,6 +548,36 @@ server.on("upgrade", (req, socket, head) => {
 
 probeThinking().catch(() => {});
 setInterval(() => { probeThinking().catch(() => {}); }, THINKING_PROBE_INTERVAL);
+
+// Cache eviction — clean stale entries every hour
+setInterval(() => {
+  const now = Date.now();
+  const MAX_AGE = 24 * 3600_000; // 24h
+  let evicted = 0;
+  // Session stats — evict sessions older than 24h
+  for (const [id, s] of Object.entries(state.sessionStats)) {
+    if (now - s.lastRequest > MAX_AGE) { delete state.sessionStats[id]; evicted++; }
+  }
+  // Session compact cache — evict old
+  for (const [id, c] of Object.entries(state.sessionCompactCache)) {
+    if (now - c.timestamp > MAX_AGE) { delete state.sessionCompactCache[id]; evicted++; }
+  }
+  // Compaction drop cache — evict old sessions
+  for (const id of Object.keys(state.compactionDropCache)) {
+    if (!state.sessionStats[id]) { delete state.compactionDropCache[id]; evicted++; }
+  }
+  // Truncation cache — cap at 500 entries
+  const truncKeys = Object.keys(state.truncationCache);
+  if (truncKeys.length > 500) {
+    for (const k of truncKeys.slice(0, truncKeys.length - 500)) { delete state.truncationCache[k]; evicted++; }
+  }
+  // Stalling tracker — evict old entries
+  for (const [name, times] of Object.entries(state.stallingTracker)) {
+    state.stallingTracker[name] = times.filter(t => now - t < 3600_000);
+    if (state.stallingTracker[name].length === 0) { delete state.stallingTracker[name]; evicted++; }
+  }
+  if (evicted > 0) state.log(`CACHE-EVICT: cleaned ${evicted} stale entries`);
+}, 3600_000);
 
 process.on("SIGTERM", () => { scoring.saveScores(); process.exit(0); });
 process.on("SIGINT", () => { scoring.saveScores(); process.exit(0); });
