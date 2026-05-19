@@ -571,6 +571,10 @@ setInterval(() => {
   if (truncKeys.length > 500) {
     for (const k of truncKeys.slice(0, truncKeys.length - 500)) { delete state.truncationCache[k]; evicted++; }
   }
+  // File activity — evict sessions no longer tracked
+  for (const id of Object.keys(state.fileActivity)) {
+    if (!state.sessionStats[id]) { delete state.fileActivity[id]; evicted++; }
+  }
   // Stalling tracker — evict old entries
   for (const [name, times] of Object.entries(state.stallingTracker)) {
     state.stallingTracker[name] = times.filter(t => now - t < 3600_000);
