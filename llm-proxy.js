@@ -204,6 +204,67 @@ function handleScores() {
 }
 
 // ---------------------------------------------------------------------------
+// Banned endpoint
+// ---------------------------------------------------------------------------
+function handleBanned() {
+  const now = Date.now();
+  const allProviders = state.PROVIDERS.filter((p) => p.key);
+
+  const cooldowns = [];
+  const quotaDisabledList = [];
+
+  for (const p of allProviders) {
+    const s = scoring.getScore(p.name);
+
+    if (scoring.isOnCooldown(p.name)) {
+      const expiresMs = s.cooldown_until - now;
+      const expiresMin = Math.round(expiresMs / 60000);
+      const stalling = (state.stallingTracker?.[p.name] || []).length;
+      cooldowns.push({
+        name: p.name,
+        model: p.model,
+        reason: s.cooldown_reason || "unknown",
+        expires_in_min: Math.max(0, expiresMin),
+        ...(stalling > 0 ? { stalling } : {}),
+      });
+    }
+
+    if (scoring.isQuotaDisabled(p.name)) {
+      const entry = state.quotaDisabled[p.name];
+      const expiresMs = entry?.expires_at ? entry.expires_at - now : null;
+      const expiresMin = expiresMs != null ? Math.round(expiresMs / 60000) : null;
+      quotaDisabledList.push({
+        name: p.name,
+        model: p.model,
+        reason: entry?.reason || "quota/billing error",
+        ...(expiresMin != null ? { expires_in_min: Math.max(0, expiresMin) } : {}),
+      });
+    }
+  }
+
+  // Group bans: convert Sets to arrays
+  const groupBans = {};
+  for (const [group, names] of Object.entries(state.groupBans)) {
+    const arr = names instanceof Set ? [...names] : names;
+    if (arr.length > 0) groupBans[group] = arr;
+  }
+
+  const totalBanned = new Set([
+    ...cooldowns.map((x) => x.name),
+    ...quotaDisabledList.map((x) => x.name),
+    ...Object.values(groupBans).flat(),
+  ]).size;
+
+  return {
+    cooldowns,
+    quota_disabled: quotaDisabledList,
+    group_bans: groupBans,
+    total_banned: totalBanned,
+    total_active: allProviders.filter((p) => !scoring.isOnCooldown(p.name) && !scoring.isQuotaDisabled(p.name)).length,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Discovery endpoint
 // ---------------------------------------------------------------------------
 function handleDiscovery() {
@@ -311,6 +372,57 @@ const server = http.createServer(async (req, res) => {
     // GET /scores
     if (method === "GET" && pathname === "/scores") {
       return sendJSON(res, handleScores());
+    }
+
+    // GET /banned
+    if (method === "GET" && pathname === "/banned") {
+      return sendJSON(res, handleBanned());
+    }
+
+    // POST /ban — ban a provider by name or pattern
+    // Body: {"pattern": "DSV4Flash", "hours": 12, "reason": "garbled output"}
+    if (method === "POST" && pathname === "/ban") {
+      const body = await readBody(req);
+      try {
+        const { pattern, name, hours, reason } = JSON.parse(body);
+        const pat = pattern || name;
+        if (!pat || !hours) return sendError(res, 400, "Need pattern + hours");
+        const re = new RegExp(pat, "i");
+        const banned = [];
+        for (const p of state.PROVIDERS) {
+          if (re.test(p.name) || re.test(p.model)) {
+            scoring.setCooldown(p.name, hours * 3600_000, reason || `API ban ${hours}h`);
+            const s = scoring.getScore(p.name);
+            s.stalling = Math.max(s.stalling || 0, 5);
+            s.last_stall_time = Date.now();
+            scoring.saveScores();
+            banned.push(p.name);
+            state.log(`API-BAN: ${p.name} banned ${hours}h — ${reason || "manual"}`);
+          }
+        }
+        return sendJSON(res, { banned, hours, reason });
+      } catch { return sendError(res, 400, "Invalid JSON"); }
+    }
+
+    // POST /unban — clear cooldowns by pattern or "all"
+    if (method === "POST" && pathname === "/unban") {
+      const body = await readBody(req);
+      try {
+        const { pattern } = JSON.parse(body);
+        const unbanned = [];
+        for (const p of state.PROVIDERS) {
+          if (!p.key) continue;
+          const s = scoring.getScore(p.name);
+          if (s.cooldown_until <= Date.now()) continue;
+          if (pattern === "all" || (pattern && new RegExp(pattern, "i").test(p.name))) {
+            s.cooldown_until = 0;
+            unbanned.push(p.name);
+          }
+        }
+        scoring.saveScores();
+        state.log(`API-UNBAN: cleared ${unbanned.length} cooldowns (pattern: ${pattern})`);
+        return sendJSON(res, { unbanned, count: unbanned.length });
+      } catch { return sendError(res, 400, "Invalid JSON. Use {\"pattern\":\"all\"} or {\"pattern\":\"Groq\"}"); }
     }
 
     // GET /discovery

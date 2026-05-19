@@ -11,7 +11,15 @@ A zero-dependency Node.js proxy that routes requests to 150+ LLM models across 1
 - **Thinking detection**: probes for `reasoning_content`, `<think>` tags, and `thinking` fields
 - **Request transformation**: adds `enable_thinking` for Qwen3 models, passes `reasoning_effort`
 - **Auto-discovery**: scans provider `/models` endpoints every 6h for new free models
-- **Zero dependencies**: pure Node.js `http`/`https`, no npm install needed
+- **Codex CLI support**: WebSocket + HTTP SSE `/v1/responses` endpoint (Responses API bridge)
+- **Smart context compaction**: 4-layer progressive reduction (90%→75%→50%→20%) with drop cache for instant replay
+- **Garble detection**: 10-signal scoring (mixed scripts, repetitive content, sentence loops, cognitive stalling)
+- **Provider quality control**: stalling detection, no-tools detection, empty response retry, tool call JSON repair
+- **User commands**: `ban ai 24` to ban current provider for N hours (intercepted by proxy)
+- **Admin API**: `/ban`, `/unban`, `/banned` endpoints for runtime provider management
+- **Modular architecture**: split into `lib/` modules (state, scoring, providers, compaction, transforms, routing, responses)
+- **Stable truncation cache**: tool response truncations cached by content hash for consistent cross-request behavior
+- **Cross-provider compatibility**: auto-strips `strict`, sanitizes tool_call IDs, injects `thought_signature`, fixes role ordering
 
 ## Quick Start
 
@@ -91,9 +99,53 @@ Capability summary with provider counts per capability.
 
 Full system status: uptime, provider counts, group availability.
 
+### POST /v1/responses (WebSocket + HTTP SSE)
+
+OpenAI Responses API endpoint for Codex CLI. Supports both WebSocket (persistent multi-turn) and HTTP SSE (single-turn streaming).
+
+**WebSocket:** Connect to `ws://proxy:18900/v1/responses` — Codex CLI connects here automatically.
+
+**HTTP SSE:** POST with `Accept: text/event-stream` — returns Responses API streaming events.
+
+The proxy translates between Responses API format and Chat Completions format internally. All routing, scoring, and compaction features work identically.
+
 ### GET /scores
 
-Provider scoring data: latency, success rate, thinking verification count.
+Provider scoring data: latency, success rate, stalling count, thinking verification.
+
+### GET /banned
+
+Currently banned/cooled providers with reasons and expiry times.
+
+```bash
+curl http://localhost:18900/banned
+```
+
+Returns: `cooldowns[]`, `quota_disabled[]`, `group_bans{}`, `total_banned`, `total_active`.
+
+### POST /ban
+
+Ban a provider by name or regex pattern.
+
+```bash
+curl -X POST http://localhost:18900/ban \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "DSV4Flash", "hours": 12, "reason": "garbled output"}'
+```
+
+### POST /unban
+
+Clear cooldowns by pattern or all.
+
+```bash
+curl -X POST http://localhost:18900/unban \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "all"}'
+```
+
+### GET /stats
+
+Session token usage: per-session, per-provider, per-model aggregations.
 
 ### GET /discovery
 
@@ -616,6 +668,24 @@ cp ~/.codex/auth.json data/codex-auth.json
 
 Requires ChatGPT Plus/Pro/Team subscription. Token auto-refreshes. Models available depend on subscription tier.
 
+### Codex CLI Through Proxy
+
+Route Codex CLI through the smart proxy instead of direct OpenAI. Config in `~/.codex/config.toml`:
+
+```toml
+model = "auto-coding"
+openai_base_url = "http://homebridge.local:18900/v1"
+experimental_realtime_ws_base_url = "ws://homebridge.local:18900/v1"
+```
+
+And `~/.codex/auth.json`:
+
+```json
+{"auth_mode": "apikey", "OPENAI_API_KEY": "proxy"}
+```
+
+Codex CLI connects via WebSocket to `/v1/responses`. Proxy translates Responses API → Chat Completions, routes through best available provider with full failover, then translates back. Multi-turn conversation history maintained per WebSocket connection.
+
 ### How Gateway Proxies Work
 
 1. `ENABLE_X=true` in `.env` activates the Docker profile
@@ -639,25 +709,47 @@ Disable with `MEMPALACE_ENABLED=false` in `.env`. Proxy works normally without i
 ## Architecture
 
 ```
-Client Request
+Client Request (IDE / Codex CLI / API)
      |
      v
 [LLM Smart Proxy :18900]
      |
-     +-- /v1/chat/completions --> Recall Memories --> Compact if needed
-     |                                  |
-     |                           Group Router --> Provider 1 --> Provider 2 --> ...
-     |                                  |
-     |                           Score & Rank (agent-aware, compat-aware)
-     |                           Transform Request (strip incompatible fields)
-     |                           Detect Thinking / Stalling
-     |                           Save to MemPalace (async)
+     +-- /v1/chat/completions --> lib/routing.js (handleChatCompletion)
+     |       |
+     |       +-- Ban AI intercept (strip "ban ai XX" from messages)
+     |       +-- Drop cache replay (instant removal of previously compacted msgs)
+     |       +-- 4-layer pre-routing compaction (90%→75%→50%→20% of original)
+     |       +-- Provider selection (benchmark scoring + compat + stalling decay)
+     |       +-- lib/transforms.js (request transformation)
+     |       |     +-- Tool name sanitization, tool_call ID normalization
+     |       |     +-- Role sanitization, orphan stripping, dedup
+     |       |     +-- System prompt injection (autonomous agent rules)
+     |       |     +-- Per-provider compat fixes (strict, content arrays, etc.)
+     |       +-- Stream to provider → garble/stalling/empty detection → failover
+     |       +-- Emergency provider release if <=2 available
+     |
+     +-- /v1/responses (WS+SSE) --> lib/responses.js (Codex CLI bridge)
+     |       +-- WebSocket: multi-turn with conversation history
+     |       +-- HTTP SSE: single-turn streaming
+     |       +-- Translates Responses API ↔ Chat Completions
      |
      +-- /v1/models           --> List all providers + groups
      +-- /v1/capabilities     --> Capability summary
      +-- /health              --> System status + MemPalace status
      +-- /scores              --> Scoring data
+     +-- /banned              --> Cooldowns, quota blocks, group bans
+     +-- /ban, /unban         --> Runtime provider management
+     +-- /stats               --> Session token usage
      +-- /discovery           --> Discovered models
+
+Modules (lib/):
+  state.js      — Shared mutable state, constants, log()
+  scoring.js    — Scores, cooldowns, quota, compat detection, stalling
+  providers.js  — Provider loading, MODEL_SCORES benchmark data
+  compaction.js — Token estimation, garble detection, 4-phase compaction, truncation cache
+  transforms.js — Request transforms, system prompt, use-case detection, tool sanitization
+  routing.js    — Provider selection, stream/non-stream routing, failover, ban commands
+  responses.js  — Responses API bridge (WS + HTTP SSE) for Codex CLI
 
 [MemPalace MCP :8891]         --> Persistent memory (sessions, tasks, errors, preferences)
 
