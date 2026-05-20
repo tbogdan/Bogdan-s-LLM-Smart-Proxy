@@ -72,6 +72,148 @@ test("detectGarbledText accepts coherent markdown strategy reports with code pat
   assert.equal(compaction.detectGarbledText(report), false);
 });
 
+test("detectGarbledText accepts coherent terminal recovery workflow reports", () => {
+  const report = [
+    "## Recovery Workflow: Terminal-Agent Benchmark Mirror",
+    "",
+    "Five ordered steps. Each carries evidence, action, and stop condition.",
+    "",
+    "1. Evidence: `git status --short` shows the dirty generated file and whether unrelated changes are present.",
+    "   Action: record the exact changed paths and separate generated output from hand edits.",
+    "   Stop condition: no unknown file remains unexplained.",
+    "2. Evidence: the benchmark process was interrupted before the final report.",
+    "   Action: check for an active benchmark process and preserve partial JSON output for comparison.",
+    "   Stop condition: either the process is gone or it is intentionally resumed.",
+    "3. Evidence: tests were green before Docker rebuild.",
+    "   Action: rerun the focused tests before touching implementation again.",
+    "   Stop condition: failures are reproduced or the baseline is confirmed.",
+    "4. Evidence: migration edits may overlap generated files.",
+    "   Action: make the smallest patch after a fresh read and avoid stale line ranges.",
+    "   Stop condition: patch applies cleanly and changed files match the intended set.",
+    "5. Evidence: benchmark and regression signals both matter.",
+    "   Action: run verification, report exact commands, and call out remaining risk.",
+    "   Stop condition: the summary has evidence, action, and verification result.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
+test("detectGarbledText accepts valid architecture JSON reports", () => {
+  const report = JSON.stringify({
+    decision: "adaptive-routing",
+    architecture: {
+      layers: [
+        { name: "ingress_normalizer", role: "normalize streaming chunks and tool call JSON" },
+        { name: "provider_health_router", role: "score cooldown, fallback, and benchmark evidence" },
+      ],
+    },
+    optimization: {
+      direct_vs_proxy: "deduplicate long-context history and preserve route evidence",
+      cost: "prefer cheaper models only when correctness risk is comparable",
+    },
+    risk: {
+      provider_noise: "rate limits can hide routing regressions without explicit logs",
+      stale_edit_recovery: "fresh reads are required before patching adjacent fields",
+    },
+  });
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
+test("detectGarbledText accepts coherent patch sketches with fenced code", () => {
+  const patch = [
+    "Patch sketch:",
+    "",
+    "```js",
+    "const crypto = require('crypto');",
+    "",
+    "function verify(signatureHeader, body, secret, now = Math.floor(Date.now() / 1000)) {",
+    "  const parts = Object.fromEntries(signatureHeader.split(',').map((part) => part.split('=')));",
+    "  const timestamp = Number(parts.t);",
+    "  if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > 300) return false;",
+    "  if (!/^[0-9a-f]{64}$/i.test(parts.v1 || '')) return false;",
+    "  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest();",
+    "  const supplied = Buffer.from(parts.v1, 'hex');",
+    "  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);",
+    "}",
+    "```",
+    "",
+    "Regression tests:",
+    "- rejects timestamps older than five minutes",
+    "- rejects malformed hex before Buffer comparison",
+    "- compares equal-length signatures with timingSafeEqual",
+    "- accepts fixture v1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa when the HMAC matches",
+    "- rejects fixture v1=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb when the body changes",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(patch), false);
+});
+
+test("detectGarbledText accepts coherent markdown test-first patch reports", () => {
+  const report = [
+    "**Tests that fail BEFORE the patch**",
+    "",
+    "1. Replay test - a valid signature replayed 10 minutes later is accepted because the timestamp is ignored.",
+    "2. Malformed hex test - odd-length `v1` input reaches comparison without validation.",
+    "3. Timing test - direct string equality leaks how much of the HMAC matched.",
+    "",
+    "## Patch sketch",
+    "",
+    "- Parse the header into `t` and `v1` fields and reject missing values.",
+    "- Reject timestamps older than 300 seconds before comparing signatures.",
+    "- Decode expected and supplied signatures to buffers and check equal length.",
+    "- Use `crypto.timingSafeEqual` only after validation so malformed input is safe.",
+    "",
+    "## Regression coverage",
+    "",
+    "- Valid signature within the timestamp window succeeds.",
+    "- Replayed signature outside the window fails.",
+    "- Malformed signature hex fails without throwing.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
+test("detectGarbledText accepts coherent recovery workflow reports", () => {
+  const report = [
+    "## Recovery Workflow: Terminal-Agent Migration Resume",
+    "",
+    "---",
+    "",
+    "### Step 1 - Inspect State",
+    "",
+    "**Evidence:** The repository has a dirty generated file, a benchmark process was interrupted, and the previous run must not hide regressions.",
+    "**Action:** Run `git status --short`, inspect the benchmark output file, and list any active Docker containers before changing code.",
+    "**Stop condition:** Stop if there are unrelated user edits that overlap with the files needed for the migration.",
+    "",
+    "### Step 2 - Isolate Unrelated Changes",
+    "",
+    "**Evidence:** The dirty generated file is not part of the benchmark harness.",
+    "**Action:** Leave unrelated changes in place and scope the next edit only to the failing benchmark/routing modules.",
+    "**Stop condition:** Stop if the migration requires reverting user-owned work.",
+    "",
+    "### Step 3 - Resume Safely",
+    "",
+    "**Evidence:** The benchmark was interrupted after the direct Opus run timed out.",
+    "**Action:** Re-run the smallest benchmark slice that reproduces the timeout and compare route logs before changing routing policy.",
+    "**Stop condition:** Stop if the timeout is upstream transport rather than routing policy.",
+    "",
+    "### Step 4 - Verify Regression Safety",
+    "",
+    "**Evidence:** Unit tests cover routing profile, cost group, and completion review classification.",
+    "**Action:** Run focused tests first, then the full suite, then a bounded benchmark run.",
+    "**Stop condition:** Stop if any test fails or if the benchmark no longer reaches the final Opus case.",
+    "",
+    "### Step 5 - Report",
+    "",
+    "**Evidence:** The final report includes provider mix, latency, tokens, cost estimate, and correctness.",
+    "**Action:** Summarize what changed, what remains risky, and which raw logs explain the route choices.",
+    "**Stop condition:** Stop if benchmark correctness or route diversity regresses.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
 test("extractToolFacts tracks file activity and emits short previews for large reads", () => {
   const sessionId = "test-session-file-activity";
   delete state.fileActivity?.[sessionId];

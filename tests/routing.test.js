@@ -19,6 +19,27 @@ async function withServer(handler, fn) {
   }
 }
 
+class FakeClientResponse {
+  constructor() {
+    this.status = null;
+    this.headers = null;
+    this.body = "";
+  }
+
+  writeHead(status, headers = {}) {
+    this.status = status;
+    this.headers = headers;
+  }
+
+  write(chunk) {
+    this.body += chunk;
+  }
+
+  end(chunk = "") {
+    this.body += chunk;
+  }
+}
+
 async function withRoutingState(fn) {
   const originalScores = state.scores;
   const originalWriteFileSync = fs.writeFileSync;
@@ -128,6 +149,38 @@ test("routeToProvider accepts exact text-only replies without tool calls when to
   });
 });
 
+test("routeToProvider estimates usage when upstream reports zero tokens", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "benchmark-ok",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "test-model",
+        messages: [
+          { role: "system", content: "Benchmark system prompt." },
+          { role: "user", content: "Reply exactly: benchmark-ok" },
+        ],
+        _llmProxyBypassOptimizations: true,
+      });
+      const usage = JSON.parse(resp.body).usage;
+
+      assert.equal(usage.prompt_tokens > 0, true);
+      assert.equal(usage.completion_tokens > 0, true);
+      assert.equal(usage.total_tokens, usage.prompt_tokens + usage.completion_tokens);
+    });
+  });
+});
+
 test("routeToProvider rejects wrong identity answers even when tools are present", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
@@ -214,6 +267,54 @@ test("dedupeConsecutiveIdempotentToolCalls removes only exact consecutive read d
 
   assert.equal(removed, 2);
   assert.deepEqual(remainingCallIds, ["call_1", "call_3"]);
+});
+
+test("handleChatCompletion preserves duplicate history for direct benchmark bypass", async () => {
+  await withRoutingState(async () => {
+    let capturedRequest = null;
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        capturedRequest = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }));
+      });
+    }, async (url) => {
+      const originalProviders = state.PROVIDERS;
+      state.PROVIDERS = [provider(url, { name: "Direct-Test", model: "test-model" })];
+      try {
+        await routing.handleChatCompletion({
+          model: "test-model",
+          _llmProxyBypassOptimizations: true,
+          messages: [
+            { role: "user", content: "Replay exact direct baseline." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_read_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_read_1", content: "First read." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_read_2", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_read_2", content: "Second read." },
+          ],
+        }, new FakeClientResponse());
+
+        const readCalls = capturedRequest.messages
+          .filter((msg) => msg.role === "assistant" && msg.tool_calls?.[0]?.function?.name === "Read");
+        assert.equal(readCalls.length, 2);
+      } finally {
+        state.PROVIDERS = originalProviders;
+      }
+    });
+  });
 });
 
 test("routeToProvider rejects generated tool calls missing required tool input", async () => {
@@ -316,6 +417,92 @@ test("routeToProvider accepts short completed-work reports when tools are availa
 
       assert.equal(resp.status, 200);
       assert.match(JSON.parse(resp.body).choices[0].message.content, /Changes/);
+    });
+  });
+});
+
+test("routeToProvider accepts diagnostic recovery reports from tool-heavy sessions", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: [
+              "The script works now; the previous shell compatibility fix is resolved.",
+              "",
+              "The current failure is **Ansible requires a sudo password on localhost**.",
+              "",
+              "```text",
+              "status=failed",
+              "fatal: missing sudo password",
+              "```",
+              "",
+              "Evidence used:",
+              "- The command reached execution and returned status=failed.",
+              "- The error is outside the edited script path.",
+              "- Verification should re-run the command after the Ansible privilege setting is fixed.",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [
+          { role: "user", content: "Codebase and user instructions are shown below. Be sure to adhere to these instructions." },
+          { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"run_cmd.py\"}" } }] },
+          { role: "tool", tool_call_id: "call_1", content: "return object excerpt" },
+          { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"run_cmd.py\"}" } }] },
+          { role: "tool", tool_call_id: "call_2", content: "edit failed" },
+        ],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /sudo password/);
+    });
+  });
+});
+
+test("routeToProvider accepts concise script command reports from tool-heavy sessions", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: [
+              "Done. One command:",
+              "",
+              "```shell",
+              "./run-chaos-plan.sh",
+              "```",
+              "",
+              "The script now uses the default SSH_USER value and the run command should execute the prepared plan.",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [
+          { role: "user", content: "Codebase and user instructions are shown below. Be sure to adhere to these instructions." },
+          { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"run-chaos-plan.sh\"}" } }] },
+          { role: "tool", tool_call_id: "call_1", content: "edit applied" },
+        ],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /run-chaos-plan/);
     });
   });
 });
@@ -586,6 +773,74 @@ test("coding-sm ranks fast coding tool models ahead of large max models", () => 
   }
 });
 
+test("coding-sm avoids Opus-class providers for small fast coding work", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  const originalEnv = {
+    LLM_COST_TARGET: process.env.LLM_COST_TARGET,
+    LLM_THINKING_TARGET: process.env.LLM_THINKING_TARGET,
+    LLM_SPEED_TARGET: process.env.LLM_SPEED_TARGET,
+    LLM_ROUTING_POLICY: process.env.LLM_ROUTING_POLICY,
+  };
+  state.GROUPS = { "coding-sm": "coding-sm" };
+  state.PROVIDERS = [
+    {
+      name: "Opus-Deep",
+      model: "windsurf/claude-opus-4.6",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      context: 200000,
+      tier: 1,
+      tc: true,
+    },
+    {
+      name: "Sonnet-Mid",
+      model: "windsurf/claude-sonnet-4.6",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      tier: 1,
+      tc: true,
+    },
+    {
+      name: "Mini-Fast",
+      model: "codex/gpt-5.4-mini",
+      family: "codex",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      tier: 1,
+      tc: true,
+    },
+  ];
+
+  try {
+    process.env.LLM_COST_TARGET = "3";
+    process.env.LLM_THINKING_TARGET = "medium";
+    process.env.LLM_SPEED_TARGET = "4";
+    process.env.LLM_ROUTING_POLICY = "balanced";
+
+    const providers = routing.getProvidersForGroup("coding-sm", 1000, {
+      model: "coding-sm",
+      messages: [{ role: "user", content: "Fix this async timeout helper and keep the answer concise." }],
+      tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      _estimatedTokens: 1000,
+    });
+
+    assert.notEqual(providers[0].name, "Opus-Deep");
+    assert.equal(["Sonnet-Mid", "Mini-Fast"].includes(providers[0].name), true);
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("tool-bearing smart routes keep Windsurf native tool providers eligible", () => {
   const originalProviders = state.PROVIDERS;
   const originalGroups = state.GROUPS;
@@ -631,7 +886,7 @@ test("tool-bearing smart routes keep Windsurf native tool providers eligible", (
 });
 
 test("routing profile log exposes complexity targets and provider policy dimensions", () => {
-  const line = routing.formatRoutingProfileForLog("auto-coding", {
+  const reqBody = {
     model: "auto-coding",
     messages: [
       { role: "system", content: "You are Claude Code running as a software engineering agent." },
@@ -639,12 +894,15 @@ test("routing profile log exposes complexity targets and provider policy dimensi
     ],
     tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
     _estimatedTokens: 67548,
-  }, 35548);
+  };
+  const line = routing.formatRoutingProfileForLog("auto-coding", reqBody, 35548);
 
   assert.match(line, /ROUTING-PROFILE: auto-coding/);
   assert.match(line, /level=4\/complex/);
   assert.match(line, /source=heuristic/);
   assert.match(line, /task=agentic_coding/);
+  assert.match(line, /shape=write_heavy/);
+  assert.match(line, /gate=run_behavior/);
   assert.match(line, /cost=3/);
   assert.match(line, /thinking=3\/medium/);
   assert.match(line, /speed=4/);
@@ -666,6 +924,39 @@ test("routing profile log exposes complexity targets and provider policy dimensi
   assert.match(candidate, /cost=2/);
   assert.match(candidate, /think=high/);
   assert.match(candidate, /speed=5/);
+});
+
+test("routing profile log exposes review shape and diff validation gate", () => {
+  const reqBody = {
+    model: "auto-coding",
+    messages: [
+      { role: "user", content: "Review this LLM-generated diff line by line; compare summary versus diff and report regressions only." },
+    ],
+    _estimatedTokens: 6000,
+  };
+  const line = routing.formatRoutingProfileForLog("auto-coding", reqBody, 6000);
+
+  assert.match(line, /task=code_review|task=completion_review|task=verification/);
+  assert.match(line, /shape=review/);
+  assert.match(line, /gate=read_diff/);
+});
+
+test("routing assessment log exposes chosen provider and task reason", () => {
+  const line = routing.formatRoutingAssessmentForLog({
+    name: "Codex-GPT54Mini",
+    model: "codex/gpt-5.4-mini",
+    family: "codex",
+    context: 200000,
+    tier: 1,
+  }, {
+    model: "auto-coding",
+    messages: [{ role: "user", content: "Reply exactly: metadata-ok" }],
+    _estimatedTokens: 256,
+  });
+
+  assert.match(line, /ASSESS: Codex-GPT54Mini level=1 effort=none speed=5 reason=exact_reply/);
+  assert.match(line, /source=heuristic/);
+  assert.match(line, /task=direct_answer/);
 });
 
 test("routing skips providers with recent unresolved chronic stalling", async () => {
@@ -858,6 +1149,400 @@ test("routing keeps reliable 200k light model ahead until context is truly tight
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("auto-max prefers one-million-token Opus-class providers for deep context requests", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-max": "max" };
+    state.PROVIDERS = [
+      {
+        name: "Codex-GPT55",
+        model: "codex/gpt-5.5",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 2,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 4,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 2,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const providers = routing.getProvidersForGroup("auto-max", 260000, {
+        model: "auto-max",
+        messages: [{ role: "user", content: "Deep research one million token production incident with streaming, tools, rate limits, and architecture risk." }],
+        _estimatedTokens: 260000,
+      });
+
+      assert.equal(providers[0].name, "Windsurf-ClaudeOpus461M");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("auto-thinking prefers frontier non-1M models for short-context reasoning", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-thinking": "thinking" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Codex-GPT55",
+        model: "codex/gpt-5.5",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 4,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const req = {
+        model: "auto-thinking",
+        messages: [{ role: "user", content: "Design a recovery workflow with evidence, action, verification, and stop conditions." }],
+        _estimatedTokens: 500,
+      };
+      const providers = routing.getProvidersForGroup("auto-thinking", 500, req);
+
+      assert.equal(providers[0].name, "Codex-GPT55");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("auto-max keeps Opus for long-context requests but not short no-tool incidents", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-max": "max" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Codex-GPT55",
+        model: "codex/gpt-5.5",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 4,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const shortReq = {
+        model: "auto-max",
+        messages: [{ role: "user", content: "Production incident decision: choose adaptive routing, schema translation, provider ban, or always frontier. Return JSON with risk and first fix." }],
+        _estimatedTokens: 500,
+      };
+      const longReq = {
+        model: "auto-max",
+        messages: [{ role: "user", content: "Deep research one million token production incident with streaming, tools, rate limits, and architecture risk." }],
+        _estimatedTokens: 260000,
+      };
+
+      assert.equal(routing.getProvidersForGroup("auto-max", 500, shortReq)[0].name, "Codex-GPT55");
+      assert.equal(routing.getProvidersForGroup("auto-max", 260000, longReq)[0].name, "Windsurf-ClaudeOpus461M");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("balanced benchmark-style recovery routes to intermediate models before Opus unless frontier context is needed", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalEnv = {
+      LLM_COST_TARGET: process.env.LLM_COST_TARGET,
+      LLM_THINKING_TARGET: process.env.LLM_THINKING_TARGET,
+      LLM_SPEED_TARGET: process.env.LLM_SPEED_TARGET,
+      LLM_ROUTING_POLICY: process.env.LLM_ROUTING_POLICY,
+    };
+    state.GROUPS = { "auto-max": "max", "auto-thinking": "thinking", "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Codex-GPT54",
+        model: "codex/gpt-5.4",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Claude-Sonnet46",
+        model: "claude/claude-sonnet-4-6",
+        family: "claude",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+    ];
+
+    try {
+      process.env.LLM_COST_TARGET = "3";
+      process.env.LLM_THINKING_TARGET = "medium";
+      process.env.LLM_SPEED_TARGET = "4";
+      process.env.LLM_ROUTING_POLICY = "balanced";
+
+      const editReq = {
+        model: "auto-max",
+        messages: [
+          { role: "system", content: "Return exactly four bullets: root cause, immediate fix, prevention, benchmark signal." },
+          { role: "assistant", content: "Edit run_cmd.py\nEdit failed: expected text was not found after stale reads." },
+          { role: "user", content: "Diagnose why the edit failed and give a precise next-edit algorithm so the patch does not corrupt adjacent return-object fields." },
+        ],
+        _inputTokens: 12000,
+        _estimatedTokens: 12300,
+      };
+      const incidentReq = {
+        model: "auto-max",
+        messages: [
+          { role: "system", content: "Return minified JSON only." },
+          { role: "user", content: "A local LLM proxy routes Claude Code traffic to Windsurf, Claude, and Codex. Incident facts: Windsurf sometimes returns text-only while 75 tools are available, some Claude calls are rate-limited, direct Opus is accurate but expensive, SWE is free but weak for agentic coding, and benchmark direct calls must bypass prompt injection and compaction. Choose a decision between provider-ban, schema-translation, adaptive-routing, or always-opus. Return JSON with decision, first_fix, fallback, benchmark_signal, and risk." },
+        ],
+        _inputTokens: 8000,
+        _estimatedTokens: 8400,
+      };
+      const securityReq = {
+        model: "auto-coding",
+        messages: [
+          { role: "system", content: "Return a concise patch sketch and three regression tests." },
+          { role: "user", content: "Fix this Node.js webhook verifier. Reject replayed timestamps, use constant-time comparison, handle malformed hex safely, and list regression tests." },
+        ],
+        _inputTokens: 1200,
+        _estimatedTokens: 1500,
+      };
+
+      assert.notEqual(routing.getProvidersForGroup("auto-max", 12300, editReq)[0].name, "Windsurf-ClaudeOpus461M");
+      assert.notEqual(routing.getProvidersForGroup("auto-max", 8400, incidentReq)[0].name, "Windsurf-ClaudeOpus461M");
+      assert.notEqual(routing.getProvidersForGroup("auto-coding", 1500, securityReq)[0].name, "Windsurf-ClaudeOpus461M");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value == null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
+test("auto-coding promotes Opus-class provider for failed edit recovery on huge Claude Code history", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-Gemini3FlashLow",
+        model: "windsurf/google-gemini-3-0-flash-low",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1048576,
+        tier: 1,
+        tc: true,
+        cost_group: 1,
+        quality_group: 4,
+        speed_group: 5,
+        thinking_effort: "low",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const req = {
+        model: "auto-coding",
+        messages: [
+          { role: "system", content: "You are Claude Code running as a software engineering agent." },
+          { role: "assistant", content: "Read run_cmd.py (lines 353-382)" },
+          { role: "tool", content: "return { command: \"run\", dry_run: args.dry_run }" },
+          { role: "assistant", content: "Edit run_cmd.py\nEdit failed: expected text was not found. Shimming and retrying after a stale read." },
+          { role: "user", content: "<system-reminder> Continue implementing the precise patch without breaking the file.</system-reminder>" },
+        ],
+        tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+        _inputTokens: 225000,
+        _estimatedTokens: 257000,
+      };
+      const providers = routing.getProvidersForGroup("auto-coding", 257000, req);
+
+      assert.equal(providers[0].name, "Windsurf-ClaudeOpus461M");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("auto routes the final Opus benchmark challenge to an Opus-class provider", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-Gemini3FlashLow",
+        model: "windsurf/google-gemini-3-0-flash-low",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1048576,
+        tier: 1,
+        tc: true,
+        cost_group: 1,
+        quality_group: 4,
+        speed_group: 5,
+        thinking_effort: "low",
+      },
+      {
+        name: "Codex-GPT55",
+        model: "codex/gpt-5.5",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 4,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const req = {
+        model: "auto",
+        messages: [
+          { role: "system", content: "Return minified JSON only with implementable invariants." },
+          { role: "assistant", content: "Prior evidence: repeated read/edit cycles, provider health conflicts, tool-call translation risks, duplicated benchmark evidence, and stale patch failures." },
+          { role: "user", content: "Deep research hard bug: design a concurrency-safe router for a local LLM proxy. It must handle Claude Code tool calls, Windsurf compatibility quirks, provider cooldowns, stale edit recovery, streaming/non-streaming normalization, deduplicated long-context history, and cost-aware fallback without creating oscillation or hiding correctness regressions." },
+        ],
+        max_tokens: 420,
+        _inputTokens: 810000,
+        _estimatedTokens: 810420,
+      };
+      const providers = routing.getProvidersForAuto(req.messages, req._estimatedTokens, req);
+
+      assert.equal(providers[0].name, "Windsurf-ClaudeOpus461M");
+    } finally {
+      state.PROVIDERS = originalProviders;
     }
   });
 });

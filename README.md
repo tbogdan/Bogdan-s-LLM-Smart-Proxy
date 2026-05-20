@@ -116,6 +116,22 @@ curl http://localhost:18900/v1/messages/count_tokens \
   -d '{"model":"auto-coding","messages":[{"role":"user","content":"ping"}]}'
 ```
 
+## Benchmark
+
+The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
+
+The command is a dry run unless `--run` is present:
+
+```bash
+npm run benchmark
+npm run benchmark -- --run --max-cases=6
+npm run benchmark -- --run --suite=opus
+npm run benchmark -- --run --suite=all --max-minutes=5
+npm run benchmark -- --run --direct-model=windsurf/claude-opus-4.6 --proxy-model=auto-coding
+```
+
+Defaults are intentionally conservative: sequential requests, one repeat, six route-ladder cases, bounded completions, no cost cap, and a runtime guard of a few minutes. Use `--suite=opus` for the Opus-vs-optimized-proxy comparison where the direct arm calls Opus directly and the proxy arm receives natural high-complexity programming, architecture, and logic tasks with proxy cleanup and routing policy enabled. Use `--suite=all` to run the route ladder and Opus comparison in one merged benchmark. Cost is an estimate from model-family pricing and normalized token usage, then summarized as absolute USD plus proxy savings percentage. It can differ from subscription or bundled-provider billing; Windsurf SWE is treated as free.
+
 ## Discovery
 
 The discovery daemon scans only the Windsurf, Claude, and Codex provider families. It merges discovered models with the seed configuration and writes runtime provider data under `data/`.
@@ -130,11 +146,18 @@ WINDSURF_MODELS_JSON=[{"id":"windsurf/custom","windsurf_model_uid":"custom_uid",
 WINDSURF_MODELS_URL=
 WINDSURF_IDE_VERSION=2.3.9
 WINDSURF_USER_AGENT=connect-es/1.5.0
+WINDSURF_ENTERPRISE=false
+WINDSURF_API_ORIGIN=
+WINDSURF_CHAT_ORIGIN=
+WINDSURF_CONNECT_TIMEOUT_MS=120000
+WINDSURF_CONNECT_TIMEOUT_HEADER=true
+WINDSURF_INCLUDE_ACCEPT_HEADER=false
 WINDSURF_CONNECT_RETRIES=1
 ```
 
 When overrides are present, discovery uses them instead of the built-in Windsurf catalog.
-The compatibility fields mirror the installed Windsurf app transport defaults and can be overridden after an app update.
+The compatibility fields mirror the installed Windsurf app transport defaults and can be overridden after an app update. On current Windsurf desktop builds, the language server process exposes the app API origin in its command line as `--api_server_url`; this proxy calls `ApiServerService/GetChatMessage` directly, so `WINDSURF_CHAT_ORIGIN` should usually stay empty or equal to `WINDSURF_API_ORIGIN`. Do not point `WINDSURF_CHAT_ORIGIN` at `--inference_api_server_url` unless the adapter is changed to call an inference-specific RPC. `WINDSURF_INCLUDE_ACCEPT_HEADER=false` keeps the chat Connect request closer to the app's streaming Connect signature; flip it only for compatibility with older server behavior.
+Set `WINDSURF_ENTERPRISE=true` to use the enterprise app API origin (`https://server.enterprise.windsurf.com`) without hard-coding `WINDSURF_API_ORIGIN` and `WINDSURF_CHAT_ORIGIN`. Explicit origin variables still win when you need to test another endpoint.
 
 ## Smart Groups
 

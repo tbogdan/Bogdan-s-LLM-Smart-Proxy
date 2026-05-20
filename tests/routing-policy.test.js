@@ -143,6 +143,150 @@ test("assessRequestDifficulty separates task complexity from large context press
   assert.equal(result.speedTarget, 4);
 });
 
+test("detectTaskKind covers the prompt-injection task matrix", () => {
+  const cases = [
+    ["direct_answer", "Reply exactly: ok"],
+    ["list_summary", "Summarize this deployment status into five bullets."],
+    ["translation_rewrite", "Rewrite this release note in a calmer tone."],
+    ["explanation", "Explain how streaming backpressure works."],
+    ["documentation", "Update the README setup guide for Docker."],
+    ["vision_analysis", "Analyze this screenshot and describe the UI issue."],
+    ["image_generation", "Generate an image prompt for a product hero mockup."],
+    ["video_generation", "Create a short video storyboard for this workflow."],
+    ["data_analysis", "Analyze routing logs, token cost, latency metrics, and provider scores."],
+    ["verification", "Verify whether the proxy health endpoint responds correctly."],
+    ["code_review", "Code review this diff and find behavioral bugs."],
+    ["test_generation", "Add regression tests for this API parser."],
+    ["debugging", "Debug this provider 500 error from the proxy logs."],
+    ["security_review", "Review this auth endpoint for SQL injection and secret leakage."],
+    ["refactor", "Refactor the routing module into smaller functions."],
+    ["deployment_ops", "Deploy with docker compose over ssh and verify health checks."],
+    ["research", "Deep research model routing tradeoffs and compare options."],
+    ["benchmarking", "Build an A/B benchmark for latency, tokens, cost, and correctness."],
+    ["planning", "Create a strategy proposal before implementation."],
+    ["agentic_coding", "Implement the endpoint change and run tests."],
+  ];
+
+  for (const [kind, content] of cases) {
+    assert.equal(policy.detectTaskKind([{ role: "user", content }], {}), kind, content);
+  }
+});
+
+test("detectStepShape maps task shape to routing posture and validation gate", () => {
+  const planning = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Understand the spec, plan the architecture migration, split it into sub-tasks, and list acceptance gates before coding." }],
+    { _estimatedTokens: 6000 },
+  );
+  const repetitive = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Generate repetitive API client methods from this already-approved contract and keep the output concise." }],
+    { _estimatedTokens: 3000 },
+  );
+  const destructive = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Plan a database migration that deletes old rows, includes rollback strategy, and must dry-run first on production-like data." }],
+    { _estimatedTokens: 7000 },
+  );
+  const security = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Review this auth permission change for privilege bypass before merge." }],
+    { _estimatedTokens: 4000 },
+  );
+  const llmReview = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Review this LLM-generated diff line by line; compare the summary to what the diff actually changed." }],
+    { _estimatedTokens: 5000 },
+  );
+
+  assert.equal(planning.stepShape.shape, "read_heavy");
+  assert.equal(planning.stepShape.posture, "think_expensive");
+  assert.equal(planning.stepShape.gate, "plan_split");
+  assert.equal(planning.thinkingLevel >= 4, true);
+
+  assert.equal(repetitive.stepShape.shape, "write_heavy");
+  assert.equal(repetitive.stepShape.posture, "type_cheap");
+  assert.equal(repetitive.costTarget <= 3, true);
+  assert.equal(repetitive.speedTarget >= 4, true);
+
+  assert.equal(destructive.stepShape.shape, "destructive");
+  assert.equal(destructive.stepShape.gate, "dry_run_first");
+  assert.equal(destructive.thinkingLevel >= 4, true);
+
+  assert.equal(security.stepShape.shape, "security");
+  assert.equal(security.stepShape.gate, "human_signoff");
+
+  assert.equal(llmReview.stepShape.shape, "review");
+  assert.equal(llmReview.stepShape.gate, "read_diff");
+});
+
+test("planning is a high-reasoning design task, while executing a plan is coding work", () => {
+  const createPlanReq = {
+    messages: [{ role: "user", content: "Create an implementation plan for a multi-file routing migration before any code changes." }],
+    _estimatedTokens: 4000,
+  };
+  const followPlanReq = {
+    messages: [{ role: "user", content: "Follow the approved implementation plan and start applying the routing migration." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 12000,
+  };
+
+  const createPlan = policy.assessRequestDifficulty(createPlanReq.messages, createPlanReq);
+  const followPlan = policy.assessRequestDifficulty(followPlanReq.messages, followPlanReq);
+
+  assert.equal(createPlan.taskKind, "planning");
+  assert.equal(createPlan.taskLevel >= 4, true);
+  assert.equal(createPlan.thinkingLevel >= 4, true);
+  assert.equal(createPlan.costTarget >= 4, true);
+  assert.equal(followPlan.taskKind, "agentic_coding");
+  assert.equal(followPlan.costTarget <= 3, true);
+});
+
+test("self-review after planning or implementation maps to low-cost review specialists", () => {
+  const review = { name: "Codex-AutoReview", family: "codex", model: "codex/codex-auto-review", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const opus = { name: "Claude-Opus47", family: "claude", model: "claude/claude-opus-4-7", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const planReviewReq = {
+    messages: [
+      { role: "assistant", content: "Plan:\n1. Refactor routing policy.\n2. Add regression tests.\n3. Run benchmark." },
+      { role: "user", content: "Self-review this plan for risks before implementation." },
+    ],
+    _estimatedTokens: 3000,
+  };
+  const implementationReviewReq = {
+    messages: [
+      { role: "assistant", content: "Implementation completed. Changes:\n- Updated routing.\n- Added tests.\n- Ran benchmark." },
+      { role: "user", content: "Run a self-review of the completed work and report regressions only." },
+    ],
+    tools: [{ type: "function", function: { name: "Read" } }],
+    _estimatedTokens: 9000,
+  };
+
+  assert.equal(policy.assessRequestDifficulty(planReviewReq.messages, planReviewReq).taskKind, "completion_review");
+  assert.equal(policy.assessRequestDifficulty(implementationReviewReq.messages, implementationReviewReq).taskKind, "completion_review");
+  assert.equal(policy.providerPolicyBonus(review, planReviewReq, { env }) > policy.providerPolicyBonus(opus, planReviewReq, { env }), true);
+  assert.equal(policy.providerPolicyBonus(review, implementationReviewReq, { env }) > policy.providerPolicyBonus(opus, implementationReviewReq, { env }), true);
+});
+
+test("task matrix assigns cheap text tasks and expensive recovery tasks different targets", () => {
+  const rewrite = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Rewrite this release note in a calmer tone." }],
+    { _estimatedTokens: 500 },
+  );
+  const recovery = policy.assessRequestDifficulty(
+    [
+      { role: "assistant", content: "Edit failed: expected text was not found after a stale read." },
+      { role: "user", content: "Continue the patch safely." },
+    ],
+    {
+      tools: [{ type: "function", function: { name: "Edit" } }],
+      _estimatedTokens: 50000,
+    },
+  );
+
+  assert.equal(rewrite.taskKind, "translation_rewrite");
+  assert.equal(rewrite.costTarget <= 2, true);
+  assert.equal(rewrite.speedTarget, 5);
+  assert.equal(recovery.taskKind, "edit_recovery");
+  assert.equal(recovery.costTarget, 4);
+  assert.equal(recovery.thinkingEffort, "high");
+});
+
 test("difficulty markers are parsed and stripped from OpenAI responses", () => {
   const body = JSON.stringify({
     choices: [
@@ -243,9 +387,10 @@ test("difficulty marker stripping supports OpenAI content parts", () => {
   ]);
 });
 
-test("providerPolicyBonus favors cheaper fast models for trivial tasks and stronger models for complex tasks", () => {
+test("providerPolicyBonus favors right-sized models by task complexity", () => {
   const cheap = { name: "Codex-GPT54Mini", family: "codex", model: "codex/gpt-5.4-mini", caps: ["text", "coding", "tools", "thinking"], tc: true };
-  const expensive = { name: "Claude-Opus47", family: "claude", model: "claude/claude-opus-4-7", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };
+  const intermediate = { name: "Claude-Sonnet46", family: "claude", model: "claude/claude-sonnet-4-6", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };
+  const frontier = { name: "Claude-Opus47", family: "claude", model: "claude/claude-opus-4-7", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };
   const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
 
   const trivial = { messages: [{ role: "user", content: "Reply exactly: ok" }], _estimatedTokens: 20 };
@@ -254,9 +399,17 @@ test("providerPolicyBonus favors cheaper fast models for trivial tasks and stron
     tools: [{ type: "function", function: { name: "edit" } }],
     _estimatedTokens: 110000,
   };
+  const frontierContext = {
+    messages: [{ role: "user", content: "Deep research one million token context pressure architecture migration with tests." }],
+    tools: [{ type: "function", function: { name: "edit" } }],
+    _inputTokens: 260000,
+    _estimatedTokens: 260000,
+  };
 
-  assert.equal(policy.providerPolicyBonus(cheap, trivial, { env }) > policy.providerPolicyBonus(expensive, trivial, { env }), true);
-  assert.equal(policy.providerPolicyBonus(expensive, complex, { env }) > policy.providerPolicyBonus(cheap, complex, { env }), true);
+  assert.equal(policy.providerPolicyBonus(cheap, trivial, { env }) > policy.providerPolicyBonus(frontier, trivial, { env }), true);
+  assert.equal(policy.providerPolicyBonus(intermediate, complex, { env }) > policy.providerPolicyBonus(cheap, complex, { env }), true);
+  assert.equal(policy.providerPolicyBonus(intermediate, complex, { env }) > policy.providerPolicyBonus(frontier, complex, { env }), true);
+  assert.equal(policy.providerPolicyBonus(frontier, frontierContext, { env }) > policy.providerPolicyBonus(intermediate, frontierContext, { env }), true);
 });
 
 test("providerPolicyBonus does not reward heavy thinking for context-only pressure", () => {
@@ -286,6 +439,13 @@ test("providerPolicyBonus treats SWE as task-list and summary specialist, not de
     messages: [{ role: "user", content: "Make a list of remaining tasks and summarize status." }],
     _estimatedTokens: 2000,
   };
+  const benchmarkSummaryReq = {
+    messages: [
+      { role: "system", content: "Return five concise bullets. Each bullet must start with a subsystem name." },
+      { role: "user", content: "Make a list of remaining handoff notes and summarize status: API validation finished, deployment checklist prepared, cache cleanup pending, local health passed, remote health passed, documentation update pending. Do not call tools or write function-call syntax." },
+    ],
+    _estimatedTokens: 264,
+  };
   const codingReq = {
     messages: [{ role: "user", content: "Implement the code changes, edit files, and run tests." }],
     tools: [{ type: "function", function: { name: "Edit" } }],
@@ -293,8 +453,22 @@ test("providerPolicyBonus treats SWE as task-list and summary specialist, not de
   };
 
   assert.equal(policy.assessRequestDifficulty(summaryReq.messages, summaryReq).taskKind, "list_summary");
+  assert.equal(policy.assessRequestDifficulty(benchmarkSummaryReq.messages, benchmarkSummaryReq).taskKind, "list_summary");
   assert.equal(policy.providerPolicyBonus(swe, summaryReq, { env }) > policy.providerPolicyBonus(codex, summaryReq, { env }), true);
   assert.equal(policy.providerPolicyBonus(codex, codingReq, { env }) > policy.providerPolicyBonus(swe, codingReq, { env }), true);
+});
+
+test("providerPolicyBonus treats SWE as the preferred exact-answer benchmark rung", () => {
+  const swe = { name: "Windsurf-SWE16Fast", family: "windsurf", model: "windsurf/swe-1.6-fast", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const haiku = { name: "Claude-Haiku45", family: "claude", model: "claude/claude-haiku-4-5", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "Reply exactly: ok" }],
+    _estimatedTokens: 40,
+  };
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "direct_answer");
+  assert.equal(policy.providerPolicyBonus(swe, req, { env }) > policy.providerPolicyBonus(haiku, req, { env }), true);
 });
 
 test("providerPolicyBonus prefers Codex auto-review after a task completion report", () => {
@@ -312,6 +486,189 @@ test("providerPolicyBonus prefers Codex auto-review after a task completion repo
 
   assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "completion_review");
   assert.equal(policy.providerPolicyBonus(review, req, { env }) > policy.providerPolicyBonus(codex, req, { env }), true);
+});
+
+test("providerPolicyBonus keeps Codex auto-review out of normal coding and generic verification", () => {
+  const review = { name: "Codex-AutoReview", family: "codex", model: "codex/codex-auto-review", visibility: "hide", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const codingReq = {
+    messages: [{ role: "user", content: "Implement the routing policy change and run the unit tests." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 9000,
+  };
+  const verifyReq = {
+    messages: [{ role: "user", content: "Verify whether the proxy health endpoint responds correctly." }],
+    tools: [{ type: "function", function: { name: "Bash" } }],
+    _estimatedTokens: 3000,
+  };
+
+  assert.equal(policy.assessRequestDifficulty(codingReq.messages, codingReq).taskKind, "agentic_coding");
+  assert.equal(policy.assessRequestDifficulty(verifyReq.messages, verifyReq).taskKind, "verification");
+  assert.equal(policy.providerPolicyBonus(codex, codingReq, { env }) > policy.providerPolicyBonus(review, codingReq, { env }), true);
+  assert.equal(policy.providerPolicyBonus(codex, verifyReq, { env }) > policy.providerPolicyBonus(review, verifyReq, { env }), true);
+});
+
+test("providerPolicyBonus avoids private Windsurf aliases without tool contracts for tool-heavy coding", () => {
+  const privateAlias = {
+    name: "Windsurf-Private19",
+    family: "windsurf",
+    model: "windsurf/private-19",
+    upstream_model: "private-19",
+    caps: ["text", "images", "max"],
+    context: 400000,
+    cost_group: 2,
+    quality_group: 4,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const publicMini = {
+    name: "Windsurf-GPT54MiniLowThinking",
+    family: "windsurf",
+    model: "windsurf/gpt-5-4-mini-low",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 400000,
+    cost_group: 2,
+    quality_group: 3,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const req = {
+    messages: [{ role: "user", content: "Inspect the repository, edit two files, and run tests." }],
+    tools: [{ type: "function", function: { name: "Read" } }, { type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 14000,
+  };
+
+  assert.equal(policy.isInternalPrivateProvider(privateAlias), true);
+  assert.equal(policy.providerHasToolCodingContract(privateAlias), false);
+  assert.equal(policy.providerHasToolCodingContract(publicMini), true);
+  assert.equal(policy.providerPolicyBonus(publicMini, req) > policy.providerPolicyBonus(privateAlias, req), true);
+});
+
+test("providerPolicyBonus treats Gemini Flash as long-context text, not tool-heavy coding", () => {
+  const flash = { name: "Windsurf-Gemini3FlashLow", family: "windsurf", model: "windsurf/google-gemini-3-0-flash-low", caps: ["text", "coding", "tools", "thinking", "max"], context: 1048576, cost_group: 1, quality_group: 4, speed_group: 5, thinking_effort: "low" };
+  const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], context: 200000, cost_group: 3, quality_group: 5, speed_group: 3, thinking_effort: "medium" };
+  const summaryReq = {
+    messages: [{ role: "user", content: "Summarize this long architecture handoff into a status report." }],
+    _inputTokens: 170000,
+    _estimatedTokens: 171000,
+  };
+  const codingReq = {
+    messages: [{ role: "user", content: "Refactor the proxy routing implementation and run tests." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _inputTokens: 60000,
+    _estimatedTokens: 92000,
+  };
+
+  assert.equal(policy.providerPolicyBonus(flash, summaryReq) > policy.providerPolicyBonus(codex, summaryReq), true);
+  assert.equal(policy.providerPolicyBonus(codex, codingReq) > policy.providerPolicyBonus(flash, codingReq), true);
+});
+
+test("profileFromAssessmentMarker preserves task kind and maps AI reason to route policy", () => {
+  const req = {
+    messages: [{ role: "user", content: "Implement a multi-file routing refactor and verify it." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 24000,
+  };
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=5 effort=xhigh speed=2 reason=edit_recovery");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(profile.taskKind, "edit_recovery");
+  assert.equal(profile.taskLevel, 5);
+  assert.equal(profile.thinkingEffort, "xhigh");
+  assert.equal(profile.costTarget, 5);
+});
+
+test("assessRequestDifficulty does not treat unrelated changes as completed-work review", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "Return five ordered steps. Each step must include evidence, action, and stop condition." },
+      { role: "user", content: "A terminal coding agent is midway through a repository migration. Signals: tests were green before a Docker rebuild, one generated file is dirty, a benchmark process was interrupted, and the next run must not hide regressions. Design a recovery workflow that mirrors terminal-agent benchmarks: inspect state, isolate unrelated changes, resume safely, verify, and report." },
+    ],
+    _estimatedTokens: 435,
+  };
+
+  assert.notEqual(policy.assessRequestDifficulty(req.messages, req).taskKind, "completion_review");
+});
+
+test("profileFromAssessmentMarker keeps cost aligned with inherited complex task level", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "Return five ordered steps. Each step must include evidence, action, and stop condition." },
+      { role: "user", content: "A terminal coding agent is midway through a repository migration. Design a recovery workflow that mirrors terminal-agent benchmarks: inspect state, isolate unrelated changes, resume safely, verify, and report." },
+    ],
+    _estimatedTokens: 435,
+  };
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=2 effort=low speed=4 reason=recovery_workflow_design");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(profile.level >= 4, true);
+  assert.equal(profile.costTarget >= 4, true);
+  assert.notEqual(profile.taskKind, "completion_review");
+});
+
+test("providerPolicyBonus promotes one-million-token Opus-class context for deep context asks", () => {
+  const opus1m = { name: "Windsurf-ClaudeOpus461M", family: "windsurf", model: "windsurf/claude-opus-4-6-1m", caps: ["text", "coding", "tools", "thinking", "max"], context: 1000000, cost_group: 4, quality_group: 5, speed_group: 3, thinking_effort: "xhigh" };
+  const opusStandard = { name: "Windsurf-ClaudeOpus46", family: "windsurf", model: "windsurf/claude-opus-4.6", caps: ["text", "coding", "tools", "thinking", "max"], context: 200000, cost_group: 4, quality_group: 5, speed_group: 3, thinking_effort: "xhigh" };
+  const gpt55 = { name: "Codex-GPT55", family: "codex", model: "codex/gpt-5.5", caps: ["text", "coding", "tools", "thinking", "max"], context: 272000, cost_group: 4, quality_group: 5, speed_group: 4, thinking_effort: "xhigh" };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "Deep research production incident involving one million token context, streaming, tools, rate limits, and architecture risk." }],
+    _estimatedTokens: 1000,
+  };
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).contextLevel, 5);
+  assert.equal(policy.providerPolicyBonus(opus1m, req, { env }) > policy.providerPolicyBonus(opusStandard, req, { env }), true);
+  assert.equal(policy.providerPolicyBonus(opus1m, req, { env }) > policy.providerPolicyBonus(gpt55, req, { env }), true);
+});
+
+test("failed edit recovery escalates to Opus-class routing instead of cheap large-context flash", () => {
+  const opus1m = { name: "Windsurf-ClaudeOpus461M", family: "windsurf", model: "windsurf/claude-opus-4-6-1m", caps: ["text", "coding", "tools", "thinking", "max"], context: 1000000, cost_group: 4, quality_group: 5, speed_group: 3, thinking_effort: "xhigh" };
+  const flash = { name: "Windsurf-Gemini3FlashLow", family: "windsurf", model: "windsurf/google-gemini-3-0-flash-low", caps: ["text", "coding", "tools", "thinking", "max"], context: 1048576, cost_group: 1, quality_group: 4, speed_group: 5, thinking_effort: "low" };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [
+      { role: "system", content: "You are Claude Code running as a software engineering agent." },
+      { role: "assistant", content: "Read run_cmd.py (lines 353-382)" },
+      { role: "tool", content: "return { command: \"run\", dry_run: args.dry_run }" },
+      { role: "assistant", content: "Edit run_cmd.py\nEdit failed: expected text was not found. Shimming and retrying after a stale read." },
+      { role: "user", content: "<system-reminder> Continue implementing the precise patch without breaking the file.</system-reminder>" },
+    ],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 225000,
+    _estimatedTokens: 257000,
+  };
+
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessment.taskKind, "edit_recovery");
+  assert.equal(assessment.taskLevel, 4);
+  assert.equal(assessment.contextLevel, 5);
+  assert.equal(assessment.thinkingEffort, "xhigh");
+  assert.equal(policy.providerPolicyBonus(opus1m, req, { env }) > policy.providerPolicyBonus(flash, req, { env }), true);
+});
+
+test("architecture recovery escalates to Opus-class routing instead of cheap large-context flash", () => {
+  const opus1m = { name: "Windsurf-ClaudeOpus461M", family: "windsurf", model: "windsurf/claude-opus-4-6-1m", caps: ["text", "coding", "tools", "thinking", "max"], context: 1000000, cost_group: 4, quality_group: 5, speed_group: 3, thinking_effort: "xhigh" };
+  const flash = { name: "Windsurf-Gemini3FlashLow", family: "windsurf", model: "windsurf/google-gemini-3-0-flash-low", caps: ["text", "coding", "tools", "thinking", "max"], context: 1048576, cost_group: 1, quality_group: 4, speed_group: 5, thinking_effort: "low" };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [
+      { role: "system", content: "You are evaluating a production LLM proxy incident." },
+      { role: "assistant", content: "Provider evidence: tool-call translation risk, rate-limit noise, long-context pressure, and benchmark fairness concerns." },
+      { role: "user", content: "Deep research hard bug in a one-million-token production proxy incident: choose the safest routing class for architecture recovery across Claude Code tools, Windsurf compatibility, Opus context, cost efficiency, regression verification, and benchmark fairness." },
+    ],
+    _inputTokens: 180000,
+    _estimatedTokens: 181000,
+  };
+
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessment.taskKind, "architecture_recovery");
+  assert.equal(assessment.taskLevel, 5);
+  assert.equal(assessment.contextLevel, 5);
+  assert.equal(assessment.thinkingEffort, "xhigh");
+  assert.equal(policy.providerPolicyBonus(opus1m, req, { env }) > policy.providerPolicyBonus(flash, req, { env }), true);
 });
 
 test("assessment reroute keeps cheap high-thinking providers when only cost differs", () => {

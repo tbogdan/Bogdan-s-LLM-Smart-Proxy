@@ -192,3 +192,16 @@ test("sendAsSSE streams OpenAI content parts as text", () => {
   assert.equal(output.includes("Project "), true);
   assert.equal(output.includes("Proxy."), true);
 });
+
+test("extractSseTextForDiagnostics reads text without repeating SSE metadata", () => {
+  const sse = [
+    'data: {"id":"chatcmpl-windsurf","object":"chat.completion.chunk","created":1,"model":"windsurf/opus","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-windsurf","object":"chat.completion.chunk","created":1,"model":"windsurf/opus","choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-windsurf","object":"chat.completion.chunk","created":1,"model":"windsurf/opus","choices":[{"delta":{"content":"world"},"finish_reason":null}]}',
+    "",
+  ].join("\n");
+
+  assert.equal(routing.extractSseTextForDiagnostics(sse), "Hello world");
+});

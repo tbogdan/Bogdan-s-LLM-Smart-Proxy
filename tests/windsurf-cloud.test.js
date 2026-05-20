@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const http2 = require("node:http2");
 
 const cloud = require("../lib/windsurf-cloud");
 
@@ -373,14 +374,65 @@ test("toWindsurfRequest falls back to provider model and then input model", () =
   assert.equal(cloud.toWindsurfRequest({}, { model: "input-model", messages: [{ role: "user", content: "Hello" }] }).model, "input-model");
 });
 
-test("buildHeaders includes Connect proto headers, app-like UA, and no bearer auth", () => {
-  const headers = cloud.buildHeaders({ key: "host-token" });
+test("buildHeaders mirrors Windsurf Connect stream headers without bearer auth", () => {
+  const headers = cloud.buildHeaders({ key: "host-token", timeout_ms: 90000 });
 
   assert.equal(headers["content-type"], "application/connect+proto");
   assert.equal(headers["connect-protocol-version"], "1");
-  assert.equal(headers.accept, "application/connect+proto");
+  assert.equal(headers.accept, undefined);
   assert.equal(headers["user-agent"], "connect-es/1.5.0");
+  assert.equal(headers["connect-timeout-ms"], "90000");
   assert.equal(headers.Authorization, undefined);
+});
+
+test("buildHeaders keeps compatibility opt-ins explicit", () => {
+  const headers = cloud.buildHeaders({
+    include_accept_header: true,
+    include_timeout_header: false,
+    windsurf_user_agent: "custom-windsurf-ua",
+    timeout_ms: 90000,
+  });
+
+  assert.equal(headers.accept, "application/connect+proto");
+  assert.equal(headers["connect-timeout-ms"], undefined);
+  assert.equal(headers["user-agent"], "custom-windsurf-ua");
+});
+
+test("resolveWindsurfOrigin supports app API and chat origin overrides", () => {
+  const env = {
+    WINDSURF_API_ORIGIN: "https://server.enterprise.windsurf.com",
+    WINDSURF_CHAT_ORIGIN: "https://chat.example.com",
+  };
+
+  assert.equal(cloud.resolveWindsurfOrigin({}, { env, kind: "chat" }), "https://chat.example.com");
+  assert.equal(cloud.resolveWindsurfOrigin({}, { env, kind: "config" }), "https://server.enterprise.windsurf.com");
+  assert.equal(cloud.resolveWindsurfOrigin({ origin: "https://provider.example" }, { env, kind: "chat" }), "https://provider.example");
+});
+
+test("resolveWindsurfOrigin switches default endpoints with WINDSURF_ENTERPRISE", () => {
+  assert.equal(
+    cloud.resolveWindsurfOrigin({}, { env: { WINDSURF_ENTERPRISE: "false" }, kind: "chat" }),
+    "https://server.codeium.com",
+  );
+  assert.equal(
+    cloud.resolveWindsurfOrigin({}, { env: { WINDSURF_ENTERPRISE: "true" }, kind: "chat" }),
+    "https://server.enterprise.windsurf.com",
+  );
+  assert.equal(
+    cloud.resolveWindsurfOrigin({}, { env: { WINDSURF_ENTERPRISE: "true" }, kind: "config" }),
+    "https://server.enterprise.windsurf.com",
+  );
+  assert.equal(
+    cloud.resolveWindsurfOrigin(
+      {},
+      { env: { WINDSURF_ENTERPRISE: "true", WINDSURF_CHAT_ORIGIN: "https://chat.override.example" }, kind: "chat" },
+    ),
+    "https://chat.override.example",
+  );
+  assert.equal(
+    cloud.resolveWindsurfOrigin({}, { env: { windsurf_enterprise: "true" }, kind: "chat" }),
+    "https://server.enterprise.windsurf.com",
+  );
 });
 
 test("postWindsurf keeps local HTTP JSON seam and returns raw non-2xx response details", async () => {
@@ -627,4 +679,70 @@ test("toOpenAIResponse treats trailer bit flags as error metadata", () => {
   ]);
 
   assert.throws(() => cloud.toOpenAIResponse("windsurf/swe-1.6", body), /permission_denied/);
+});
+
+test("createOpenAIStreamFrameParser emits Connect frames incrementally", () => {
+  const parser = cloud.createOpenAIStreamFrameParser("windsurf/claude-opus-4-6-1m");
+  const first = cloud.connectEnvelope(cloud.encodeString(3, "Hello "));
+  const second = cloud.connectEnvelope(cloud.encodeString(3, "streaming"));
+
+  assert.deepEqual(parser.push(first.subarray(0, 4)), []);
+  const chunks = [
+    ...parser.push(first.subarray(4)),
+    ...parser.push(second),
+    ...parser.end(),
+  ];
+
+  assert.equal(chunks.some((chunk) => chunk.includes('"role":"assistant"')), true);
+  assert.equal(chunks.some((chunk) => chunk.includes("Hello ")), true);
+  assert.equal(chunks.some((chunk) => chunk.includes("streaming")), true);
+  assert.equal(chunks.some((chunk) => chunk.includes('"finish_reason":"stop"')), true);
+});
+
+test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completion", async () => {
+  const server = http2.createServer();
+  const seen = [];
+  server.on("stream", (stream, headers) => {
+    seen.push(headers);
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    stream.write(cloud.connectEnvelope(cloud.encodeString(3, "early ")));
+    setTimeout(() => {
+      stream.end(Buffer.concat([
+        cloud.connectEnvelope(cloud.encodeString(3, "done")),
+        cloud.connectEnvelope(Buffer.alloc(0), 2),
+      ]));
+    }, 20);
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const chunks = [];
+    const firstChunkAt = [];
+    const started = Date.now();
+    await cloud.streamWindsurfCloud(
+      {
+        key: "host-token",
+        origin: `http://127.0.0.1:${port}`,
+        path: cloud.GET_CHAT_MESSAGE_PATH,
+        upstream_model: "claude-opus-4-6-1m",
+        windsurf_model_uid: "claude-opus-4-6-1m",
+      },
+      { model: "windsurf/claude-opus-4-6-1m", messages: [{ role: "user", content: "Hello" }], stream: true },
+      {
+        onChunk(chunk) {
+          if (chunks.length === 0) firstChunkAt.push(Date.now() - started);
+          chunks.push(chunk);
+        },
+      },
+    );
+
+    assert.equal(seen[0][":path"], cloud.GET_CHAT_MESSAGE_PATH);
+    assert.equal(seen[0]["content-type"], "application/connect+proto");
+    assert.equal(chunks.join("").includes("early "), true);
+    assert.equal(chunks.join("").includes("done"), true);
+    assert.equal(firstChunkAt[0] < 20, true);
+  } finally {
+    await closeServer(server);
+  }
 });

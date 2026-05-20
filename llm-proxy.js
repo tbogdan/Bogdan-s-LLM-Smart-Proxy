@@ -349,6 +349,11 @@ const server = http.createServer(async (req, res) => {
       return sendHTML(res, httpHome.renderCommandsPage());
     }
 
+    // GET /benchmark
+    if (method === "GET" && pathname === "/benchmark") {
+      return sendHTML(res, httpHome.renderBenchmarkPage());
+    }
+
     // POST /v1/chat/completions
     if (method === "POST" && pathname === "/v1/chat/completions") {
       const body = await readBody(req);
@@ -517,7 +522,7 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /, /commands, /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
 });
 
 const wss = new WebSocketServer({ noServer: true });

@@ -9,9 +9,11 @@ const state = require("../lib/state");
 function withIsolatedScoring(fn) {
   const originalScores = state.scores;
   const originalTracker = state.stallingTracker;
+  const originalCompat = state.providerCompat;
   const originalWriteFileSync = fs.writeFileSync;
   state.scores = {};
   state.stallingTracker = {};
+  state.providerCompat = {};
   fs.writeFileSync = () => {};
   try {
     fn();
@@ -19,6 +21,7 @@ function withIsolatedScoring(fn) {
     fs.writeFileSync = originalWriteFileSync;
     state.scores = originalScores;
     state.stallingTracker = originalTracker;
+    state.providerCompat = originalCompat;
   }
 }
 
@@ -63,6 +66,96 @@ test("recordStalling renews cooldown immediately for providers with chronic stal
   });
 });
 
+test("recordSuccess clears stale cooldown and stalling state", () => {
+  withIsolatedScoring(() => {
+    const provider = "Recovered-Provider";
+    state.scores[provider] = {
+      requests: 4,
+      successes: 1,
+      failures: 3,
+      total_latency: 500,
+      avg_latency: 500,
+      success_rate: 0.25,
+      last_error: { message: "garbled output", time: Date.now() },
+      cooldown_until: Date.now() + 3600_000,
+      cooldown_reason: "garbled output",
+      stalling: 4,
+      last_stall_time: Date.now(),
+    };
+    state.stallingTracker[provider] = [Date.now()];
+
+    scoring.recordSuccess(provider, 250);
+    const score = scoring.getScore(provider);
+
+    assert.equal(score.last_error, null);
+    assert.equal(score.cooldown_until, 0);
+    assert.equal(score.cooldown_reason, undefined);
+    assert.equal(score.stalling, 0);
+    assert.deepEqual(state.stallingTracker[provider], []);
+  });
+});
+
+test("loadScores migrates stale garbled-output cooldowns once", () => {
+  const originalScores = state.scores;
+  const originalExistsSync = fs.existsSync;
+  const originalReadFileSync = fs.readFileSync;
+  const originalWriteFileSync = fs.writeFileSync;
+  const future = Date.now() + 3600_000;
+  let written = null;
+  let scoreSource = {
+    "Old-Garble": {
+      cooldown_until: future,
+      cooldown_reason: "garbled output",
+      last_error: { message: "garbled output", time: Date.now() },
+      stalling: 4,
+      last_stall_time: Date.now(),
+    },
+    "Real-Rate-Limit": {
+      cooldown_until: future,
+      cooldown_reason: "rate limited",
+      last_error: { message: "429", time: Date.now() },
+      stalling: 0,
+    },
+  };
+
+  fs.existsSync = (file) => file === state.SCORES_FILE;
+  fs.readFileSync = (file, enc) => {
+    assert.equal(file, state.SCORES_FILE);
+    assert.equal(enc, "utf8");
+    return JSON.stringify(scoreSource);
+  };
+  fs.writeFileSync = (file, data) => {
+    assert.equal(file, state.SCORES_FILE);
+    written = JSON.parse(data);
+    scoreSource = written;
+  };
+
+  try {
+    scoring.loadScores();
+    assert.equal(state.scores["Old-Garble"].cooldown_until, 0);
+    assert.equal(state.scores["Old-Garble"].cooldown_reason, undefined);
+    assert.equal(state.scores["Old-Garble"].last_error, null);
+    assert.equal(state.scores["Old-Garble"].stalling, 0);
+    assert.equal(state.scores["Real-Rate-Limit"].cooldown_until, future);
+    assert.equal(state.scores.__migrations.garble_cooldown_v2.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v3.cleared, 1);
+    assert.equal(written.__migrations.garble_cooldown_v2.cleared, 1);
+    assert.equal(written.__migrations.garble_cooldown_v3.cleared, 1);
+
+    scoreSource["Old-Garble"].cooldown_until = future;
+    scoreSource["Old-Garble"].cooldown_reason = "garbled output";
+    scoring.loadScores();
+    assert.equal(state.scores["Old-Garble"].cooldown_until, future);
+    assert.equal(state.scores.__migrations.garble_cooldown_v2.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v3.cleared, 1);
+  } finally {
+    fs.existsSync = originalExistsSync;
+    fs.readFileSync = originalReadFileSync;
+    fs.writeFileSync = originalWriteFileSync;
+    state.scores = originalScores;
+  }
+});
+
 test("detectIncompatibility cools Windsurf invalid_argument internal errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
@@ -88,6 +181,30 @@ test("detectIncompatibility cools Windsurf permission_denied internal errors", (
     const score = scoring.getScore("Windsurf-ClaudeOpus461M");
     assert.equal(scoring.isOnCooldown("Windsurf-ClaudeOpus461M"), true);
     assert.equal(score.cooldown_reason, "windsurf permission_denied");
+  });
+});
+
+test("detectIncompatibility learns conservative context from overflow without numeric limit", () => {
+  withIsolatedScoring(() => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      { name: "Windsurf-GPT54MiniHighThinking", context: 400000 },
+    ];
+
+    try {
+      scoring.detectIncompatibility(
+        "Windsurf-GPT54MiniHighThinking",
+        500,
+        '{"error":{"code":"invalid_argument","message":"Your input exceeds the context window of this model."}}',
+        { inputTokens: 268000, estimatedTokens: 300000, providerContext: 400000 },
+      );
+
+      const compat = scoring.getCompat("Windsurf-GPT54MiniHighThinking");
+      assert.equal(compat.real_context, 227800);
+      assert.equal(scoring.getEffectiveContext(state.PROVIDERS[0]), 227800);
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
   });
 });
 
