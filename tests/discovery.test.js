@@ -80,7 +80,24 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
     ANTHROPIC_API_KEY: "anthropic-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
-    { id: "claude-sonnet-4-6", max_input_tokens: 1000000, max_tokens: 128000 },
+    {
+      id: "claude-sonnet-4-6",
+      display_name: "Claude Sonnet 4.6",
+      max_input_tokens: 1000000,
+      max_tokens: 128000,
+      capabilities: {
+        effort: {
+          supported: true,
+          low: { supported: true },
+          medium: { supported: true },
+          high: { supported: true },
+          max: { supported: true },
+        },
+        thinking: { supported: true, types: { adaptive: { supported: true } } },
+        code_execution: { supported: true },
+        context_management: { supported: true, compact_20260112: { supported: true } },
+      },
+    },
     { id: "claude-haiku-4-5", max_input_tokens: 200000, max_tokens: 64000 },
   ]);
 
@@ -95,6 +112,15 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
   assert.equal(providers[0].seed, false);
   assert.equal(typeof providers[0].last_tested, "string");
   assert.equal(providers[0].context, 1000000);
+  assert.equal(providers[0].max_tokens, 128000);
+  assert.equal(providers[0].display_name, "Claude Sonnet 4.6");
+  assert.deepEqual(providers[0].supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(providers[0].supports_adaptive_thinking, true);
+  assert.equal(providers[0].supports_code_execution, true);
+  assert.equal(providers[0].supports_context_compaction, true);
+  assert.equal(providers[0].cost_group, 3);
+  assert.equal(providers[0].quality_group, 4);
+  assert.equal(providers[0].speed_group, 4);
   assert.equal(providers[1].context, 200000);
 });
 
@@ -104,8 +130,20 @@ test("providersFromEndpointModels maps Codex models to namespaced provider entri
     CODEX_API_KEY: "codex-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
-    { id: "gpt-5.4", context_length: 200000 },
-    { id: "gpt-5.4-mini", max_tokens: 200000 },
+    {
+      slug: "gpt-5.4",
+      display_name: "GPT-5.4",
+      context_window: 272000,
+      max_context_window: 272000,
+      default_reasoning_level: "medium",
+      supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "xhigh" }],
+      supports_parallel_tool_calls: true,
+      supports_search_tool: true,
+      input_modalities: ["text", "image"],
+      shell_type: "shell_command",
+      apply_patch_tool_type: "freeform",
+    },
+    { id: "gpt-5.4-mini", max_tokens: 200000, default_reasoning_level: "low" },
   ]);
 
   assert.deepEqual(providers.map((provider) => provider.model), ["codex/gpt-5.4", "codex/gpt-5.4-mini"]);
@@ -114,8 +152,166 @@ test("providersFromEndpointModels maps Codex models to namespaced provider entri
   assert.equal(providers[0].family, "codex");
   assert.equal(providers[0].protocol, "openai");
   assert.equal(providers[0].url, "http://codex-proxy:10531/v1/chat/completions");
-  assert.equal(providers[0].context, 200000);
+  assert.equal(providers[0].context, 272000);
+  assert.equal(providers[0].context_window, 272000);
+  assert.equal(providers[0].max_context_window, 272000);
+  assert.equal(providers[0].thinking_effort, "medium");
+  assert.deepEqual(providers[0].supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(providers[0].supports_parallel_tool_calls, true);
+  assert.equal(providers[0].supports_search_tool, true);
+  assert.equal(providers[0].shell_type, "shell_command");
+  assert.equal(providers[0].apply_patch_tool_type, "freeform");
+  assert.equal(providers[0].cost_group, 3);
   assert.equal(providers[1].context, 200000);
+  assert.equal(providers[1].thinking_effort, "low");
+});
+
+test("discoverEndpointModels reads Codex backend metadata before proxy model list", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-auth-"));
+  const authFile = path.join(dir, "auth.json");
+  fs.writeFileSync(authFile, JSON.stringify({
+    tokens: {
+      access_token: "codex-access",
+      account_id: "account-id",
+    },
+  }));
+  const endpoint = discovery.getEndpoints({
+    ENABLE_CODEX: "true",
+    CODEX_API_KEY: "codex-key",
+  })[0];
+  const calls = [];
+
+  const result = await discovery.discoverEndpointModels(endpoint, {
+    env: {
+      CODEX_AUTH_FILE: authFile,
+      CODEX_CLIENT_VERSION: "0.132.0",
+      CODEX_BACKEND_URL: "https://chatgpt.example/backend-api/codex",
+    },
+    fetchJSONFn: async (url, headers) => {
+      calls.push({ url, headers });
+      assert.equal(url, "https://chatgpt.example/backend-api/codex/models?client_version=0.132.0");
+      assert.equal(headers.Authorization, "Bearer codex-access");
+      assert.equal(headers["chatgpt-account-id"], "account-id");
+      assert.equal(headers["OpenAI-Beta"], "responses=experimental");
+      return {
+        status: 200,
+        data: {
+          models: [
+            { slug: "gpt-5.5", context_window: 272000, default_reasoning_level: "xhigh" },
+          ],
+        },
+      };
+    },
+  });
+
+  assert.equal(result.source, "codex_backend");
+  assert.deepEqual(result.models.map((model) => model.slug), ["gpt-5.5"]);
+  assert.equal(calls.length, 1);
+});
+
+test("upsertDiscoveryModel refreshes stale seed discovery metadata from source providers", () => {
+  const discoveryState = {
+    models: [
+      {
+        provider: "Codex",
+        name: "Codex-gpt55",
+        model: "codex/gpt-5.5",
+        upstream_model: "gpt-5.5",
+        context_length: 4096,
+        capabilities: ["text", "coding", "tools", "images", "thinking"],
+        discovered_at: "2026-05-18T11:03:45.046Z",
+        chat_tested: false,
+      },
+    ],
+  };
+  const endpoint = { name: "Codex" };
+  const provider = {
+    name: "Codex-GPT55",
+    model: "codex/gpt-5.5",
+    upstream_model: "gpt-5.5",
+    context: 272000,
+    caps: ["text", "coding", "tools", "images", "max", "thinking"],
+    thinking_effort: "xhigh",
+    speed_group: 4,
+    cost_group: 4,
+    quality_group: 5,
+    display_name: "GPT-5.5",
+    context_window: 272000,
+    max_context_window: 272000,
+    supported_thinking_efforts: ["low", "medium", "high", "xhigh"],
+    supports_parallel_tool_calls: true,
+    supports_search_tool: true,
+    source: "codex_backend",
+  };
+
+  const result = discovery.upsertDiscoveryModel(discoveryState, endpoint, provider, {
+    now: "2026-05-20T06:50:00.000Z",
+  });
+  const model = discoveryState.models[0];
+
+  assert.equal(result.created, false);
+  assert.equal(model.name, "Codex-GPT55");
+  assert.equal(model.context_length, 272000);
+  assert.equal(model.source, "codex_backend");
+  assert.equal(model.thinking_effort, "xhigh");
+  assert.deepEqual(model.supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(model.supports_parallel_tool_calls, true);
+  assert.equal(model.supports_search_tool, true);
+  assert.equal(model.discovered_at, "2026-05-18T11:03:45.046Z");
+  assert.equal(model.refreshed_at, "2026-05-20T06:50:00.000Z");
+});
+
+test("refreshDiscoveryFromProviders updates discovery view from loaded providers", () => {
+  const discoveryState = {
+    models: [
+      {
+        provider: "Codex",
+        name: "Codex-gpt54",
+        model: "codex/gpt-5.4",
+        upstream_model: "gpt-5.4",
+        context_length: 4096,
+        capabilities: ["text", "coding"],
+        discovered_at: "2026-05-18T11:03:45.046Z",
+        chat_tested: false,
+      },
+    ],
+    last_scan: "2026-05-18T11:03:45.047Z",
+  };
+  const result = discovery.refreshDiscoveryFromProviders(discoveryState, [
+    {
+      name: "Codex-GPT54",
+      family: "codex",
+      protocol: "openai",
+      model: "codex/gpt-5.4",
+      upstream_model: "gpt-5.4",
+      context: 272000,
+      caps: ["text", "coding", "tools", "images", "max", "thinking"],
+      source: "codex_backend",
+      max_context_window: 1000000,
+      supported_thinking_efforts: ["low", "medium", "high", "xhigh"],
+    },
+    {
+      name: "Auto-Coding",
+      family: "virtual",
+      protocol: "openai",
+      model: "auto-coding",
+      context: 1000000,
+      caps: ["coding"],
+    },
+  ], {
+    now: "2026-05-20T06:55:00.000Z",
+  });
+  const model = discoveryState.models[0];
+
+  assert.equal(result.refreshed, 1);
+  assert.equal(result.created, 0);
+  assert.equal(model.provider, "Codex");
+  assert.equal(model.name, "Codex-GPT54");
+  assert.equal(model.context_length, 272000);
+  assert.equal(model.max_context_window, 1000000);
+  assert.equal(model.source, "codex_backend");
+  assert.equal(model.refreshed_at, "2026-05-20T06:55:00.000Z");
+  assert.equal(discoveryState.last_refresh, "2026-05-20T06:55:00.000Z");
 });
 
 test("mergeProvidersConfig refreshes seed provider metadata from model endpoints without changing probe status", () => {

@@ -23,4 +23,6 @@ test("renderCommandsPage lists methods, paths, and short descriptions", () => {
   assert.match(html, /<td>POST<\/td>\s*<td><code>\/v1\/chat\/completions<\/code><\/td>/);
   assert.match(html, /OpenAI-compatible chat completions/);
   assert.match(html, /Anthropic Messages bridge/);
+  assert.match(html, /\/discovery\?refresh=1/);
+  assert.match(html, /Force-refresh discovery metadata from loaded providers/);
 });

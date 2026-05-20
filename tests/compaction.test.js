@@ -140,6 +140,19 @@ test("compactMessages summarizes dropped context by topic", () => {
   assert.match(summary.content, /topic[01]\.js/);
 });
 
+test("buildCompactSummary reads decisions from content parts", () => {
+  const summary = compaction.buildCompactSummary([
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "We chose the adapter approach because streaming compatibility matters." },
+      ],
+    },
+  ], [], []);
+
+  assert.match(summary, /We chose the adapter approach/);
+});
+
 test("compactMessagesAsync awaits self-call AI summary and embeds it in current compaction", async () => {
   const messages = [
     { role: "system", content: "System stays." },

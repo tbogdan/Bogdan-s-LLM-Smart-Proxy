@@ -97,6 +97,21 @@ test("detectStalling catches planning-only cognitive stalls", () => {
   assert.equal(transforms.detectStalling(body), true);
 });
 
+test("detectStalling reads OpenAI content parts", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "I'll check the files now." }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(transforms.detectStalling(body), true);
+});
+
 test("detectStalling catches permission-seeking continuation stalls", () => {
   const body = JSON.stringify({
     choices: [
@@ -123,6 +138,23 @@ test("detectUseCase requests stronger routing after recent complexity stalls", (
   ], { tools: [{ type: "function", function: { name: "edit" } }] });
 
   assert.equal(result.needsUpgrade, true);
+});
+
+test("detectUseCase reads system and user content parts", () => {
+  const result = transforms.detectUseCase([
+    {
+      role: "system",
+      content: [{ type: "text", text: "Claude Code software engineering agent." }],
+    },
+    {
+      role: "user",
+      content: [{ type: "text", text: "Fix the failing test in app.js." }],
+    },
+  ], {});
+
+  assert.equal(result.isAgent, true);
+  assert.equal(result.caps.has("coding"), true);
+  assert.equal(result.caps.has("tools"), true);
 });
 
 test("smartnessBonus stays model-quality focused and leaves routing policy to routing", () => {
@@ -176,6 +208,8 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   const system = transformed.messages[0].content;
 
   assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /If the user asks your name, identity, who you are/);
+  assert.match(system, /Do not answer as Claude, ChatGPT, Gemini, Codex, Windsurf/);
   assert.match(system, /FLOW: UNDERSTAND.*DECOMPOSE.*EXECUTE.*VERIFY.*SAVE.*NEXT/);
   assert.match(system, /TASK DECOMPOSITION \(mandatory for large tasks\):/);
   assert.match(system, /ANTI-STALL RULES \(critical/);
@@ -192,6 +226,41 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /SUBAGENT QUALITY CONTROL:/);
   assert.match(system, /Keep this project-specific instruction\./);
   assert.equal(system.includes("Bogdan's LLM Smart Proxy"), false);
+});
+
+test("transformRequest skips difficulty marker contract for direct exact replies", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [
+      { role: "user", content: "Reply exactly: metadata-ok" },
+    ],
+  });
+  const system = transformed.messages[0].content;
+
+  assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /DIRECT ANSWER MODE/);
+  assert.doesNotMatch(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
+  assert.doesNotMatch(system, /EVERY response MUST include at least one tool call/);
+});
+
+test("transformRequest preserves existing system content parts during injection", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [
+      {
+        role: "system",
+        content: [
+          { type: "text", text: "Preserve " },
+          { type: "text", text: "content parts." },
+        ],
+      },
+      { role: "user", content: "Implement a feature." },
+    ],
+  });
+  const system = transformed.messages[0].content;
+
+  assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /Preserve \ncontent parts\./);
 });
 
 test("transformRequest replaces previous proxy prompt instead of stacking it", async () => {

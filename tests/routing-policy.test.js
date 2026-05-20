@@ -80,6 +80,28 @@ test("assessRequestDifficulty uses input size rather than response budget for ta
   assert.equal(result.speedTarget, 5);
 });
 
+test("assessRequestDifficulty keeps identity questions cheap even with agent tools and large history", () => {
+  const result = policy.assessRequestDifficulty(
+    [
+      { role: "system", content: "You are Claude Code running as a software engineering agent with repository tools." },
+      { role: "user", content: "<system-reminder> prior context omitted </system-reminder>\n\ncum te cheama?" },
+    ],
+    {
+      tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+      _inputTokens: 166000,
+      _estimatedTokens: 198000,
+    },
+  );
+
+  assert.equal(result.level, 1);
+  assert.equal(result.taskKind, "direct_answer");
+  assert.equal(result.taskLevel, 1);
+  assert.equal(result.contextLevel, 1);
+  assert.equal(result.costTarget, 2);
+  assert.equal(result.thinkingEffort, "none");
+  assert.equal(result.speedTarget, 5);
+});
+
 test("assessRequestDifficulty treats large Claude Code tool requests as complex even when user ask is hidden", () => {
   const result = policy.assessRequestDifficulty(
     [
@@ -157,6 +179,68 @@ test("difficulty marker stripping preserves same-line assistant content", () => 
 
   assert.equal(result.marker.level, 1);
   assert.equal(JSON.parse(result.body).choices[0].message.content, "ok");
+});
+
+test("difficulty marker stripping removes leading blank lines before marker", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "\n\nLLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity-question\n\nMy name is Project LLM Smart Proxy.",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+
+  assert.equal(result.marker.level, 1);
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Project LLM Smart Proxy.");
+});
+
+test("difficulty marker stripping preserves attached uppercase same-line content", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "LLM_PROXY_TASK_DIFFICULTY level=1 effort=minimal speed=5 reason=identity_replyMy name is Project LLM Smart Proxy.",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+
+  assert.equal(result.marker.level, 1);
+  assert.equal(result.marker.reason, "identity_reply");
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Project LLM Smart Proxy.");
+});
+
+test("difficulty marker stripping supports OpenAI content parts", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "LLM_PROXY_TASK_DIFFICULTY level=2 effort=low speed=4 reason=content_parts\nProject " },
+            { type: "text", text: "LLM Smart Proxy." },
+          ],
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+  const content = JSON.parse(result.body).choices[0].message.content;
+
+  assert.equal(result.marker.level, 2);
+  assert.deepEqual(content, [
+    { type: "text", text: "Project " },
+    { type: "text", text: "LLM Smart Proxy." },
+  ]);
 });
 
 test("providerPolicyBonus favors cheaper fast models for trivial tasks and stronger models for complex tasks", () => {

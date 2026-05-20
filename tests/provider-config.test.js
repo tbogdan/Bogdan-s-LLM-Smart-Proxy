@@ -92,6 +92,91 @@ test("contextForModel uses explicit provider limits before catalog defaults", ()
   assert.equal(config.contextForModel("claude", "claude-haiku-4-5-20251001", { max_tokens: 64000 }), 200000);
   assert.equal(config.contextForModel("windsurf", "claude-opus-4.7", {}), 200000);
   assert.equal(config.contextForModel("codex", "unknown-small", { context_length: 12345 }), 12345);
+  assert.equal(config.contextForModel("codex", "gpt-5.5", { context_window: 272000, max_context_window: 1000000 }), 272000);
+});
+
+test("modelTraitsFor preserves Claude source capabilities", () => {
+  const traits = config.modelTraitsFor("claude", "claude-opus-4-7", {
+    type: "model",
+    id: "claude-opus-4-7",
+    display_name: "Claude Opus 4.7",
+    created_at: "2026-04-14T00:00:00Z",
+    capabilities: {
+      code_execution: { supported: true },
+      context_management: { supported: true, compact_20260112: { supported: true } },
+      effort: {
+        supported: true,
+        low: { supported: true },
+        medium: { supported: true },
+        high: { supported: true },
+        max: { supported: true },
+      },
+      image_input: { supported: true },
+      pdf_input: { supported: true },
+      structured_outputs: { supported: true },
+      thinking: { supported: true, types: { adaptive: { supported: true } } },
+    },
+  });
+
+  assert.equal(traits.display_name, "Claude Opus 4.7");
+  assert.equal(traits.source_type, "model");
+  assert.equal(traits.context, 1000000);
+  assert.deepEqual(traits.supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(traits.thinking_effort, "xhigh");
+  assert.equal(traits.supports_code_execution, true);
+  assert.equal(traits.supports_context_management, true);
+  assert.equal(traits.supports_context_compaction, true);
+  assert.equal(traits.supports_adaptive_thinking, true);
+  assert.equal(traits.supports_structured_outputs, true);
+  assert.equal(traits.supports_pdf_input, true);
+  assert.equal(traits.caps.includes("images"), true);
+});
+
+test("modelTraitsFor preserves Codex source metadata", () => {
+  const traits = config.modelTraitsFor("codex", "gpt-5.5", {
+    slug: "gpt-5.5",
+    display_name: "GPT-5.5",
+    description: "Frontier model for complex coding, research, and real-world work.",
+    context_window: 272000,
+    max_context_window: 272000,
+    default_reasoning_level: "xhigh",
+    supported_reasoning_levels: [
+      { effort: "low" },
+      { effort: "medium" },
+      { effort: "high" },
+      { effort: "xhigh" },
+    ],
+    supports_parallel_tool_calls: true,
+    supports_search_tool: true,
+    input_modalities: ["text", "image"],
+    default_verbosity: "low",
+    support_verbosity: true,
+    shell_type: "shell_command",
+    apply_patch_tool_type: "freeform",
+    web_search_tool_type: "text_and_image",
+    truncation_policy: { mode: "tokens", limit: 10000 },
+    priority: 9,
+    visibility: "list",
+    supported_in_api: true,
+  });
+
+  assert.equal(traits.context, 272000);
+  assert.equal(traits.context_window, 272000);
+  assert.equal(traits.max_context_window, 272000);
+  assert.equal(traits.thinking_effort, "xhigh");
+  assert.deepEqual(traits.supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(traits.supports_parallel_tool_calls, true);
+  assert.equal(traits.supports_search_tool, true);
+  assert.equal(traits.supports_verbosity, true);
+  assert.equal(traits.default_verbosity, "low");
+  assert.equal(traits.shell_type, "shell_command");
+  assert.equal(traits.apply_patch_tool_type, "freeform");
+  assert.equal(traits.web_search_tool_type, "text_and_image");
+  assert.deepEqual(traits.truncation_policy, { mode: "tokens", limit: 10000 });
+  assert.equal(traits.priority, 9);
+  assert.equal(traits.visibility, "list");
+  assert.equal(traits.supported_in_api, true);
+  assert.equal(traits.caps.includes("images"), true);
 });
 
 test("model scores recognize discovered Windsurf frontier variants", () => {
@@ -215,6 +300,16 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
         key_env: "CODEX_API_KEY",
         model: "codex/gpt-5.4",
         upstream_model: "gpt-5.4",
+        context_window: 272000,
+        max_context_window: 1000000,
+        cost_group: 3,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "medium",
+        supported_thinking_efforts: ["low", "medium", "high", "xhigh"],
+        display_name: "GPT-5.4",
+        supports_parallel_tool_calls: true,
+        supports_search_tool: true,
       },
     ],
   });
@@ -224,6 +319,17 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
     "claude",
     "http://codex-proxy:10531/v1/chat/completions",
   ]);
+  const codex = hydrated.providers.find((provider) => provider.model === "codex/gpt-5.4");
+  assert.equal(codex.context_window, 272000);
+  assert.equal(codex.max_context_window, 1000000);
+  assert.equal(codex.cost_group, 3);
+  assert.equal(codex.quality_group, 5);
+  assert.equal(codex.speed_group, 3);
+  assert.equal(codex.thinking_effort, "medium");
+  assert.deepEqual(codex.supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
+  assert.equal(codex.display_name, "GPT-5.4");
+  assert.equal(codex.supports_parallel_tool_calls, true);
+  assert.equal(codex.supports_search_tool, true);
 });
 
 test("hydrateSeedProviders can fall back to Claude OAuth token for legacy provider files", () => {

@@ -12,9 +12,11 @@ const providersMod = require("./lib/providers");
 const compaction = require("./lib/compaction");
 const transforms = require("./lib/transforms");
 const routing = require("./lib/routing");
+const routingPolicy = require("./lib/routing-policy");
 const responses = require("./lib/responses");
 const anthropicGateway = require("./lib/anthropic-gateway");
 const httpHome = require("./lib/http-home");
+const discoveryTools = require("./llm-discovery");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -102,16 +104,43 @@ function handleModels(query) {
     0,
   );
 
-  const models = list.map((p) => ({
-    id: p.model,
-    object: "model",
-    created: 0,
-    owned_by: p.name,
-    capabilities: p.caps,
-    context_length: scoring.getEffectiveContext(p),
-    tier: p.tier,
-    thinking_capable: p.tc,
-  }));
+  const models = list.map((p) => {
+    const profile = routingPolicy.classifyProvider(p);
+    return Object.fromEntries(Object.entries({
+      id: p.model,
+      object: "model",
+      created: 0,
+      owned_by: p.name,
+      capabilities: p.caps,
+      context_length: scoring.getEffectiveContext(p),
+      max_tokens: p.max_tokens,
+      tier: p.tier,
+      thinking_capable: p.tc,
+      cost_group: profile.cost_group,
+      quality_group: profile.quality_group,
+      speed_group: profile.speed_group,
+      thinking_effort: profile.thinking_effort,
+      supported_thinking_efforts: p.supported_thinking_efforts,
+      display_name: p.display_name,
+      description: p.description,
+      context_window: p.context_window,
+      max_context_window: p.max_context_window,
+      supports_parallel_tool_calls: p.supports_parallel_tool_calls,
+      supports_search_tool: p.supports_search_tool,
+      supports_code_execution: p.supports_code_execution,
+      supports_context_compaction: p.supports_context_compaction,
+      supports_adaptive_thinking: p.supports_adaptive_thinking,
+      supports_verbosity: p.supports_verbosity,
+      default_verbosity: p.default_verbosity,
+      default_service_tier: p.default_service_tier,
+      service_tiers: p.service_tiers,
+      additional_speed_tiers: p.additional_speed_tiers,
+      input_modalities: p.input_modalities,
+      priority: p.priority,
+      visibility: p.visibility,
+      source: p.source,
+    }).filter(([, value]) => value !== undefined));
+  });
 
   // Add smart groups
   const groups = Object.keys(state.GROUPS).map((g) => {
@@ -217,13 +246,37 @@ function handleScores() {
 // ---------------------------------------------------------------------------
 // Discovery endpoint
 // ---------------------------------------------------------------------------
-function handleDiscovery() {
+function readDiscoveryFile() {
   try {
     if (fs.existsSync(state.DISCOVERY_FILE)) {
       return JSON.parse(fs.readFileSync(state.DISCOVERY_FILE, "utf8"));
     }
   } catch {}
   return { models: [], last_scan: null };
+}
+
+function writeDiscoveryFile(discovery) {
+  try {
+    fs.mkdirSync(state.DATA_DIR, { recursive: true });
+    fs.writeFileSync(state.DISCOVERY_FILE, JSON.stringify(discovery, null, 2));
+  } catch (err) {
+    state.log(`DISCOVERY-REFRESH: failed to write discovery file: ${err.message}`);
+  }
+}
+
+function handleDiscovery({ refresh = false } = {}) {
+  const discovery = readDiscoveryFile();
+  if (refresh) {
+    const result = discoveryTools.refreshDiscoveryFromProviders(discovery, state.PROVIDERS);
+    discovery.force_refresh = {
+      refreshed: result.refreshed,
+      created: result.created,
+      at: discovery.last_refresh,
+    };
+    writeDiscoveryFile(discovery);
+    state.log(`DISCOVERY-REFRESH: refreshed ${result.refreshed} models from loaded providers (${result.created} created)`);
+  }
+  return discovery;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +412,9 @@ const server = http.createServer(async (req, res) => {
 
     // GET /discovery
     if (method === "GET" && pathname === "/discovery") {
-      return sendJSON(res, handleDiscovery());
+      const refresh = ["1", "true", "yes", "force"].includes(String(urlObj.searchParams.get("refresh") || "").toLowerCase()) ||
+        ["1", "true", "yes"].includes(String(urlObj.searchParams.get("force") || "").toLowerCase());
+      return sendJSON(res, handleDiscovery({ refresh }));
     }
 
     // GET /stats — session token usage

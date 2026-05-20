@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const anthropicAdapter = require("./lib/anthropic-adapter");
 const providerConfig = require("./lib/provider-config");
+const routingPolicy = require("./lib/routing-policy");
 const windsurfCloud = require("./lib/windsurf-cloud");
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,9 @@ const PROVIDERS_FILE = path.join(DATA_DIR, "providers.json");
 const SEED_FILE = path.join(__dirname, "seed-providers.json");
 const SCAN_INTERVAL = 2 * 60 * 60_000; // 2 hours
 const REQUEST_TIMEOUT = 30_000;
+const CODEX_BACKEND_URL = "https://chatgpt.com/backend-api/codex";
+const CODEX_REGISTRY_URL = "https://registry.npmjs.org/@openai/codex/latest";
+const FALLBACK_CODEX_CLIENT_VERSION = "0.132.0";
 const SUPPORTED_PROTOCOLS = {
   claude: "anthropic",
   codex: "openai",
@@ -190,6 +194,10 @@ function isWindsurfEndpoint(ep) {
   return ep?.protocol === "windsurf" || ep?.family === "windsurf";
 }
 
+function isCodexEndpoint(ep) {
+  return ep?.family === "codex";
+}
+
 function hasWindsurfModelUids(models) {
   return Array.isArray(models) && models.some((model) => (
     model &&
@@ -236,14 +244,15 @@ function providersFromEndpointModels(ep, models) {
 
   return discoverableModels.filter((modelData) => {
     if (!modelData || typeof modelData !== "object" || Array.isArray(modelData)) return false;
-    const upstream = modelData.id || modelData.name;
+    const upstream = modelData.id || modelData.slug || modelData.model || modelData.name;
     return typeof upstream === "string" && upstream.trim().length > 0;
   }).map((modelData) => {
-    const upstream = (modelData.id || modelData.name).trim();
+    const upstream = (modelData.id || modelData.slug || modelData.model || modelData.name).trim();
     const modelId = `${ep.family}/${upstream}`;
-    const caps = [...new Set([...detectCaps(modelId, modelData), ...providerConfig.inferCapabilities(modelId)])];
-    const tc = caps.includes("thinking") || THINKING_PATTERNS.some((pattern) => pattern.test(modelId));
-    return {
+    const traits = providerConfig.modelTraitsFor(ep.family, upstream, modelData);
+    const caps = [...new Set([...detectCaps(modelId, modelData), ...(traits.caps || []), ...providerConfig.inferCapabilities(modelId)])];
+    const tc = traits.tc || caps.includes("thinking") || THINKING_PATTERNS.some((pattern) => pattern.test(modelId));
+    const provider = {
       name: providerName(ep.name, upstream),
       family: ep.family,
       protocol: ep.protocol,
@@ -251,7 +260,8 @@ function providersFromEndpointModels(ep, models) {
       key_env: ep.key_env,
       model: modelId,
       upstream_model: upstream,
-      context: providerConfig.contextForModel(ep.family, upstream, modelData),
+      ...traits,
+      context: traits.context || providerConfig.contextForModel(ep.family, upstream, modelData),
       tier: 2,
       tc,
       caps,
@@ -260,13 +270,67 @@ function providersFromEndpointModels(ep, models) {
       seed: false,
       last_tested: new Date().toISOString(),
     };
+    return {
+      ...provider,
+      ...routingPolicy.classifyProvider(provider),
+    };
   });
+}
+
+function readCodexAuth(env = process.env) {
+  const authFile = env.CODEX_AUTH_FILE || path.join(DATA_DIR, "codex-auth.json");
+  try {
+    const auth = JSON.parse(fs.readFileSync(authFile, "utf8"));
+    const tokens = auth.tokens || auth;
+    const accessToken = tokens.access_token || tokens.accessToken;
+    const accountId = tokens.account_id || tokens.accountId || auth.account_id || auth.accountId;
+    if (!accessToken || !accountId) return null;
+    return { accessToken, accountId };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCodexClientVersion(env = process.env, fetchJSONFn = fetchJSON) {
+  if (env.CODEX_CLIENT_VERSION) return env.CODEX_CLIENT_VERSION;
+  try {
+    const resp = await fetchJSONFn(CODEX_REGISTRY_URL, { accept: "application/json" });
+    const version = resp?.data?.version;
+    if (resp.status < 400 && typeof version === "string" && version.trim()) return version.trim();
+  } catch {}
+  return FALLBACK_CODEX_CLIENT_VERSION;
+}
+
+async function fetchCodexBackendModels(ep, options = {}) {
+  const env = options.env || process.env;
+  const fetchJSONFn = options.fetchJSONFn || fetchJSON;
+  const auth = readCodexAuth(env);
+  if (!auth) return null;
+
+  const clientVersion = await resolveCodexClientVersion(env, fetchJSONFn);
+  const baseUrl = String(env.CODEX_BACKEND_URL || CODEX_BACKEND_URL).replace(/\/$/, "");
+  const url = `${baseUrl}/models?client_version=${encodeURIComponent(clientVersion)}`;
+  const resp = await fetchJSONFn(url, {
+    Authorization: `Bearer ${auth.accessToken}`,
+    "chatgpt-account-id": auth.accountId,
+    "OpenAI-Beta": "responses=experimental",
+  });
+  if (resp.status >= 400 || !Array.isArray(resp.data?.models)) return null;
+  return resp.data.models;
 }
 
 async function discoverEndpointModels(ep, options = {}) {
   const env = options.env || process.env;
   const fetchJSONFn = options.fetchJSONFn || fetchJSON;
+  const fetchCodexBackendModelsFn = options.fetchCodexBackendModelsFn || fetchCodexBackendModels;
   const fetchWindsurfModelConfigsFn = options.fetchWindsurfModelConfigsFn || windsurfCloud.fetchWindsurfModelConfigs;
+
+  if (isCodexEndpoint(ep)) {
+    try {
+      const models = await fetchCodexBackendModelsFn(ep, { env, fetchJSONFn });
+      if (Array.isArray(models) && models.length > 0) return { source: "codex_backend", models };
+    } catch {}
+  }
 
   if (ep.modelsUrl) {
     const resp = await fetchJSONFn(ep.modelsUrl, ep.headers);
@@ -481,6 +545,103 @@ function saveDiscovery(data) {
   } catch {}
 }
 
+function discoveryEntryFromProvider(ep, provider, existing, now) {
+  return {
+    provider: ep.name,
+    name: provider.name,
+    model: provider.model,
+    upstream_model: provider.upstream_model,
+    context_length: provider.context,
+    capabilities: provider.caps,
+    max_tokens: provider.max_tokens,
+    thinking_effort: provider.thinking_effort,
+    speed_group: provider.speed_group,
+    cost_group: provider.cost_group,
+    quality_group: provider.quality_group,
+    app_cost_tier: provider.app_cost_tier,
+    display_name: provider.display_name,
+    description: provider.description,
+    source: provider.source,
+    source_type: provider.source_type,
+    created_at: provider.created_at,
+    context_window: provider.context_window,
+    max_context_window: provider.max_context_window,
+    supported_thinking_efforts: provider.supported_thinking_efforts,
+    supports_code_execution: provider.supports_code_execution,
+    supports_context_management: provider.supports_context_management,
+    supports_context_compaction: provider.supports_context_compaction,
+    supports_adaptive_thinking: provider.supports_adaptive_thinking,
+    supports_extended_thinking: provider.supports_extended_thinking,
+    supports_structured_outputs: provider.supports_structured_outputs,
+    supports_pdf_input: provider.supports_pdf_input,
+    supports_parallel_tool_calls: provider.supports_parallel_tool_calls,
+    supports_search_tool: provider.supports_search_tool,
+    supports_verbosity: provider.supports_verbosity,
+    default_verbosity: provider.default_verbosity,
+    shell_type: provider.shell_type,
+    apply_patch_tool_type: provider.apply_patch_tool_type,
+    web_search_tool_type: provider.web_search_tool_type,
+    default_service_tier: provider.default_service_tier,
+    service_tiers: provider.service_tiers,
+    additional_speed_tiers: provider.additional_speed_tiers,
+    input_modalities: provider.input_modalities,
+    priority: provider.priority,
+    visibility: provider.visibility,
+    supported_in_api: provider.supported_in_api,
+    truncation_policy: provider.truncation_policy,
+    discovered_at: existing?.discovered_at || now,
+    refreshed_at: now,
+    chat_tested: existing?.chat_tested ?? false,
+  };
+}
+
+function upsertDiscoveryModel(discovery, ep, provider, options = {}) {
+  if (!discovery || typeof discovery !== "object") return { created: false, entry: null };
+  if (!Array.isArray(discovery.models)) discovery.models = [];
+  if (!provider?.model || !provider?.name) return { created: false, entry: null };
+
+  const providerName = ep?.name || provider.family || provider.provider || "Unknown";
+  const now = options.now || new Date().toISOString();
+  const idx = discovery.models.findIndex((model) => model.provider === providerName && model.model === provider.model);
+  const existing = idx >= 0 ? discovery.models[idx] : null;
+  const entry = discoveryEntryFromProvider({ ...ep, name: providerName }, provider, existing, now);
+
+  if (idx >= 0) {
+    discovery.models[idx] = entry;
+    return { created: false, entry };
+  }
+
+  discovery.models.push(entry);
+  return { created: true, entry };
+}
+
+function providerFamilyName(provider = {}) {
+  const family = String(provider.family || "").toLowerCase();
+  if (family === "codex") return "Codex";
+  if (family === "claude") return "Claude";
+  if (family === "windsurf") return "Windsurf";
+  return provider.provider || provider.family || "Unknown";
+}
+
+function refreshDiscoveryFromProviders(discovery, providerList, options = {}) {
+  if (!discovery || typeof discovery !== "object") discovery = {};
+  if (!Array.isArray(discovery.models)) discovery.models = [];
+  const now = options.now || new Date().toISOString();
+  let refreshed = 0;
+  let created = 0;
+
+  for (const provider of (providerList || [])) {
+    if (!isSupportedProvider(provider)) continue;
+    const result = upsertDiscoveryModel(discovery, { name: providerFamilyName(provider) }, provider, { now });
+    if (!result.entry) continue;
+    refreshed++;
+    if (result.created) created++;
+  }
+
+  discovery.last_refresh = now;
+  return { discovery, refreshed, created };
+}
+
 // ---------------------------------------------------------------------------
 // Write providers.json: merge seed + discovered
 // ---------------------------------------------------------------------------
@@ -494,7 +655,52 @@ function isSupportedProvider(provider) {
 function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
   const previousStatus = new Map();
   const providerMap = new Map();
-  const refreshFields = ["context", "caps", "tc", "tier", "headers", "upstream_model"];
+  const refreshFields = [
+    "context",
+    "caps",
+    "tc",
+    "tier",
+    "headers",
+    "upstream_model",
+    "max_tokens",
+    "app_cost_tier",
+    "cost_group",
+    "quality_group",
+    "speed_group",
+    "thinking_effort",
+    "description",
+    "smart_friend_model_uid",
+    "display_name",
+    "source_type",
+    "created_at",
+    "context_window",
+    "max_context_window",
+    "supported_thinking_efforts",
+    "supports_code_execution",
+    "supports_context_management",
+    "supports_context_compaction",
+    "supports_adaptive_thinking",
+    "supports_extended_thinking",
+    "supports_structured_outputs",
+    "supports_pdf_input",
+    "supports_parallel_tool_calls",
+    "supports_search_tool",
+    "supports_verbosity",
+    "default_verbosity",
+    "shell_type",
+    "apply_patch_tool_type",
+    "web_search_tool_type",
+    "default_service_tier",
+    "service_tiers",
+    "additional_speed_tiers",
+    "input_modalities",
+    "priority",
+    "visibility",
+    "supported_in_api",
+    "truncation_policy",
+    "thinking_level",
+    "source",
+  ];
 
   // Use existing providers only as status history; seed + current discovery are
   // the provider list source of truth.
@@ -686,7 +892,6 @@ async function runDiscoveryScan() {
   const endpoints = getEndpoints();
   const discovery = loadDiscovery();
   const seedKeys = new Set((seed.providers || []).map(providerKey));
-  const knownModels = new Set(discovery.models.map((m) => `${m.provider}|${m.model}`));
   let newCount = 0;
   let prevNewCount = 0;
 
@@ -710,6 +915,8 @@ async function runDiscoveryScan() {
       const models = discoveryResult.models;
       if (discoveryResult.source === "models_url") {
         log(`  ${ep.name}: ${models.length} models found`);
+      } else if (discoveryResult.source === "codex_backend") {
+        log(`  ${ep.name}: ${models.length} Codex backend model configs found`);
       } else if (discoveryResult.source === "configured") {
         log(`  ${ep.name}: ${models.length} configured models`);
       } else if (discoveryResult.source === "windsurf_app") {
@@ -718,31 +925,21 @@ async function runDiscoveryScan() {
         log(`  ${ep.name}: using built-in provider definitions`);
       }
 
-      for (const provider of providersFromEndpointModels(ep, models)) {
+      for (const discoveredProvider of providersFromEndpointModels(ep, models)) {
+        const provider = { ...discoveredProvider, source: discoveredProvider.source || discoveryResult.source };
         if (!provider.name) continue;
+        const discoveryUpdate = upsertDiscoveryModel(discovery, ep, provider);
+        if (discoveryUpdate.created) {
+          newCount++;
+          log(`  NEW: ${provider.name} (${provider.model}) caps=[${provider.caps.join(",")}]`);
+        }
 
         if (seedKeys.has(providerKey(provider))) {
           discoveredProviders.push({ ...provider, metadata_only: true });
           continue;
         }
 
-        const uniqueKey = `${ep.name}|${provider.model}`;
         discoveredProviders.push(provider);
-        if (!knownModels.has(uniqueKey)) {
-          discovery.models.push({
-            provider: ep.name,
-            name: provider.name,
-            model: provider.model,
-            upstream_model: provider.upstream_model,
-            context_length: provider.context,
-            capabilities: provider.caps,
-            discovered_at: new Date().toISOString(),
-            chat_tested: false,
-          });
-          knownModels.add(uniqueKey);
-          newCount++;
-          log(`  NEW: ${provider.name} (${provider.model}) caps=[${provider.caps.join(",")}]`);
-        }
       }
     } catch (err) {
       log(`  ${ep.name}: error - ${err.message}`);
@@ -840,6 +1037,8 @@ module.exports = {
   getEndpoints,
   discoverEndpointModels,
   providersFromEndpointModels,
+  upsertDiscoveryModel,
+  refreshDiscoveryFromProviders,
   shouldProbeSeedProvider,
   probeSeedProvider,
   mergeProvidersConfig,

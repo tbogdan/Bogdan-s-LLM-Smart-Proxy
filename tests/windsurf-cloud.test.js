@@ -21,12 +21,13 @@ test("production transport constants point at Codeium Connect endpoint", () => {
   assert.equal(cloud.WINDSURF_DEFAULT_URL, "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage");
 });
 
-function clientModelConfig({ label, uid, disabled = false, supportsImages = false, recommended = false, maxTokens = 0 }) {
+function clientModelConfig({ label, uid, disabled = false, supportsImages = false, recommended = false, maxTokens = 0, costTier = 0 }) {
   const fields = [cloud.encodeString(1, label), cloud.encodeString(22, uid)];
   if (disabled) fields.push(cloud.encodeVarintField(4, 1));
   if (supportsImages) fields.push(cloud.encodeVarintField(5, 1));
   if (recommended) fields.push(cloud.encodeVarintField(11, 1));
   if (maxTokens) fields.push(cloud.encodeVarintField(18, maxTokens));
+  if (costTier) fields.push(cloud.encodeVarintField(24, costTier));
   return Buffer.concat(fields);
 }
 
@@ -101,6 +102,33 @@ test("parseWindsurfModelConfigs normalizes unknown app model configs", () => {
   assert.equal(models[0].upstream, "omega-code-1");
   assert.equal(models[0].windsurf_model_uid, "omega-code-1");
   assert.equal(models[0].context, 262144);
+});
+
+test("parseWindsurfModelConfigs exposes app context and routing traits", () => {
+  const body = cloud.connectEnvelope(
+    cascadeModelConfigData([
+      clientModelConfig({ label: "Claude Opus 4.6 1M", uid: "claude-opus-4-6-1m", supportsImages: true, maxTokens: 1000000, costTier: 4 }),
+      clientModelConfig({ label: "GPT-5.2 High Priority", uid: "MODEL_GPT_5_2_HIGH_PRIORITY", supportsImages: true, maxTokens: 384000, costTier: 2 }),
+      clientModelConfig({ label: "Gemini 3 Flash Minimal", uid: "MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL", supportsImages: true, maxTokens: 1048576, costTier: 1 }),
+    ]),
+  );
+
+  const models = cloud.parseWindsurfModelConfigs(body);
+  const opus = models.find((model) => model.windsurf_model_uid === "claude-opus-4-6-1m");
+  const gpt = models.find((model) => model.windsurf_model_uid === "MODEL_GPT_5_2_HIGH_PRIORITY");
+  const gemini = models.find((model) => model.windsurf_model_uid === "MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL");
+  const providers = cloud.buildWindsurfProviders(models);
+  const gptProvider = providers.find((provider) => provider.windsurf_model_uid === "MODEL_GPT_5_2_HIGH_PRIORITY");
+
+  assert.equal(opus.context, 1000000);
+  assert.equal(opus.thinking_effort, "xhigh");
+  assert.equal(opus.cost_group, 4);
+  assert.equal(gpt.thinking_effort, "high");
+  assert.equal(gpt.speed_group, 5);
+  assert.equal(gemini.thinking_effort, "minimal");
+  assert.equal(gemini.context, 1048576);
+  assert.equal(gptProvider.thinking_effort, "high");
+  assert.equal(gptProvider.speed_group, 5);
 });
 
 test("parseWindsurfModelConfigs skips inaccessible Windsurf internal fast model", () => {
@@ -524,6 +552,21 @@ test("toOpenAIResponse wraps message and content response shapes", () => {
   assert.deepEqual(messageOutput.usage, { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 });
   assert.deepEqual(contentOutput.choices[0].message, { role: "assistant", content: "Content text" });
   assert.deepEqual(contentOutput.usage, { prompt_tokens: 8, completion_tokens: 5, total_tokens: 13 });
+});
+
+test("toOpenAIResponse normalizes message content parts", () => {
+  const output = cloud.toOpenAIResponse("windsurf/swe-1.6", {
+    id: "ws_parts",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Windsurf " },
+        { type: "text", text: "content parts" },
+      ],
+    },
+  });
+
+  assert.deepEqual(output.choices[0].message, { role: "assistant", content: "Windsurf \ncontent parts" });
 });
 
 test("toOpenAIResponse parses Connect envelopes by concatenating field 3 text and skipping trailers", () => {

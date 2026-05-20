@@ -74,6 +74,113 @@ test("routeToProvider accepts simple text-only replies when difficulty marker sa
   });
 });
 
+test("routeToProvider accepts proxy identity answers without tool calls when tools are present", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "Project LLM Smart Proxy.",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "what is your name?" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.equal(JSON.parse(resp.body).choices[0].message.content, "Project LLM Smart Proxy.");
+    });
+  });
+});
+
+test("routeToProvider accepts exact text-only replies without tool calls when tools are present", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "metadata-ok",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Reply exactly: metadata-ok" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.equal(JSON.parse(resp.body).choices[0].message.content, "metadata-ok");
+    });
+  });
+});
+
+test("routeToProvider rejects wrong identity answers even when tools are present", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "Claude.",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), {
+          model: "auto-coding",
+          messages: [{ role: "user", content: "who are you?" }],
+          tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+        }),
+        (error) => error.status === 422 && error.stalling === true,
+      );
+    });
+  });
+});
+
+test("routeToProvider rejects marker-only replies because the proxy strips the marker", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), {
+          model: "auto-coding",
+          messages: [{ role: "user", content: "who are you?" }],
+        }),
+        (error) => error.status === 422 && error.stalling === true,
+      );
+    });
+  });
+});
+
 test("dedupeConsecutiveIdempotentToolCalls removes only exact consecutive read duplicates", () => {
   const longPrefix = "x".repeat(120);
   const reqBody = {

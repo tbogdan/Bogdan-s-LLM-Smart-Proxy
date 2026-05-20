@@ -115,3 +115,80 @@ test("routeStreamToProvider filters telemetry SSE chunks after stream commit", a
   });
 });
 
+test("routeStreamToProvider strips private difficulty marker from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity\n",
+        "Project LLM ",
+        "Smart Proxy.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
+      assert.equal(output.includes("Project LLM "), true);
+      assert.equal(output.includes("Smart Proxy."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider preserves attached uppercase content after stream marker", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity_replyProject ",
+        "LLM ",
+        "Smart Proxy.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
+      assert.equal(output.includes("Project "), true);
+    });
+  });
+});
+
+test("sendAsSSE streams OpenAI content parts as text", () => {
+  const clientRes = new FakeClientResponse();
+  const body = JSON.stringify({
+    id: "chatcmpl-test",
+    model: "parts-model",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Project " },
+            { type: "text", text: "Proxy." },
+          ],
+        },
+        finish_reason: "stop",
+      },
+    ],
+  });
+
+  routing.sendAsSSE(clientRes, body, streamProvider("http://127.0.0.1/v1/chat/completions"), requestBody());
+
+  const output = clientRes.chunks.join("");
+  assert.equal(clientRes.status, 200);
+  assert.equal(output.includes("chat.completion.chunk"), true);
+  assert.equal(output.includes("\"content\":[{\"type\":\"text\""), false);
+  assert.equal(output.includes("Project "), true);
+  assert.equal(output.includes("Proxy."), true);
+});

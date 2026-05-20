@@ -96,6 +96,28 @@ test("toAnthropicResponse maps OpenAI chat response to Anthropic message", () =>
   assert.deepEqual(response.content[1].input, { file_path: "a.js" });
 });
 
+test("toAnthropicResponse preserves OpenAI text content parts", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Project " },
+            { type: "text", text: "LLM Smart Proxy." },
+          ],
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "Project \nLLM Smart Proxy." },
+  ]);
+});
+
 test("toAnthropicResponse suppresses generated tool_use missing required input", () => {
   const response = gateway.toAnthropicResponse({
     model: "auto-coding",
