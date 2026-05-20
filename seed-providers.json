@@ -1,7 +1,27 @@
 {
-  "version": 1,
-  "description": "Seed provider list. Discovery merges into this but never removes seed entries.",
   "providers": [
+    {
+      "name": "Windsurf-Adaptive",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/adaptive",
+      "upstream_model": "adaptive",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "adaptive"
+    },
     {
       "name": "Windsurf-SWE16Fast",
       "family": "windsurf",
@@ -20,7 +40,8 @@
         "thinking"
       ],
       "headers": {},
-      "seed": true
+      "seed": true,
+      "windsurf_model_uid": "swe-1-6-fast"
     },
     {
       "name": "Windsurf-SWE16",
@@ -40,7 +61,8 @@
         "thinking"
       ],
       "headers": {},
-      "seed": true
+      "seed": true,
+      "windsurf_model_uid": "swe-1-6"
     },
     {
       "name": "Windsurf-SWE15Fast",
@@ -60,6 +82,350 @@
         "thinking"
       ],
       "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "swe-1-5"
+    },
+    {
+      "name": "Windsurf-SWE15",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/swe-1.5",
+      "upstream_model": "swe-1.5",
+      "context": 200000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "swe-1-5"
+    },
+    {
+      "name": "Windsurf-SWE1",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/swe-1",
+      "upstream_model": "swe-1",
+      "context": 200000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "swe-1"
+    },
+    {
+      "name": "Windsurf-GPT55",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/gpt-5.5",
+      "upstream_model": "gpt-5.5",
+      "context": 1000000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "gpt-5-5"
+    },
+    {
+      "name": "Windsurf-GPT54",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/gpt-5.4",
+      "upstream_model": "gpt-5.4",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "gpt-5-4"
+    },
+    {
+      "name": "Windsurf-GPT54Mini",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/gpt-5.4-mini",
+      "upstream_model": "gpt-5.4-mini",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "gpt-5-4-mini"
+    },
+    {
+      "name": "Windsurf-GPT53CodexSpark",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/gpt-5.3-codex-spark",
+      "upstream_model": "gpt-5.3-codex-spark",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "gpt-5-3-codex-spark"
+    },
+    {
+      "name": "Windsurf-ClaudeOpus47",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/claude-opus-4.7",
+      "upstream_model": "claude-opus-4.7",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "claude-opus-4-7"
+    },
+    {
+      "name": "Windsurf-ClaudeOpus46",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/claude-opus-4.6",
+      "upstream_model": "claude-opus-4.6",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "claude-opus-4-6"
+    },
+    {
+      "name": "Windsurf-ClaudeSonnet46",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/claude-sonnet-4.6",
+      "upstream_model": "claude-sonnet-4.6",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "claude-sonnet-4-6"
+    },
+    {
+      "name": "Windsurf-Gemini31Pro",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/gemini-3.1-pro",
+      "upstream_model": "gemini-3.1-pro",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "gemini-3-1-pro"
+    },
+    {
+      "name": "Windsurf-GLM5",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/glm-5",
+      "upstream_model": "glm-5",
+      "context": 200000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "glm-5"
+    },
+    {
+      "name": "Windsurf-MinimaxM25",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/minimax-m2.5",
+      "upstream_model": "minimax-m2.5",
+      "context": 200000,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "text",
+        "coding",
+        "tools"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "minimax-m2-5"
+    },
+    {
+      "name": "Windsurf-GrokCodeFast1",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/grok-code-fast-1",
+      "upstream_model": "grok-code-fast-1",
+      "context": 200000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking"
+      ],
+      "headers": {},
+      "seed": true,
+      "windsurf_model_uid": "grok-code-fast-1"
+    },
+    {
+      "name": "Claude-Opus47",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-opus-4-7",
+      "upstream_model": "claude-opus-4-7",
+      "context": 1000000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Sonnet46",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-sonnet-4-6",
+      "upstream_model": "claude-sonnet-4-6",
+      "context": 1000000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Opus46",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-opus-4-6",
+      "upstream_model": "claude-opus-4-6",
+      "context": 1000000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
       "seed": true
     },
     {
@@ -68,50 +434,8 @@
       "protocol": "anthropic",
       "url": "claude",
       "key_env": "ANTHROPIC_API_KEY",
-      "model": "claude/claude-opus-4-5",
-      "upstream_model": "claude-opus-4-5",
-      "context": 200000,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "text",
-        "coding",
-        "tools",
-        "thinking",
-        "max"
-      ],
-      "headers": {},
-      "seed": true
-    },
-    {
-      "name": "Claude-Sonnet45",
-      "family": "claude",
-      "protocol": "anthropic",
-      "url": "claude",
-      "key_env": "ANTHROPIC_API_KEY",
-      "model": "claude/claude-sonnet-4-5",
-      "upstream_model": "claude-sonnet-4-5",
-      "context": 200000,
-      "tier": 1,
-      "tc": true,
-      "caps": [
-        "text",
-        "coding",
-        "tools",
-        "thinking",
-        "max"
-      ],
-      "headers": {},
-      "seed": true
-    },
-    {
-      "name": "Claude-Sonnet4",
-      "family": "claude",
-      "protocol": "anthropic",
-      "url": "claude",
-      "key_env": "ANTHROPIC_API_KEY",
-      "model": "claude/claude-sonnet-4",
-      "upstream_model": "claude-sonnet-4",
+      "model": "claude/claude-opus-4-5-20251101",
+      "upstream_model": "claude-opus-4-5-20251101",
       "context": 200000,
       "tier": 1,
       "tc": true,
@@ -131,8 +455,8 @@
       "protocol": "anthropic",
       "url": "claude",
       "key_env": "ANTHROPIC_API_KEY",
-      "model": "claude/claude-haiku-4-5",
-      "upstream_model": "claude-haiku-4-5",
+      "model": "claude/claude-haiku-4-5-20251001",
+      "upstream_model": "claude-haiku-4-5-20251001",
       "context": 200000,
       "tier": 2,
       "tc": true,
@@ -141,6 +465,90 @@
         "coding",
         "tools",
         "thinking"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Sonnet45",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-sonnet-4-5-20250929",
+      "upstream_model": "claude-sonnet-4-5-20250929",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Opus41",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-opus-4-1-20250805",
+      "upstream_model": "claude-opus-4-1-20250805",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Opus4",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-opus-4-20250514",
+      "upstream_model": "claude-opus-4-20250514",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Claude-Sonnet4",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-sonnet-4-20250514",
+      "upstream_model": "claude-sonnet-4-20250514",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
       ],
       "headers": {},
       "seed": true
@@ -249,11 +657,33 @@
       ],
       "headers": {},
       "seed": true
+    },
+    {
+      "name": "Codex-AutoReview",
+      "family": "codex",
+      "protocol": "openai",
+      "url": "http://codex-proxy:10531/v1/chat/completions",
+      "key_env": "CODEX_API_KEY",
+      "model": "codex/codex-auto-review",
+      "upstream_model": "codex-auto-review",
+      "context": 200000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max"
+      ],
+      "headers": {},
+      "seed": true
     }
   ],
   "groups": {
     "auto-tools": "tools",
     "auto-coding": "coding",
+    "coding-sm": "coding-sm",
     "auto-text": "text",
     "auto-max": "max",
     "auto-thinking": "thinking"

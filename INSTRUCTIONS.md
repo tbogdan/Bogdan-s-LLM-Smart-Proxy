@@ -39,6 +39,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    ```
 
    If Codex is not enabled, omit `--profile codex`.
+   When another checkout is already running on the host, set `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, `CODEX_PROXY_PORT`, and `MEMPALACE_PORT` in `.env` before starting Docker.
 
 5. Verify health.
 
@@ -53,11 +54,26 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
 - API key: `proxy`
 - Model: `auto`
 
-OpenAI-compatible clients can also request `auto-coding`, `auto-thinking`, `auto-tools`, `auto-text`, `auto-max`, or a specific namespaced model from an enabled provider family.
+OpenAI-compatible clients can also request `auto-coding`, `coding-sm`, `auto-thinking`, `auto-tools`, `auto-text`, `auto-max`, or a specific namespaced model from an enabled provider family.
+
+Claude Code uses Anthropic Messages endpoints instead of OpenAI chat completions. Point it at the proxy root URL:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:18900
+export ANTHROPIC_MODEL=auto-coding
+export ANTHROPIC_SMALL_FAST_MODEL=coding-sm
+claude
+```
+
+Or add the same values under `env` in `.claude/settings.local.json`.
 
 ## Operational Notes
 
 - Discovery is scoped to three provider families: Windsurf, Claude, and Codex.
+- Windsurf discovery uses the built-in model catalog unless `WINDSURF_MODELS`, `WINDSURF_MODELS_JSON`, or `WINDSURF_MODELS_URL` is configured.
+- Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like `WINDSURF_IDE_VERSION`, `WINDSURF_USER_AGENT`, and `WINDSURF_CONNECT_RETRIES` compatibility settings.
+- Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, and `LLM_SPEED_TARGET`; these are soft targets, not hard caps.
+- Context compaction uses an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` so compacted turns carry an AI-generated summary in the current request.
 - Use `docker compose --profile codex` when Codex is enabled.
 - Use `--profile memory` only when MemPalace is enabled with `MEMPALACE_ENABLED=true`.
 - Restart Docker services after changing `.env` credentials or enable flags.

@@ -152,7 +152,8 @@ function getEndpoints(env = process.env) {
       name: "Windsurf",
       family: "windsurf",
       protocol: "windsurf",
-      modelsUrl: null,
+      modelsUrl: env.WINDSURF_MODELS_URL || null,
+      models: windsurfCloud.parseConfiguredModels(env),
       chatUrl: "windsurf",
       headers: {},
       key_env: "WINDSURF_API_KEY",
@@ -171,6 +172,12 @@ function providerName(endpointName, upstreamModel) {
   return `${endpointName}-${shortName}`;
 }
 
+function providerKey(provider) {
+  if (!provider || typeof provider !== "object") return "";
+  if (provider.family && provider.model) return `${provider.family}|${provider.model}`;
+  return `name|${provider.name || ""}`;
+}
+
 function withDiscoveryName(endpointName, provider) {
   if (provider.name) return provider;
   return {
@@ -179,19 +186,62 @@ function withDiscoveryName(endpointName, provider) {
   };
 }
 
+function isWindsurfEndpoint(ep) {
+  return ep?.protocol === "windsurf" || ep?.family === "windsurf";
+}
+
+function hasWindsurfModelUids(models) {
+  return Array.isArray(models) && models.some((model) => (
+    model &&
+    typeof model === "object" &&
+    !Array.isArray(model) &&
+    (model.windsurf_model_uid || model.modelUid || model.source === "windsurf_app")
+  ));
+}
+
+function isProxyVirtualModelEntry(modelData) {
+  if (!modelData || typeof modelData !== "object" || Array.isArray(modelData)) return false;
+  const upstream = String(modelData.id || modelData.name || modelData.model || "").trim().toLowerCase();
+  if (!/^auto(?:-|$)/.test(upstream)) return false;
+
+  const owner = String(modelData.owned_by || modelData.ownedBy || "").trim().toLowerCase();
+  const proxyOwned = owner === "llm-proxy" ||
+    owner === "Project-llm-smart-proxy" ||
+    owner === "Project llm smart proxy" ||
+    owner.includes("llm smart proxy");
+
+  return modelData.is_group === true || modelData.provider_count !== undefined || proxyOwned;
+}
+
+function filterDiscoverableModelEntries(models) {
+  if (!Array.isArray(models)) return [];
+  return models.filter((model) => !isProxyVirtualModelEntry(model));
+}
+
 function providersFromEndpointModels(ep, models) {
-  if (ep.protocol === "windsurf" || ep.family === "windsurf") {
-    return windsurfCloud.buildWindsurfProviders().map((provider) => withDiscoveryName(ep.name || "Windsurf", provider));
+  const discoverableModels = filterDiscoverableModelEntries(models);
+
+  if (isWindsurfEndpoint(ep)) {
+    const configuredEndpointModels = filterDiscoverableModelEntries(ep.models);
+    const hasEndpointModels = Array.isArray(models) && models.length > 0 && (ep.modelsUrl || hasWindsurfModelUids(models));
+    if (hasEndpointModels && discoverableModels.length === 0) return [];
+
+    const configuredModels = configuredEndpointModels.length > 0
+      ? configuredEndpointModels
+      : hasEndpointModels
+        ? discoverableModels
+        : undefined;
+    return windsurfCloud.buildWindsurfProviders(configuredModels).map((provider) => withDiscoveryName(ep.name || "Windsurf", provider));
   }
 
-  return (models || []).filter((modelData) => {
+  return discoverableModels.filter((modelData) => {
     if (!modelData || typeof modelData !== "object" || Array.isArray(modelData)) return false;
     const upstream = modelData.id || modelData.name;
     return typeof upstream === "string" && upstream.trim().length > 0;
   }).map((modelData) => {
     const upstream = (modelData.id || modelData.name).trim();
     const modelId = `${ep.family}/${upstream}`;
-    const caps = detectCaps(modelId, modelData);
+    const caps = [...new Set([...detectCaps(modelId, modelData), ...providerConfig.inferCapabilities(modelId)])];
     const tc = caps.includes("thinking") || THINKING_PATTERNS.some((pattern) => pattern.test(modelId));
     return {
       name: providerName(ep.name, upstream),
@@ -201,7 +251,7 @@ function providersFromEndpointModels(ep, models) {
       key_env: ep.key_env,
       model: modelId,
       upstream_model: upstream,
-      context: modelData.context_length || modelData.max_tokens || 4096,
+      context: providerConfig.contextForModel(ep.family, upstream, modelData),
       tier: 2,
       tc,
       caps,
@@ -211,6 +261,35 @@ function providersFromEndpointModels(ep, models) {
       last_tested: new Date().toISOString(),
     };
   });
+}
+
+async function discoverEndpointModels(ep, options = {}) {
+  const env = options.env || process.env;
+  const fetchJSONFn = options.fetchJSONFn || fetchJSON;
+  const fetchWindsurfModelConfigsFn = options.fetchWindsurfModelConfigsFn || windsurfCloud.fetchWindsurfModelConfigs;
+
+  if (ep.modelsUrl) {
+    const resp = await fetchJSONFn(ep.modelsUrl, ep.headers);
+    if (resp.status >= 400 || !resp.data?.data) {
+      const error = new Error(`failed (HTTP ${resp.status})`);
+      error.status = resp.status;
+      throw error;
+    }
+    return { source: "models_url", models: resp.data.data };
+  }
+
+  if (Array.isArray(ep.models) && ep.models.length > 0) {
+    return { source: "configured", models: ep.models };
+  }
+
+  if (isWindsurfEndpoint(ep)) {
+    const keyEnv = providerConfig.resolveKeyEnv(ep, env);
+    const key = keyEnv ? env[keyEnv] : "";
+    const models = await fetchWindsurfModelConfigsFn({ ...ep, key, key_env: keyEnv });
+    if (Array.isArray(models) && models.length > 0) return { source: "windsurf_app", models };
+  }
+
+  return { source: "builtin", models: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,33 +490,57 @@ function isSupportedProvider(provider) {
 }
 
 function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
+  const previousStatus = new Map();
   const providerMap = new Map();
+  const refreshFields = ["context", "caps", "tc", "tier", "headers", "upstream_model"];
 
-  // Load existing supported providers first (preserves prior scoped scan cycles).
+  // Use existing providers only as status history; seed + current discovery are
+  // the provider list source of truth.
   for (const p of (existingConfig?.providers || [])) {
-    if (isSupportedProvider(p)) providerMap.set(p.name, p);
+    if (isSupportedProvider(p)) previousStatus.set(providerKey(p), p);
   }
 
   // Layer seed providers on top (source of truth for seed config)
   for (const sp of (seed.providers || [])) {
-    const existing = providerMap.get(sp.name);
-    if (existing) {
-      // Keep alive/last_tested from existing, update config from seed
-      providerMap.set(sp.name, { ...sp, seed: true, alive: existing.alive, last_tested: existing.last_tested });
-    } else {
-      providerMap.set(sp.name, { ...sp, seed: true, alive: true });
-    }
+    if (!isSupportedProvider(sp)) continue;
+    const key = providerKey(sp);
+    const existing = previousStatus.get(key);
+    providerMap.set(key, {
+      ...sp,
+      seed: true,
+      alive: existing?.alive ?? true,
+      last_tested: existing?.last_tested ?? sp.last_tested ?? null,
+      reason: existing?.reason ?? sp.reason,
+    });
   }
 
   // Merge current scan results (update alive status, add new discoveries)
   for (const dp of discoveredProviders) {
-    if (providerMap.has(dp.name)) {
-      const existing = providerMap.get(dp.name);
-      existing.alive = dp.alive;
-      existing.last_tested = dp.last_tested;
-      providerMap.set(dp.name, existing);
+    if (!isSupportedProvider(dp)) continue;
+    const key = providerKey(dp);
+    const previous = previousStatus.get(key);
+    if (providerMap.has(key)) {
+      const existing = providerMap.get(key);
+      const next = {
+        ...existing,
+      };
+      for (const field of refreshFields) {
+        if (dp[field] !== undefined && dp[field] !== null) next[field] = dp[field];
+      }
+      if (!dp.metadata_only) {
+        next.alive = dp.alive ?? existing.alive;
+        next.last_tested = dp.last_tested ?? existing.last_tested ?? null;
+        next.reason = dp.reason ?? existing.reason;
+      }
+      providerMap.set(key, next);
     } else if (isSupportedProvider(dp)) {
-      providerMap.set(dp.name, { ...dp, seed: false });
+      providerMap.set(key, {
+        ...dp,
+        seed: false,
+        alive: dp.alive ?? previous?.alive ?? true,
+        last_tested: dp.last_tested ?? previous?.last_tested ?? null,
+        reason: dp.reason ?? previous?.reason,
+      });
     }
   }
 
@@ -509,7 +612,7 @@ async function testSeedProviders(seed) {
   const existingProviders = new Map();
   if (existingConfig?.providers) {
     for (const p of existingConfig.providers) {
-      if (p.last_tested) existingProviders.set(p.name, p);
+      if (p.last_tested) existingProviders.set(providerKey(p), p);
     }
   }
 
@@ -518,7 +621,7 @@ async function testSeedProviders(seed) {
     const key = (keyEnv ? process.env[keyEnv] : null) || sp.default_key || "";
     if (!key && !sp.no_auth) {
       results.push({
-        name: sp.name,
+        ...sp,
         alive: false,
         last_tested: new Date().toISOString(),
         reason: "no_key",
@@ -527,10 +630,11 @@ async function testSeedProviders(seed) {
     }
 
     if (!shouldProbeSeedProvider(sp)) {
+      const existing = existingProviders.get(providerKey(sp));
       results.push({
-        name: sp.name,
+        ...sp,
         alive: true,
-        last_tested: existingProviders.get(sp.name)?.last_tested || null,
+        last_tested: existing?.last_tested || null,
         reason: "adapter_probe_skipped",
       });
       log(`  SKIP:  ${sp.name} (adapter probe not implemented)`);
@@ -538,16 +642,16 @@ async function testSeedProviders(seed) {
     }
 
     // Skip if recently tested — alive <3,5d, dead <6h
-    const existing = existingProviders.get(sp.name);
+    const existing = existingProviders.get(providerKey(sp));
     if (existing?.last_tested) {
       const age = Date.now() - new Date(existing.last_tested).getTime();
       if (existing.alive && age < RETEST_OK_MS) {
-        results.push({ name: sp.name, alive: true, last_tested: existing.last_tested });
+        results.push({ ...sp, alive: true, last_tested: existing.last_tested });
         log(`  SKIP:  ${sp.name} (alive, tested ${Math.round(age / 3600000)}h ago)`);
         continue;
       }
       if (!existing.alive && age < RETEST_FAIL_MS) {
-        results.push({ name: sp.name, alive: false, last_tested: existing.last_tested });
+        results.push({ ...sp, alive: false, last_tested: existing.last_tested });
         log(`  SKIP:  ${sp.name} (dead, tested ${Math.round(age / 3600000)}h ago)`);
         continue;
       }
@@ -556,7 +660,7 @@ async function testSeedProviders(seed) {
     const chatOk = await probeSeedProvider({ ...sp, key_env: keyEnv }, key);
 
     results.push({
-      name: sp.name,
+      ...sp,
       alive: chatOk,
       last_tested: new Date().toISOString(),
     });
@@ -579,8 +683,8 @@ async function runDiscoveryScan() {
   const seed = loadSeed();
   const endpoints = getEndpoints();
   const discovery = loadDiscovery();
-  const seedNames = new Set((seed.providers || []).map((p) => p.name));
-  const knownModels = new Set(discovery.models.map((m) => `${m.provider}|${m.name || ""}|${m.model}`));
+  const seedKeys = new Set((seed.providers || []).map(providerKey));
+  const knownModels = new Set(discovery.models.map((m) => `${m.provider}|${m.model}`));
   let newCount = 0;
   let prevNewCount = 0;
 
@@ -600,39 +704,43 @@ async function runDiscoveryScan() {
   for (const ep of endpoints) {
     log(`Scanning ${ep.name}...`);
     try {
-      let models = [];
-      if (ep.modelsUrl) {
-        const resp = await fetchJSON(ep.modelsUrl, ep.headers);
-        if (resp.status >= 400 || !resp.data?.data) {
-          log(`  ${ep.name}: failed (HTTP ${resp.status})`);
-          continue;
-        }
-        models = resp.data.data;
+      const discoveryResult = await discoverEndpointModels(ep);
+      const models = discoveryResult.models;
+      if (discoveryResult.source === "models_url") {
         log(`  ${ep.name}: ${models.length} models found`);
+      } else if (discoveryResult.source === "configured") {
+        log(`  ${ep.name}: ${models.length} configured models`);
+      } else if (discoveryResult.source === "windsurf_app") {
+        log(`  ${ep.name}: ${models.length} app model configs found`);
       } else {
         log(`  ${ep.name}: using built-in provider definitions`);
       }
 
       for (const provider of providersFromEndpointModels(ep, models)) {
-        if (!provider.name || seedNames.has(provider.name)) continue;
+        if (!provider.name) continue;
 
-        const uniqueKey = `${ep.name}|${provider.name}|${provider.model}`;
-        if (knownModels.has(uniqueKey)) continue;
+        if (seedKeys.has(providerKey(provider))) {
+          discoveredProviders.push({ ...provider, metadata_only: true });
+          continue;
+        }
 
-        discovery.models.push({
-          provider: ep.name,
-          name: provider.name,
-          model: provider.model,
-          upstream_model: provider.upstream_model,
-          context_length: provider.context,
-          capabilities: provider.caps,
-          discovered_at: new Date().toISOString(),
-          chat_tested: false,
-        });
-        knownModels.add(uniqueKey);
+        const uniqueKey = `${ep.name}|${provider.model}`;
         discoveredProviders.push(provider);
-        newCount++;
-        log(`  NEW: ${provider.name} (${provider.model}) caps=[${provider.caps.join(",")}]`);
+        if (!knownModels.has(uniqueKey)) {
+          discovery.models.push({
+            provider: ep.name,
+            name: provider.name,
+            model: provider.model,
+            upstream_model: provider.upstream_model,
+            context_length: provider.context,
+            capabilities: provider.caps,
+            discovered_at: new Date().toISOString(),
+            chat_tested: false,
+          });
+          knownModels.add(uniqueKey);
+          newCount++;
+          log(`  NEW: ${provider.name} (${provider.model}) caps=[${provider.caps.join(",")}]`);
+        }
       }
     } catch (err) {
       log(`  ${ep.name}: error - ${err.message}`);
@@ -728,6 +836,7 @@ async function main() {
 
 module.exports = {
   getEndpoints,
+  discoverEndpointModels,
   providersFromEndpointModels,
   shouldProbeSeedProvider,
   probeSeedProvider,

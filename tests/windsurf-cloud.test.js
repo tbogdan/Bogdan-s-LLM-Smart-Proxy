@@ -21,25 +21,173 @@ test("production transport constants point at Codeium Connect endpoint", () => {
   assert.equal(cloud.WINDSURF_DEFAULT_URL, "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage");
 });
 
+function clientModelConfig({ label, uid, disabled = false, supportsImages = false, recommended = false, maxTokens = 0 }) {
+  const fields = [cloud.encodeString(1, label), cloud.encodeString(22, uid)];
+  if (disabled) fields.push(cloud.encodeVarintField(4, 1));
+  if (supportsImages) fields.push(cloud.encodeVarintField(5, 1));
+  if (recommended) fields.push(cloud.encodeVarintField(11, 1));
+  if (maxTokens) fields.push(cloud.encodeVarintField(18, maxTokens));
+  return Buffer.concat(fields);
+}
+
+function cascadeModelConfigData(configs) {
+  return Buffer.concat(configs.map((config) => cloud.encodeMessage(1, config)));
+}
+
 test("resolveModel maps fallback Windsurf model ids and aliases", () => {
   assert.equal(cloud.resolveModel("windsurf/swe-1.6-fast").modelUid, "swe-1-6-fast");
   assert.equal(cloud.resolveModel("swe-1.6").modelUid, "swe-1-6");
   assert.equal(cloud.resolveModel("swe-1.5-fast").modelUid, "swe-1-5");
   assert.equal(cloud.resolveModel("adaptive").modelUid, "adaptive");
   assert.equal(cloud.resolveModel("swe-1-6-fast").id, "swe-1.6-fast");
+  assert.equal(cloud.resolveModel("windsurf/claude-opus-4.7").modelUid, "claude-opus-4-7");
+  assert.equal(cloud.resolveModel("windsurf/gpt-5.5").modelUid, "gpt-5-5");
+  assert.equal(cloud.resolveModel("windsurf/custom-model.x").id, "custom-model.x");
+  assert.equal(cloud.resolveModel("windsurf/custom-model.x").modelUid, "custom-model-x");
 });
 
 test("buildWindsurfProviders emits namespaced windsurf provider contracts", () => {
   const providers = cloud.buildWindsurfProviders();
   const fast = providers.find((provider) => provider.model === "windsurf/swe-1.6-fast");
 
-  assert.equal(providers.length >= 4, true);
+  assert.equal(providers.length >= 17, true);
   assert.equal(fast.family, "windsurf");
   assert.equal(fast.protocol, "windsurf");
   assert.equal(fast.key_env, "WINDSURF_API_KEY");
   assert.equal(fast.windsurf_model_uid, "swe-1-6-fast");
   assert.equal(fast.context, 200000);
   assert.equal(fast.caps.includes("tools"), true);
+
+  const opus = providers.find((provider) => provider.model === "windsurf/claude-opus-4.7");
+  assert.equal(opus.windsurf_model_uid, "claude-opus-4-7");
+  assert.equal(opus.caps.includes("max"), true);
+});
+
+test("parseWindsurfModelConfigs extracts app Cascade configs from UserStatus envelopes", () => {
+  const body = cloud.connectEnvelope(
+    cloud.encodeMessage(
+      1,
+      cloud.encodeMessage(
+        33,
+        cascadeModelConfigData([
+          clientModelConfig({ label: "GPT-5.5", uid: "gpt-5-5", supportsImages: true, recommended: true, maxTokens: 1000000 }),
+          clientModelConfig({ label: "Old hidden model", uid: "old-hidden-model", disabled: true }),
+        ]),
+      ),
+    ),
+  );
+
+  const models = cloud.parseWindsurfModelConfigs(body);
+
+  assert.equal(models.length, 1);
+  assert.equal(models[0].id, "windsurf/gpt-5.5");
+  assert.equal(models[0].upstream, "gpt-5.5");
+  assert.equal(models[0].windsurf_model_uid, "gpt-5-5");
+  assert.equal(models[0].context, 1000000);
+  assert.equal(models[0].caps.includes("images"), true);
+});
+
+test("parseWindsurfModelConfigs normalizes unknown app model configs", () => {
+  const body = cloud.connectEnvelope(
+    cascadeModelConfigData([
+      clientModelConfig({ label: "Omega Code 1", uid: "omega-code-1", supportsImages: true, maxTokens: 262144 }),
+    ]),
+  );
+
+  const models = cloud.parseWindsurfModelConfigs(body);
+
+  assert.deepEqual(models.map((model) => model.id), ["windsurf/omega-code-1"]);
+  assert.equal(models[0].name, "Windsurf-OmegaCode1");
+  assert.equal(models[0].upstream, "omega-code-1");
+  assert.equal(models[0].windsurf_model_uid, "omega-code-1");
+  assert.equal(models[0].context, 262144);
+});
+
+test("parseWindsurfModelConfigs skips inaccessible Windsurf internal fast model", () => {
+  const body = cloud.connectEnvelope(
+    cascadeModelConfigData([
+      clientModelConfig({ label: "Windsurf Fast", uid: "MODEL_CHAT_11121", maxTokens: 200000 }),
+      clientModelConfig({ label: "Omega Code 1", uid: "omega-code-1", maxTokens: 262144 }),
+    ]),
+  );
+
+  const models = cloud.parseWindsurfModelConfigs(body);
+
+  assert.deepEqual(models.map((model) => model.windsurf_model_uid), ["omega-code-1"]);
+});
+
+test("parseWindsurfModelConfigs rejects implausible nested model uid false positives", () => {
+  const body = cloud.connectEnvelope(
+    Buffer.concat([
+      cloud.encodeString(1, "Enterprise"),
+      cloud.encodeString(22, "Recommended GPT-5.5 Low Thinking Claude Sonnet"),
+    ]),
+  );
+
+  assert.deepEqual(cloud.parseWindsurfModelConfigs(body), []);
+});
+
+test("fetchWindsurfModelConfigs calls app config endpoints with raw proto and deduplicates model uids", async () => {
+  const calls = [];
+  const userStatusBody = cloud.connectEnvelope(
+    cloud.encodeMessage(
+      1,
+      cloud.encodeMessage(
+        33,
+        cascadeModelConfigData([
+          clientModelConfig({ label: "GPT-5.5", uid: "gpt-5-5", recommended: true }),
+        ]),
+      ),
+    ),
+  );
+  const cascadeBody = cloud.connectEnvelope(
+    cascadeModelConfigData([
+      clientModelConfig({ label: "GPT-5.5 duplicate", uid: "gpt-5-5" }),
+      clientModelConfig({ label: "Omega Code 1", uid: "omega-code-1", supportsImages: true }),
+    ]),
+  );
+
+  const models = await cloud.fetchWindsurfModelConfigs(
+    { key: "ws-key" },
+    {
+      postModelConfigFn: async (provider, payload) => {
+        calls.push({ path: provider.path, payload });
+        if (provider.path === cloud.GET_USER_STATUS_PATH) return { status: 200, body: userStatusBody };
+        if (provider.path === cloud.GET_CASCADE_MODEL_CONFIGS_PATH) return { status: 200, body: cascadeBody };
+        return { status: 503, body: Buffer.alloc(0) };
+      },
+    },
+  );
+
+  const metadata = cloud.parseFields(cloud.parseFields(calls[0].payload).find((field) => field.fieldNum === 1).value);
+
+  assert.deepEqual(calls.map((call) => call.path), cloud.WINDSURF_MODEL_CONFIG_PATHS);
+  assert.equal(metadata.find((field) => field.fieldNum === 3).value.toString("utf8"), "ws-key");
+  assert.deepEqual(models.map((model) => model.windsurf_model_uid), ["gpt-5-5", "omega-code-1"]);
+});
+
+test("buildWindsurfProviders accepts configured model strings and objects", () => {
+  const providers = cloud.buildWindsurfProviders([
+    "windsurf/custom-model.x",
+    { id: "windsurf/explicit", upstream: "explicit-upstream", windsurf_model_uid: "explicit_uid", context: 500000, tier: 1 },
+  ]);
+
+  assert.deepEqual(providers.map((provider) => provider.model), ["windsurf/custom-model.x", "windsurf/explicit"]);
+  assert.equal(providers[0].windsurf_model_uid, "custom-model-x");
+  assert.equal(providers[1].upstream_model, "explicit-upstream");
+  assert.equal(providers[1].windsurf_model_uid, "explicit_uid");
+  assert.equal(providers[1].context, 500000);
+});
+
+test("parseConfiguredModels reads comma and JSON Windsurf model overrides", () => {
+  assert.deepEqual(
+    cloud.parseConfiguredModels({ WINDSURF_MODELS: "windsurf/foo, bar=baz_uid" }).map((model) => [model.id, model.windsurf_model_uid]),
+    [["windsurf/foo", undefined], ["windsurf/bar", "baz_uid"]],
+  );
+  assert.deepEqual(
+    cloud.parseConfiguredModels({ WINDSURF_MODELS_JSON: '[{"id":"windsurf/json","windsurf_model_uid":"json_uid"}]' }),
+    [{ id: "windsurf/json", windsurf_model_uid: "json_uid" }],
+  );
 });
 
 test("protobuf helpers encode fields, envelopes, and parse fields", () => {
@@ -59,7 +207,7 @@ test("protobuf helpers encode fields, envelopes, and parse fields", () => {
   assert.equal(fields[1].value, 5n);
 });
 
-test("buildMetadata embeds API key and buildGetChatMessageRequest embeds prompts and model uid", () => {
+test("buildMetadata embeds API key and buildGetChatMessageRequest embeds prompts, tools, and model uid", () => {
   const metadata = cloud.buildMetadata("api-key", "1.2.3", "request-id");
   const metadataFields = cloud.parseFields(metadata);
 
@@ -73,17 +221,81 @@ test("buildMetadata embeds API key and buildGetChatMessageRequest embeds prompts
         { role: "system", content: "System" },
         { role: "user", content: [{ type: "text", text: "Hello" }] },
       ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "Bash",
+            description: "Run shell",
+            parameters: { type: "object", required: ["command"], properties: { command: { type: "string" } } },
+          },
+        },
+      ],
+      parallel_tool_calls: false,
     },
     "api-key",
     "1.2.3",
     "request-id",
   );
   const fields = cloud.parseFields(body);
+  const topLevelPrompt = fields.find((field) => field.fieldNum === 2).value.toString("utf8");
   const modelUid = fields.find((field) => field.fieldNum === 21).value.toString("utf8");
   const promptFields = fields.filter((field) => field.fieldNum === 3).flatMap((field) => cloud.parseFields(field.value));
+  const toolFields = fields.filter((field) => field.fieldNum === 10).flatMap((field) => cloud.parseFields(field.value));
 
+  assert.equal(topLevelPrompt, "Hello");
   assert.equal(modelUid, "swe-1-5");
   assert.equal(promptFields.filter((field) => field.fieldNum === 3).map((field) => field.value.toString("utf8")).join("\n"), "System\nHello");
+  assert.equal(toolFields.find((field) => field.fieldNum === 1).value.toString("utf8"), "Bash");
+  assert.match(toolFields.find((field) => field.fieldNum === 3).value.toString("utf8"), /"command"/);
+  assert.equal(toolFields.find((field) => field.fieldNum === 12).value, 1n);
+  assert.equal(fields.find((field) => field.fieldNum === 11).value, 1n);
+});
+
+test("toolDefinitionFromOpenAI strips descriptions for Windsurf-reserved Claude Code tool names", () => {
+  const readTool = cloud.toolDefinitionFromOpenAI({
+    type: "function",
+    function: {
+      name: "Read",
+      description: "Read local files",
+      parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+    },
+  });
+  const bashTool = cloud.toolDefinitionFromOpenAI({
+    type: "function",
+    function: {
+      name: "Bash",
+      description: "Run shell commands",
+      parameters: { type: "object", required: ["command"], properties: { command: { type: "string" } } },
+    },
+  });
+  const readFields = cloud.parseFields(readTool);
+  const bashFields = cloud.parseFields(bashTool);
+
+  assert.equal(readFields.find((field) => field.fieldNum === 1).value.toString("utf8"), "Read");
+  assert.equal(readFields.some((field) => field.fieldNum === 2), false);
+  assert.equal(bashFields.find((field) => field.fieldNum === 2).value.toString("utf8"), "Run shell commands");
+});
+
+test("buildChatPrompt encodes assistant tool calls as native Windsurf tool_call fields", () => {
+  const body = cloud.buildChatPrompt({
+    role: "assistant",
+    content: "",
+    tool_calls: [
+      {
+        id: "call_1",
+        type: "function",
+        function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" },
+      },
+    ],
+  });
+  const fields = cloud.parseFields(body);
+  const toolCall = cloud.parseFields(fields.find((field) => field.fieldNum === 6).value);
+
+  assert.equal(fields.find((field) => field.fieldNum === 2).value, 2n);
+  assert.equal(toolCall.find((field) => field.fieldNum === 1).value.toString("utf8"), "call_1");
+  assert.equal(toolCall.find((field) => field.fieldNum === 2).value.toString("utf8"), "Read");
+  assert.equal(toolCall.find((field) => field.fieldNum === 3).value.toString("utf8"), "{\"file_path\":\"README.md\"}");
 });
 
 test("toWindsurfRequest preserves OpenAI request fields and selects upstream model", () => {
@@ -92,6 +304,7 @@ test("toWindsurfRequest preserves OpenAI request fields and selects upstream mod
     model: "windsurf/swe-1.6-fast",
     messages: [{ role: "user", content: "Hello" }],
     tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+    parallel_tool_calls: false,
     temperature: 0.25,
     stream: true,
   };
@@ -104,6 +317,24 @@ test("toWindsurfRequest preserves OpenAI request fields and selects upstream mod
   assert.equal(output.stream, true);
   assert.deepEqual(output.messages, input.messages);
   assert.deepEqual(output.tools, input.tools);
+  assert.equal(output.parallel_tool_calls, false);
+});
+
+test("toWindsurfRequest folds system prompts into user text for Windsurf compatibility", () => {
+  const output = cloud.toWindsurfRequest(
+    { upstream_model: "swe-1.6-fast", windsurf_model_uid: "swe-1-6-fast" },
+    {
+      model: "windsurf/swe-1.6-fast",
+      messages: [
+        { role: "system", content: "System rules" },
+        { role: "user", content: [{ type: "text", text: "Hello" }] },
+      ],
+    },
+  );
+
+  assert.deepEqual(output.messages.map((message) => message.role), ["user"]);
+  assert.match(output.messages[0].content, /System rules/);
+  assert.match(output.messages[0].content, /Hello/);
 });
 
 test("toWindsurfRequest falls back to provider model and then input model", () => {
@@ -114,12 +345,13 @@ test("toWindsurfRequest falls back to provider model and then input model", () =
   assert.equal(cloud.toWindsurfRequest({}, { model: "input-model", messages: [{ role: "user", content: "Hello" }] }).model, "input-model");
 });
 
-test("buildHeaders includes Connect proto headers without bearer auth", () => {
+test("buildHeaders includes Connect proto headers, app-like UA, and no bearer auth", () => {
   const headers = cloud.buildHeaders({ key: "host-token" });
 
   assert.equal(headers["content-type"], "application/connect+proto");
   assert.equal(headers["connect-protocol-version"], "1");
   assert.equal(headers.accept, "application/connect+proto");
+  assert.equal(headers["user-agent"], "connect-es/1.5.0");
   assert.equal(headers.Authorization, undefined);
 });
 
@@ -303,6 +535,46 @@ test("toOpenAIResponse parses Connect envelopes by concatenating field 3 text an
   const output = cloud.toOpenAIResponse("windsurf/swe-1.6", body);
 
   assert.equal(output.choices[0].message.content, "Hello there");
+});
+
+test("toOpenAIResponse parses Windsurf Connect tool call deltas", () => {
+  const toolCall = cloud.buildChatToolCall({
+    id: "call_1",
+    function: { name: "Bash", arguments: "{\"command\":\"pwd\"}" },
+  });
+  const body = Buffer.concat([
+    cloud.connectEnvelope(Buffer.concat([
+      cloud.encodeString(3, "Running command"),
+      cloud.encodeMessage(6, toolCall),
+    ])),
+    Buffer.from([2, 0, 0, 0, 0]),
+  ]);
+  const output = cloud.toOpenAIResponse("windsurf/swe-1.6", body);
+
+  assert.equal(output.choices[0].finish_reason, "tool_calls");
+  assert.equal(output.choices[0].message.content, "Running command");
+  assert.deepEqual(output.choices[0].message.tool_calls, [
+    { id: "call_1", type: "function", function: { name: "Bash", arguments: "{\"command\":\"pwd\"}" } },
+  ]);
+});
+
+test("toOpenAIResponse merges Windsurf tool call argument fragments", () => {
+  const body = Buffer.concat([
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(2, "Bash"),
+    ]))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, cloud.encodeString(3, "{\"command\":\""))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, cloud.encodeString(3, "pwd"))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, cloud.encodeString(3, "\"}"))),
+    Buffer.from([2, 0, 0, 0, 0]),
+  ]);
+  const output = cloud.toOpenAIResponse("windsurf/swe-1.6", body);
+
+  assert.equal(output.choices[0].finish_reason, "tool_calls");
+  assert.deepEqual(output.choices[0].message.tool_calls, [
+    { id: "call_1", type: "function", function: { name: "Bash", arguments: "{\"command\":\"pwd\"}" } },
+  ]);
 });
 
 test("toOpenAIResponse treats trailer bit flags as error metadata", () => {

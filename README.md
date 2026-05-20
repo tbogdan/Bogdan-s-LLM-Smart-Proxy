@@ -1,14 +1,14 @@
 # Project LLM Smart Proxy
 
-Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exactly three multi-model provider families: Windsurf, Claude, and Codex. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto` and `auto-coding` to the best available provider.
+Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exactly three multi-model provider families: Windsurf, Claude, and Codex. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto`, `auto-coding`, and `coding-sm` to the best available provider.
 
 ## Supported Providers
 
 | Provider family | Host authentication | Runtime adapter | Models |
 | --- | --- | --- | --- |
-| Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | `windsurf/swe-1.6-fast`, `windsurf/swe-1.6`, `windsurf/swe-1.5-fast` |
+| Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | SWE, GPT, Claude, Gemini, GLM, Minimax, and Grok models from the local catalog or overrides |
 | Claude | `claude auth login --console`, then `node claude-auth.js --env-path .env` to extract `ANTHROPIC_API_KEY` | Anthropic Messages adapter | `claude/...` from discovery/seed |
-| Codex | `npx @openai/codex login`; setup copies `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2` |
+| Codex | `npx @openai/codex login`; setup copies `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2`, `codex/codex-auto-review` |
 
 ## Quick Start
 
@@ -29,6 +29,10 @@ cp .env.example .env
 Edit `.env` and enable the provider families you want:
 
 ```dotenv
+COMPOSE_PROJECT_NAME=llm-proxy
+LLM_PROXY_PORT=18900
+CODEX_PROXY_PORT=10531
+MEMPALACE_PORT=8891
 ENABLE_WINDSURF=true
 ENABLE_CLAUDE=true
 ENABLE_CODEX=true
@@ -59,6 +63,8 @@ Without Codex, the base services are enough:
 docker compose up -d --build
 ```
 
+To run this proxy beside another checkout on the same Docker host, set a different `COMPOSE_PROJECT_NAME` and host ports in `.env`. Container-internal ports stay unchanged.
+
 ## Endpoint
 
 - Base URL: `http://localhost:18900/v1`
@@ -66,6 +72,29 @@ docker compose up -d --build
 - Default model: `auto`
 
 Use this endpoint from OpenAI-compatible SDKs, IDEs, and coding agents.
+
+For Claude Code as a client, use the Anthropic-compatible bridge on the same service:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:18900
+export ANTHROPIC_MODEL=auto-coding
+export ANTHROPIC_SMALL_FAST_MODEL=coding-sm
+claude
+```
+
+Project-local Claude Code config can be placed in `.claude/settings.local.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:18900",
+    "ANTHROPIC_MODEL": "auto-coding",
+    "ANTHROPIC_SMALL_FAST_MODEL": "coding-sm"
+  }
+}
+```
+
+The Claude Code bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
 
 ## Test
 
@@ -81,6 +110,10 @@ Health and model checks:
 ```bash
 curl http://localhost:18900/health
 curl http://localhost:18900/v1/models
+curl http://localhost:18900/v1/messages/count_tokens \
+  -H "x-api-key: proxy" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto-coding","messages":[{"role":"user","content":"ping"}]}'
 ```
 
 ## Discovery
@@ -89,18 +122,56 @@ The discovery daemon scans only the Windsurf, Claude, and Codex provider familie
 
 Discovery is intentionally scoped to the three supported families so `/v1/models`, smart routing, and Docker setup stay aligned.
 
+Windsurf does not expose a stable public model list API, so the proxy ships a broader local catalog and supports explicit overrides:
+
+```dotenv
+WINDSURF_MODELS=windsurf/custom-model, explicit-model=explicit_model_uid
+WINDSURF_MODELS_JSON=[{"id":"windsurf/custom","windsurf_model_uid":"custom_uid","context":200000}]
+WINDSURF_MODELS_URL=
+WINDSURF_IDE_VERSION=2.3.9
+WINDSURF_USER_AGENT=connect-es/1.5.0
+WINDSURF_CONNECT_RETRIES=1
+```
+
+When overrides are present, discovery uses them instead of the built-in Windsurf catalog.
+The compatibility fields mirror the installed Windsurf app transport defaults and can be overridden after an app update.
+
 ## Smart Groups
 
 | Group | Purpose |
 | --- | --- |
 | `auto` | General smart routing across enabled providers |
 | `auto-coding` | Coding, editing, and agentic development tasks |
+| `coding-sm` | Small/fast coding and tool-capable background tasks, suitable for Claude Code small fast model routing |
 | `auto-thinking` | Reasoning-heavy tasks |
 | `auto-tools` | Requests that use tool calls |
 | `auto-text` | General text generation and rewriting |
 | `auto-max` | Highest-capability or largest-context routing |
 
 Specific provider model IDs such as `windsurf/swe-1.6-fast`, `claude/...`, and `codex/gpt-5.5` can also be requested directly.
+
+## Routing Policy
+
+Smart routing uses elastic optimization, not hard caps. The proxy classifies each provider into five cost groups, five speed groups, and a thinking-effort level. It also injects a private first-line task assessment contract:
+
+```text
+LLM_PROXY_TASK_DIFFICULTY level=<1-5> effort=<none|minimal|low|medium|high|xhigh> speed=<1-5> reason=<slug>
+```
+
+The proxy strips that marker before returning the response. If the selected model says the task needs a materially different level, the proxy reroutes inside the same request.
+
+```dotenv
+LLM_COST_TARGET=3
+LLM_THINKING_TARGET=medium
+LLM_SPEED_TARGET=4
+LLM_ROUTING_POLICY=balanced
+LLM_PROXY_AI_SUMMARY_MODEL=auto-text
+LLM_PROXY_AI_SUMMARY_TIMEOUT_MS=12000
+LLM_PROXY_AI_SUMMARY_MAX_TOKENS=500
+```
+
+The targets are averages/preferences. Simple prompts are steered toward cheaper/faster models; complex agentic work can exceed the configured cost target when capability is more important.
+When context compaction removes old turns, the proxy also makes an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` and embeds the AI summary into the compacted context for the current request.
 
 ## Docker Profiles
 
@@ -117,6 +188,15 @@ docker compose --profile memory up -d --build
 docker compose --profile codex --profile memory up -d --build
 ```
 
+Port variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COMPOSE_PROJECT_NAME` | `llm-proxy` | Prefix for Docker Compose container names |
+| `LLM_PROXY_PORT` | `18900` | Host port for the OpenAI/Anthropic proxy |
+| `CODEX_PROXY_PORT` | `10531` | Host port for the Codex proxy profile |
+| `MEMPALACE_PORT` | `8891` | Host port for the MemPalace profile |
+
 ## Troubleshooting
 
 - Missing `WINDSURF_API_KEY`: run `node windsurf-auth.js --env-file .env`, then restart the proxy.
@@ -129,4 +209,3 @@ docker compose --profile codex --profile memory up -d --build
 - [Claude Platform API authentication](https://platform.claude.com/docs/en/api/authentication/overview)
 - [Claude Code authentication docs](https://code.claude.com/docs/en/authentication)
 - [Claude Messages API docs](https://platform.claude.com/docs/en/api/messages)
-- [Upstream GitHub repo](https://github.com/tbogdan/Bogdan-s-LLM-Smart-Proxy)

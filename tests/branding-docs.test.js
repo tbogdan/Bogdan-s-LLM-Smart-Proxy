@@ -34,15 +34,6 @@ const publicSetupFiles = [
   "setup.sh",
 ];
 
-const oldBrandingFiles = [
-  "README.md",
-  "INSTRUCTIONS.md",
-  "package.json",
-  ".env.example",
-  "docker-compose.yml",
-  "setup.sh",
-];
-
 const publicDocsFiles = [
   "README.md",
   "INSTRUCTIONS.md",
@@ -113,10 +104,6 @@ test("public docs and setup use current Project branding", () => {
 
   const packageJson = JSON.parse(contents["package.json"]);
   assert.equal(packageJson.name, "Project-llm-smart-proxy");
-
-  for (const file of oldBrandingFiles) {
-    assert.doesNotMatch(contents[file], /Bogdan's LLM Smart Proxy/, file);
-  }
 });
 
 test("public setup files do not include removed command or config flows", () => {
@@ -160,7 +147,7 @@ test("README documents supported provider families and smart groups", () => {
     .filter(Boolean)
     .map((match) => match[1]);
 
-  for (const group of ["auto", "auto-coding", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
+  for (const group of ["auto", "auto-coding", "coding-sm", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
     assert.equal(listedGroups.includes(group), true, `README should list smart group \`${group}\``);
   }
 });

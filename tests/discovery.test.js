@@ -19,6 +19,7 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
     ANTHROPIC_API_KEY: "platform-key",
     ENABLE_CODEX: "true",
     CODEX_API_KEY: "codex-key",
+    WINDSURF_MODELS: "windsurf/custom-model, explicit=explicit_uid",
     GROQ_API_KEY: "old-groq",
     OPENROUTER_API_KEY: "old-openrouter",
     MISTRAL_API_KEY: "old-mistral",
@@ -31,6 +32,8 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
   assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
   assert.equal(endpoints[0].headers["x-api-key"], "platform-key");
   assert.equal(endpoints[0].headers.Authorization, undefined);
+  assert.deepEqual(endpoints[2].models.map((model) => model.id), ["windsurf/custom-model", "windsurf/explicit"]);
+  assert.equal(endpoints[2].models[1].windsurf_model_uid, "explicit_uid");
 });
 
 test("getEndpoints falls back to Claude OAuth token when Console API key is absent", () => {
@@ -63,7 +66,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
   assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "windsurf"]);
-  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-coding", "auto-max", "auto-text", "auto-thinking", "auto-tools"]);
+  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-coding", "auto-max", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
 
   for (const provider of seed.providers) {
     assert.match(provider.model, /^(windsurf|claude|codex)\//);
@@ -77,13 +80,13 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
     ANTHROPIC_API_KEY: "anthropic-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
-    { id: "claude-sonnet-4-5", context_length: 200000 },
-    { id: "claude-haiku-4-5", context_length: 200000 },
+    { id: "claude-sonnet-4-6", max_input_tokens: 1000000, max_tokens: 128000 },
+    { id: "claude-haiku-4-5", max_input_tokens: 200000, max_tokens: 64000 },
   ]);
 
-  assert.deepEqual(providers.map((provider) => provider.model), ["claude/claude-sonnet-4-5", "claude/claude-haiku-4-5"]);
-  assert.deepEqual(providers.map((provider) => provider.upstream_model), ["claude-sonnet-4-5", "claude-haiku-4-5"]);
-  assert.equal(providers[0].name, "Claude-claudesonnet45");
+  assert.deepEqual(providers.map((provider) => provider.model), ["claude/claude-sonnet-4-6", "claude/claude-haiku-4-5"]);
+  assert.deepEqual(providers.map((provider) => provider.upstream_model), ["claude-sonnet-4-6", "claude-haiku-4-5"]);
+  assert.equal(providers[0].name, "Claude-claudesonnet46");
   assert.equal(providers[0].family, "claude");
   assert.equal(providers[0].protocol, "anthropic");
   assert.equal(providers[0].key_env, "ANTHROPIC_API_KEY");
@@ -91,6 +94,8 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
   assert.equal(providers[0].alive, true);
   assert.equal(providers[0].seed, false);
   assert.equal(typeof providers[0].last_tested, "string");
+  assert.equal(providers[0].context, 1000000);
+  assert.equal(providers[1].context, 200000);
 });
 
 test("providersFromEndpointModels maps Codex models to namespaced provider entries", () => {
@@ -109,6 +114,52 @@ test("providersFromEndpointModels maps Codex models to namespaced provider entri
   assert.equal(providers[0].family, "codex");
   assert.equal(providers[0].protocol, "openai");
   assert.equal(providers[0].url, "http://codex-proxy:10531/v1/chat/completions");
+  assert.equal(providers[0].context, 200000);
+  assert.equal(providers[1].context, 200000);
+});
+
+test("mergeProvidersConfig refreshes seed provider metadata from model endpoints without changing probe status", () => {
+  const seed = {
+    groups: {},
+    providers: [
+      {
+        name: "Claude-Sonnet45",
+        family: "claude",
+        protocol: "anthropic",
+        model: "claude/claude-sonnet-4-5-20250929",
+        upstream_model: "claude-sonnet-4-5-20250929",
+        context: 200000,
+        caps: ["text"],
+      },
+    ],
+  };
+  const existingConfig = {
+    providers: [
+      {
+        ...seed.providers[0],
+        alive: false,
+        last_tested: "2026-05-20T00:00:00.000Z",
+      },
+    ],
+  };
+  const merged = discovery.mergeProvidersConfig(seed, [
+    {
+      ...seed.providers[0],
+      context: 1000000,
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      tc: true,
+      metadata_only: true,
+      alive: true,
+      last_tested: "2026-05-20T01:00:00.000Z",
+    },
+  ], existingConfig);
+  const provider = merged.providers[0];
+
+  assert.equal(provider.context, 1000000);
+  assert.deepEqual(provider.caps, ["text", "coding", "tools", "thinking", "max"]);
+  assert.equal(provider.tc, true);
+  assert.equal(provider.alive, false);
+  assert.equal(provider.last_tested, "2026-05-20T00:00:00.000Z");
 });
 
 test("providersFromEndpointModels skips malformed model entries", () => {
@@ -128,6 +179,22 @@ test("providersFromEndpointModels skips malformed model entries", () => {
 
   assert.deepEqual(providers.map((provider) => provider.model), ["codex/gpt-5.4"]);
   assert.equal(providers.some((provider) => provider.model === "codex/undefined"), false);
+});
+
+test("providersFromEndpointModels ignores proxy virtual model groups from accidental self-discovery", () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_CODEX: "true",
+    CODEX_API_KEY: "codex-key",
+  })[0];
+
+  const providers = discovery.providersFromEndpointModels(endpoint, [
+    { id: "auto", owned_by: "llm-proxy", is_group: true },
+    { id: "auto-tools", owned_by: "llm-proxy", is_group: true, provider_count: 90 },
+    { id: "auto-coding", owned_by: "llm-proxy", is_group: true },
+    { id: "gpt-5.4", owned_by: "openai" },
+  ]);
+
+  assert.deepEqual(providers.map((provider) => provider.model), ["codex/gpt-5.4"]);
 });
 
 test("providersFromEndpointModels maps Windsurf providers with discovery names", () => {
@@ -152,6 +219,78 @@ test("providersFromEndpointModels maps Windsurf providers with discovery names",
     assert.equal(provider.windsurf_model_uid, cloudProvider.windsurf_model_uid);
   }
   assert.equal(providers.every((provider) => provider.name), true);
+});
+
+test("providersFromEndpointModels maps configured Windsurf models when supplied by endpoint", () => {
+  const endpoint = {
+    name: "Windsurf",
+    family: "windsurf",
+    protocol: "windsurf",
+    chatUrl: "windsurf",
+    key_env: "WINDSURF_API_KEY",
+    models: [
+      { id: "windsurf/custom-model.x", windsurf_model_uid: "custom_uid", context: 500000, tier: 1 },
+    ],
+  };
+  const providers = discovery.providersFromEndpointModels(endpoint, endpoint.models);
+
+  assert.equal(providers.length, 1);
+  assert.equal(providers[0].model, "windsurf/custom-model.x");
+  assert.equal(providers[0].upstream_model, "custom-model.x");
+  assert.equal(providers[0].windsurf_model_uid, "custom_uid");
+  assert.equal(providers[0].context, 500000);
+});
+
+test("providersFromEndpointModels maps app-discovered Windsurf models without modelsUrl", () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_WINDSURF: "true",
+    WINDSURF_API_KEY: "windsurf-key",
+  })[0];
+  const providers = discovery.providersFromEndpointModels(endpoint, [
+    { id: "windsurf/omega-code-1", upstream: "omega-code-1", windsurf_model_uid: "omega-code-1", name: "Windsurf-OmegaCode1", context: 262144, tier: 1 },
+  ]);
+
+  assert.equal(providers.length, 1);
+  assert.equal(providers[0].model, "windsurf/omega-code-1");
+  assert.equal(providers[0].upstream_model, "omega-code-1");
+  assert.equal(providers[0].windsurf_model_uid, "omega-code-1");
+  assert.equal(providers[0].context, 262144);
+});
+
+test("providersFromEndpointModels ignores proxy virtual groups before Windsurf normalization", () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_WINDSURF: "true",
+    WINDSURF_API_KEY: "windsurf-key",
+  })[0];
+
+  const providers = discovery.providersFromEndpointModels(endpoint, [
+    { id: "auto-tools", owned_by: "llm-proxy", is_group: true, provider_count: 90 },
+    { id: "windsurf/swe-1.6", upstream: "swe-1.6", windsurf_model_uid: "swe-1.6" },
+  ]);
+
+  assert.deepEqual(providers.map((provider) => provider.model), ["windsurf/swe-1.6"]);
+});
+
+test("discoverEndpointModels asks Windsurf app configs before built-in fallback", async () => {
+  let capturedProvider = null;
+  const endpoint = discovery.getEndpoints({
+    ENABLE_WINDSURF: "true",
+    WINDSURF_API_KEY: "windsurf-key",
+  })[0];
+  const result = await discovery.discoverEndpointModels(endpoint, {
+    env: { WINDSURF_API_KEY: "windsurf-key" },
+    fetchWindsurfModelConfigsFn: async (provider) => {
+      capturedProvider = provider;
+      return [
+        { id: "windsurf/omega-code-1", upstream: "omega-code-1", windsurf_model_uid: "omega-code-1" },
+      ];
+    },
+  });
+
+  assert.equal(capturedProvider.key, "windsurf-key");
+  assert.equal(capturedProvider.key_env, "WINDSURF_API_KEY");
+  assert.equal(result.source, "windsurf_app");
+  assert.deepEqual(result.models.map((model) => model.id), ["windsurf/omega-code-1"]);
 });
 
 test("shouldProbeSeedProvider probes sentinel adapter providers with credentials", () => {
@@ -244,6 +383,15 @@ test("mergeProvidersConfig drops unsupported existing providers but keeps suppor
   const seed = {
     providers: [
       {
+        name: "Codex-GPT54",
+        family: "codex",
+        protocol: "openai",
+        model: "codex/gpt-5.4",
+        url: "http://codex-proxy:10531/v1/chat/completions",
+        key_env: "CODEX_API_KEY",
+        headers: {},
+      },
+      {
         name: "Claude-Seed",
         family: "claude",
         protocol: "anthropic",
@@ -260,15 +408,18 @@ test("mergeProvidersConfig drops unsupported existing providers but keeps suppor
       { name: "Groq-Llama", model: "llama-3.3-70b-versatile", url: "https://api.groq.com/openai/v1/chat/completions" },
       { name: "OpenRouter-GPT", family: "openrouter", model: "openrouter/gpt-4o", protocol: "openai" },
       { name: "Codex-Existing", family: "codex", protocol: "openai", model: "codex/gpt-5.4", alive: true, last_tested: "2026-01-01T00:00:00.000Z" },
+      { name: "Codex-Stale", family: "codex", protocol: "openai", model: "codex/old-model", alive: true, last_tested: "2026-01-03T00:00:00.000Z" },
       { name: "Claude-Seed", family: "claude", protocol: "anthropic", model: "claude/claude-sonnet-4-5", alive: false, last_tested: "2026-01-02T00:00:00.000Z" },
     ],
   };
 
   const merged = discovery.mergeProvidersConfig(seed, [], existing);
 
-  assert.deepEqual(merged.providers.map((provider) => provider.name).sort(), ["Claude-Seed", "Codex-Existing"]);
+  assert.deepEqual(merged.providers.map((provider) => provider.name).sort(), ["Claude-Seed", "Codex-GPT54"]);
   assert.equal(merged.providers.find((provider) => provider.name === "Claude-Seed").alive, false);
-  assert.equal(merged.providers.find((provider) => provider.name === "Codex-Existing").last_tested, "2026-01-01T00:00:00.000Z");
+  assert.equal(merged.providers.filter((provider) => provider.model === "codex/gpt-5.4").length, 1);
+  assert.equal(merged.providers.find((provider) => provider.name === "Codex-GPT54").alive, true);
+  assert.equal(merged.providers.find((provider) => provider.name === "Codex-GPT54").last_tested, "2026-01-01T00:00:00.000Z");
 });
 
 test("requiring llm-discovery does not create DATA_DIR", () => {

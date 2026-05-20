@@ -13,6 +13,8 @@ const compaction = require("./lib/compaction");
 const transforms = require("./lib/transforms");
 const routing = require("./lib/routing");
 const responses = require("./lib/responses");
+const anthropicGateway = require("./lib/anthropic-gateway");
+const httpHome = require("./lib/http-home");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,7 @@ function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) 
 // ---------------------------------------------------------------------------
 routing.init({ sendError, trackSessionTokens });
 responses.init({ handleChatCompletion: routing.handleChatCompletion });
+anthropicGateway.init({ handleChatCompletion: routing.handleChatCompletion });
 
 // ---------------------------------------------------------------------------
 // Thinking probe
@@ -62,7 +65,7 @@ async function probeThinking() {
   state.log(`Thinking probe: ${thinkingProviders.length} unverified providers`);
   for (const p of thinkingProviders) {
     try {
-      const body = transforms.transformRequest(p, {
+      const body = await transforms.transformRequest(p, {
         messages: [{ role: "user", content: "What is 15 * 37? Think step by step." }],
         max_tokens: 500,
       });
@@ -230,6 +233,11 @@ function sendJSON(res, data, status = 200) {
   res.end(body);
 }
 
+function sendHTML(res, html, status = 200) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -265,6 +273,21 @@ const server = http.createServer(async (req, res) => {
   if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   try {
+    // GET /
+    if (method === "GET" && pathname === "/") {
+      const active = state.PROVIDERS.filter((p) => p.key && p.alive !== false).length;
+      return sendHTML(res, httpHome.renderHomePage({
+        activeProviders: active,
+        totalProviders: state.PROVIDERS.length,
+        groups: ["auto", ...Object.keys(state.GROUPS)],
+      }));
+    }
+
+    // GET /commands
+    if (method === "GET" && pathname === "/commands") {
+      return sendHTML(res, httpHome.renderCommandsPage());
+    }
+
     // POST /v1/chat/completions
     if (method === "POST" && pathname === "/v1/chat/completions") {
       const body = await readBody(req);
@@ -291,6 +314,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       state.log(`Responses API: POST body=${body.length}chars`);
       return await responses.handleResponsesHTTP(req, res, body);
+    }
+
+    // POST /v1/messages (Anthropic Messages bridge for Claude Code LLM Gateway)
+    if (method === "POST" && pathname === "/v1/messages") {
+      const body = await readBody(req);
+      state.log(`Anthropic Messages API: POST body=${body.length}chars`);
+      return await anthropicGateway.handleMessagesHTTP(req, res, body);
+    }
+
+    // POST /v1/messages/count_tokens
+    if (method === "POST" && pathname === "/v1/messages/count_tokens") {
+      const body = await readBody(req);
+      return anthropicGateway.handleCountTokens(req, res, body);
     }
 
     // GET /v1/models
@@ -418,7 +454,7 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /v1/chat/completions, /v1/responses, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /, /commands, /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
 });
 
 const wss = new WebSocketServer({ noServer: true });

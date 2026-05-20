@@ -34,7 +34,7 @@ services:
     volumes:
       - ./data/codex-auth.json:/root/.codex/auth.json
     ports:
-      - "10531:10531"
+      - "${CODEX_PROXY_PORT:-10531}:10531"
     restart: unless-stopped
     profiles: [codex]
 
@@ -46,6 +46,6 @@ services:
       - ./palace:/palace
       - ./data:/data
     ports:
-      - "8891:8891"
+      - "${MEMPALACE_PORT:-8891}:8891"
     restart: unless-stopped
     profiles: [memory]
