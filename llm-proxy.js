@@ -97,6 +97,11 @@ function handleModels(query) {
     list = list.filter((p) => p.caps.includes(capFilter));
   }
 
+  const maxContext = (providersList) => Math.max(
+    ...providersList.map((p) => scoring.getEffectiveContext(p)),
+    0,
+  );
+
   const models = list.map((p) => ({
     id: p.model,
     object: "model",
@@ -109,18 +114,21 @@ function handleModels(query) {
   }));
 
   // Add smart groups
-  const groups = Object.keys(state.GROUPS).map((g) => ({
-    id: g,
-    object: "model",
-    created: 0,
-    owned_by: "llm-proxy",
-    capabilities: state.GROUPS[g] === null ? ["all"] : [state.GROUPS[g]],
-    context_length: 131072,
-    tier: 0,
-    thinking_capable: g === "auto-thinking",
-    is_group: true,
-    provider_count: routing.getProvidersForGroup(g).length,
-  }));
+  const groups = Object.keys(state.GROUPS).map((g) => {
+    const groupProviders = routing.getProvidersForGroup(g);
+    return {
+      id: g,
+      object: "model",
+      created: 0,
+      owned_by: "llm-proxy",
+      capabilities: state.GROUPS[g] === null ? ["all"] : [state.GROUPS[g]],
+      context_length: maxContext(groupProviders),
+      tier: 0,
+      thinking_capable: g === "auto-thinking",
+      is_group: true,
+      provider_count: groupProviders.length,
+    };
+  });
 
   // Add auto group (smart use-case detection)
   groups.unshift({
@@ -129,7 +137,7 @@ function handleModels(query) {
     created: 0,
     owned_by: "llm-proxy",
     capabilities: ["all", "auto-detect"],
-    context_length: Math.max(...state.PROVIDERS.filter((p) => p.key && p.alive !== false).map((p) => scoring.getEffectiveContext(p)), 0),
+    context_length: maxContext(state.PROVIDERS.filter((p) => p.key && p.alive !== false)),
     tier: 0,
     thinking_capable: true,
     is_group: true,

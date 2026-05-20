@@ -314,7 +314,9 @@ function detectCaps(modelId, modelData) {
   if (/gemini/i.test(id)) caps.push("video");
 
   // Large context = max
-  const ctx = modelData?.context_length || 0;
+  const family = String(modelId || "").split("/")[0];
+  const upstream = String(modelId || "").split("/").slice(1).join("/");
+  const ctx = providerConfig.contextForModel(family, upstream, modelData);
   if (ctx >= 128000) caps.push("max");
 
   // Thinking
