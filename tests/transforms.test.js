@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const transforms = require("../lib/transforms");
+const compaction = require("../lib/compaction");
 const state = require("../lib/state");
 
 const provider = {
@@ -155,6 +156,23 @@ test("detectUseCase reads system and user content parts", () => {
   assert.equal(result.isAgent, true);
   assert.equal(result.caps.has("coding"), true);
   assert.equal(result.caps.has("tools"), true);
+});
+
+test("detectUseCase keeps direct identity replies cheap even when IDE tools are present", () => {
+  const result = transforms.detectUseCase([
+    { role: "system", content: "You are a software engineering agent with codebase tools." },
+    { role: "user", content: "who are you?" },
+  ], {
+    tools: Array.from({ length: 75 }, (_, i) => ({
+      type: "function",
+      function: { name: `tool_${i}`, parameters: { type: "object" } },
+    })),
+  });
+
+  assert.equal(result.difficulty.taskKind, "direct_answer");
+  assert.equal(result.isAgent, false);
+  assert.equal(result.caps.has("tools"), false);
+  assert.equal(result.caps.has("coding"), false);
 });
 
 test("smartnessBonus stays model-quality focused and leaves routing policy to routing", () => {
@@ -340,6 +358,8 @@ test("transformRequest injects task, group, and cost matrix for thinking researc
   assert.match(system, /Route profile: task=research group=auto-thinking level=5 cost=5\/5 effort=xhigh speed=2\/5 shape=read_heavy gate=plan_split/);
   assert.match(system, /Think expensive: spend reasoning on understanding/);
   assert.match(system, /Cost posture: spend tokens on correctness/);
+  assert.match(system, /Use extra internal reasoning/);
+  assert.doesNotMatch(system, /chain-of-thought|Show step-by-step reasoning/i);
 });
 
 test("transformRequest injects coding-sm group focus for small coding tasks", async () => {
@@ -461,8 +481,259 @@ test("transformRequest replaces previous proxy prompt instead of stacking it", a
 
   const system = second.messages[0].content;
   assert.equal((system.match(/You are Project LLM Smart Proxy/g) || []).length, 1);
-  assert.equal((system.match(/SUBAGENT QUALITY CONTROL:/g) || []).length, 1);
+  assert.equal((system.match(/\[LLM_PROXY_SYSTEM_PROMPT_START\]/g) || []).length, 1);
   assert.match(system, /Keep this project-specific instruction\./);
+});
+
+test("transformRequest strips old proxy mode tails and recalled memory before reinjection", async () => {
+  const previousProxy = [
+    "You are Project LLM Smart Proxy — senior staff engineer. Date: 2026-01-01 00:00:00 UTC.",
+    "IDENTITY: old proxy identity.",
+    "- Subagent checklist: 1) Did it use tools? 2) Did files actually change? 3) Do tests pass? 4) Is output correct?",
+    "",
+    "THINKING MODE: stale reasoning tail from a previous route.",
+    "[MEMORY — llm-proxy]:",
+    "Old remembered instruction that should not stack.",
+  ].join("\n");
+
+  const transformed = await transforms.transformRequest(provider, {
+    _memoryInjection: "\n[LLM_PROXY_MEMORY_START]\nFresh memory only.\n[LLM_PROXY_MEMORY_END]\n",
+    model: "auto-text",
+    messages: [
+      { role: "system", content: `${previousProxy}\n\nKeep this project-specific instruction.` },
+      { role: "user", content: "Summarize the current design." },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.equal((system.match(/Project LLM Smart Proxy/g) || []).length, 2); // title + identity rule
+  assert.equal((system.match(/THINKING MODE:/g) || []).length, 0);
+  assert.equal((system.match(/\[LLM_PROXY_MEMORY_START\]/g) || []).length, 1);
+  assert.doesNotMatch(system, /Old remembered instruction/);
+  assert.match(system, /Fresh memory only/);
+  assert.match(system, /Keep this project-specific instruction\./);
+});
+
+test("transformRequest removes known upstream identity lines without dropping project instructions", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-text",
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are Claude Code.",
+          "You're Gemini.",
+          "Tu esti Claude Code, un agent de coding.",
+          "You are ChatGPT, a large language model.",
+          "Always preserve this repository-specific convention.",
+        ].join("\n"),
+      },
+      { role: "user", content: "Cine esti?" },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.doesNotMatch(system, /You are Claude Code/i);
+  assert.doesNotMatch(system, /You're Gemini/i);
+  assert.doesNotMatch(system, /Tu esti Claude Code/i);
+  assert.doesNotMatch(system, /You are ChatGPT/i);
+  assert.match(system, /Always preserve this repository-specific convention\./);
+});
+
+test("transformRequest strips tool schemas from direct no-tool answers", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tool_choice: "auto",
+    function_call: "auto",
+    parallel_tool_calls: true,
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    functions: [{ name: "legacy_bash", parameters: { type: "object" } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Who are you?" },
+    ],
+  });
+
+  assert.equal(transformed.tools, undefined);
+  assert.equal(transformed.functions, undefined);
+  assert.equal(transformed.tool_choice, undefined);
+  assert.equal(transformed.function_call, undefined);
+  assert.equal(transformed.parallel_tool_calls, undefined);
+  assert.doesNotMatch(JSON.stringify(transformed.messages), /Claude Code/);
+});
+
+test("transformRequest preserves required tool contracts for direct-looking requests", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tool_choice: "required",
+    tools: [{ type: "function", function: { name: "Ping", parameters: { type: "object" } } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Ping the health endpoint." },
+    ],
+  });
+
+  assert.equal(transformed.tool_choice, "required");
+  assert.equal(transformed.tools.length, 1);
+  assert.match(transformed.messages[0].content, /TOOL STRATEGY.*MUST use tools/);
+});
+
+test("transformRequest does not force tools for no-tool requests that include recalled memory", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-text",
+    _memoryInjection: "\n[LLM_PROXY_MEMORY_START]\nArchitecture note: prefer narrow summaries.\n[LLM_PROXY_MEMORY_END]\n",
+    messages: [
+      { role: "system", content: "Keep this project instruction." },
+      { role: "user", content: "Summarize the current design." },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.doesNotMatch(system, /MUST use tools/);
+  assert.match(system, /NO-TOOL STRATEGY/);
+  assert.match(system, /Architecture note: prefer narrow summaries/);
+});
+
+test("transformRequest removes stale proxy blocks from developer messages", async () => {
+  const oldProxy = [
+    "[LLM_PROXY_SYSTEM_PROMPT_START]",
+    "You are Project LLM Smart Proxy.",
+    "[LLM_PROXY_MEMORY_START]",
+    "Old recalled memory.",
+    "[LLM_PROXY_MEMORY_END]",
+    "[LLM_PROXY_SYSTEM_PROMPT_END]",
+  ].join("\n");
+
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-text",
+    messages: [
+      { role: "developer", content: `${oldProxy}\nKeep developer project rule.` },
+      { role: "user", content: "Summarize this." },
+    ],
+  });
+
+  const serialized = JSON.stringify(transformed.messages);
+  assert.equal((serialized.match(/\[LLM_PROXY_SYSTEM_PROMPT_START\]/g) || []).length, 1);
+  assert.equal((serialized.match(/\[LLM_PROXY_MEMORY_START\]/g) || []).length, 0);
+  assert.match(serialized, /Keep developer project rule/);
+});
+
+test("transformRequest preserves project rules under common instruction headings", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-text",
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are ChatGPT, a large language model.",
+          "# Code style",
+          "All shell commands must be prefixed with rtk.",
+          "# Tone and style",
+          "Use concise English.",
+        ].join("\n"),
+      },
+      { role: "user", content: "Summarize the setup." },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.match(system, /All shell commands must be prefixed with rtk\./);
+  assert.doesNotMatch(system, /You are ChatGPT/);
+});
+
+test("transformRequest keeps volatile request metadata out of the stable prompt prefix", async () => {
+  const OriginalDate = global.Date;
+  async function renderAt(iso) {
+    global.Date = class FakeDate extends OriginalDate {
+      constructor(...args) {
+        return args.length > 0 ? new OriginalDate(...args) : new OriginalDate(iso);
+      }
+      static now() { return new OriginalDate(iso).getTime(); }
+      static parse(value) { return OriginalDate.parse(value); }
+      static UTC(...args) { return OriginalDate.UTC(...args); }
+    };
+    return (await transforms.transformRequest(provider, {
+      model: "auto-text",
+      messages: [{ role: "user", content: "Summarize these notes." }],
+    })).messages[0].content;
+  }
+
+  try {
+    const first = await renderAt("2026-05-20T10:00:00.000Z");
+    const second = await renderAt("2026-05-20T10:00:05.000Z");
+
+    assert.equal(first.slice(0, 800), second.slice(0, 800));
+  } finally {
+    global.Date = OriginalDate;
+  }
+});
+
+test("transformRequest caps output after proxy prompt and memory injection", async () => {
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    context: 4000,
+  }, {
+    model: "auto-coding",
+    max_tokens: 1600,
+    _memoryInjection: `\n[LLM_PROXY_MEMORY_START]\n${"stable project memory ".repeat(120)}\n[LLM_PROXY_MEMORY_END]\n`,
+    messages: [
+      { role: "system", content: "Project rule: keep responses concise." },
+      { role: "user", content: "Implement a small routing helper." },
+      { role: "assistant", content: "I will inspect the helper." },
+      { role: "user", content: "Continue and use the memory." },
+    ],
+  });
+
+  const used = compaction.estimateTokens(transformed.messages) + compaction.estimateToolsTokens(transformed.tools) + transformed.max_tokens;
+  assert.equal(used <= 4000, true);
+  assert.equal(transformed.max_tokens < 1600, true);
+  assert.match(transformed.messages[0].content, /memory truncated|memory omitted/);
+});
+
+test("transformRequest includes legacy function schemas in final context budget", async () => {
+  const fnSchema = {
+    name: "legacy_large_tool",
+    description: "x ".repeat(1200),
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "y ".repeat(1200) },
+      },
+    },
+  };
+
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    context: 5000,
+  }, {
+    model: "auto-coding",
+    max_tokens: 500,
+    functions: [fnSchema],
+    messages: [
+      { role: "user", content: "Implement the specified function with the available legacy function schema." },
+    ],
+  });
+
+  const used = compaction.estimateTokens(transformed.messages)
+    + compaction.estimateRequestSchemaTokens(transformed)
+    + transformed.max_tokens;
+  assert.equal(used <= 5000, true);
+  assert.equal(transformed.max_tokens < 500, true);
+});
+
+test("buildHeaders does not synthesize legacy client branding from provider flags", () => {
+  const headers = transforms.buildHeaders({
+    name: "Legacy",
+    key: "anonymous",
+    no_auth: true,
+    kilo: true,
+    headers: { "X-Custom": "ok" },
+  });
+
+  assert.deepEqual(headers, {
+    "Content-Type": "application/json",
+    "X-Custom": "ok",
+  });
 });
 
 test("transformRequest removes consecutive duplicate idempotent tool calls", async () => {

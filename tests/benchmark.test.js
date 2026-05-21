@@ -6,6 +6,7 @@ const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
 const benchmark = require("../lib/benchmark");
+const routingPolicy = require("../lib/routing-policy");
 
 test("gradeOutput supports exact, regex, contains, and json graders", () => {
   assert.deepEqual(benchmark.gradeOutput({ expect: { type: "exact", value: "OK" } }, " OK "), {
@@ -25,6 +26,29 @@ test("gradeOutput supports exact, regex, contains, and json graders", () => {
       ],
     },
   }, "Fix SQL injection with parameterized queries.").passed, true);
+  assert.equal(benchmark.gradeOutput({
+    expect: {
+      type: "json_schema",
+      schema: {
+        type: "object",
+        required: ["decision", "rollback"],
+        properties: {
+          decision: { type: "string", enum: ["approve", "reject"] },
+          rollback: { type: "boolean" },
+        },
+      },
+    },
+  }, "{\"decision\":\"approve\",\"rollback\":true}").passed, true);
+  assert.equal(benchmark.gradeOutput({
+    expect: {
+      type: "json_schema",
+      schema: {
+        type: "object",
+        required: ["decision", "rollback"],
+        properties: { rollback: { type: "boolean" } },
+      },
+    },
+  }, "{\"decision\":\"approve\",\"rollback\":\"yes\"}").passed, false);
 });
 
 test("estimateCostUsd uses model family pricing and free SWE pricing", () => {
@@ -33,6 +57,25 @@ test("estimateCostUsd uses model family pricing and free SWE pricing", () => {
   assert.equal(benchmark.estimateCostUsd("windsurf/swe-1.6-fast", usage).usd, 0);
   assert.equal(benchmark.estimateCostUsd("claude/claude-sonnet-4-5", usage).cost_group, 3);
   assert.equal(benchmark.estimateCostUsd("codex/gpt-5.4-mini", usage).cost_group, 2);
+});
+
+test("estimateCostUsd discounts cached input tokens", () => {
+  const estimate = benchmark.estimateCostUsd(
+    "custom/cache-test",
+    {
+      prompt_tokens: 1000,
+      completion_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 400 },
+    },
+    {
+      priceTable: [{ pattern: /cache-test/, input: 1, output: 10, cost_group: 1, source: "test" }],
+      cachedInputPriceRatio: 0.1,
+    },
+  );
+
+  assert.equal(estimate.usd, 0.00064);
+  assert.equal(estimate.fresh_input_tokens, 600);
+  assert.equal(estimate.cached_input_tokens, 400);
 });
 
 test("usageFromResponse never reports total below prompt plus completion", () => {
@@ -45,12 +88,27 @@ test("usageFromResponse never reports total below prompt plus completion", () =>
   assert.equal(usage.total_tokens, 632);
 });
 
+test("usageFromResponse preserves cached input token telemetry from usage and headers", () => {
+  const fromUsage = benchmark.usageFromResponse({
+    usage: {
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      total_tokens: 110,
+      prompt_tokens_details: { cached_tokens: 42 },
+    },
+  });
+  const fromHeaders = benchmark.usageFromResponse({}, { "x-llm-prompt-tokens": "50", "x-llm-completion-tokens": "5", "x-llm-cached-input-tokens": "12" }, "hello");
+
+  assert.equal(fromUsage.cached_input_tokens, 42);
+  assert.equal(fromHeaders.cached_input_tokens, 12);
+});
+
 test("summarizeRuns aggregates direct and proxy metrics", () => {
   const runs = [
-    { arm: "direct", ok: true, latency_ms: 1000, usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }, estimated_cost_usd: 0.01, provider: "DirectA", actual_model: "model-a", complexity: 1 },
+    { arm: "direct", ok: true, latency_ms: 1000, usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, cached_input_tokens: 10 }, estimated_cost_usd: 0.01, provider: "DirectA", actual_model: "model-a", complexity: 1 },
     { arm: "direct", ok: false, latency_ms: 1400, usage: { prompt_tokens: 110, completion_tokens: 25, total_tokens: 135 }, estimated_cost_usd: 0.02, provider: "DirectA", actual_model: "model-a", complexity: 3 },
     { arm: "proxy", ok: true, latency_ms: 800, usage: { prompt_tokens: 90, completion_tokens: 20, total_tokens: 110 }, estimated_cost_usd: 0.004, provider: "ProxyA", actual_model: "model-b", complexity: 1 },
-    { arm: "proxy", ok: true, latency_ms: 900, usage: { prompt_tokens: 95, completion_tokens: 30, total_tokens: 125 }, estimated_cost_usd: 0.005, provider: "ProxyB", actual_model: "model-c", complexity: 3 },
+    { arm: "proxy", ok: true, latency_ms: 900, usage: { prompt_tokens: 95, completion_tokens: 30, total_tokens: 125, cached_input_tokens: 20 }, estimated_cost_usd: 0.005, provider: "ProxyB", actual_model: "model-c", complexity: 3 },
   ];
 
   const summary = benchmark.summarizeRuns(runs);
@@ -58,6 +116,8 @@ test("summarizeRuns aggregates direct and proxy metrics", () => {
   assert.equal(summary.direct.correctness_pct, 50);
   assert.equal(summary.proxy.correctness_pct, 100);
   assert.equal(summary.proxy.avg_latency_ms, 850);
+  assert.equal(summary.direct.avg_cached_input_tokens, 5);
+  assert.equal(summary.proxy.avg_cached_input_tokens, 10);
   assert.deepEqual(summary.proxy.providers, { ProxyA: 1, ProxyB: 1 });
 });
 
@@ -79,6 +139,7 @@ test("renderReport includes ASCII charts and provider/model detail", () => {
   assert.match(report, /Proxy savings/);
   assert.match(report, /Cost per correct/);
   assert.match(report, /Proxy model diversity/);
+  assert.match(report, /cached/);
 });
 
 test("default benchmark cases form a cheap-to-expensive routing ladder", () => {
@@ -101,6 +162,20 @@ test("default benchmark cases form a cheap-to-expensive routing ladder", () => {
     "auto-thinking",
     "coding-sm",
   ]);
+});
+
+test("default benchmark route shapes match routing policy classification", () => {
+  for (const testCase of benchmark.DEFAULT_CASES) {
+    const assessment = routingPolicy.assessRequestDifficulty(testCase.messages, {
+      model: testCase.proxy_model,
+      max_tokens: testCase.max_tokens,
+    });
+    assert.equal(
+      assessment.stepShape.shape,
+      testCase.route_shape,
+      `${testCase.id}: expected ${testCase.route_shape}, got ${assessment.stepShape.shape} (${assessment.taskKind})`,
+    );
+  }
 });
 
 test("opus benchmark cases compare direct Opus with optimized mixed proxy routing", () => {

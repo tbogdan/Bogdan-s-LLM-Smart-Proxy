@@ -28,6 +28,17 @@ class FakeResponse {
   }
 }
 
+class StrictFakeResponse extends FakeResponse {
+  writeHead(status, headers) {
+    if (this.headers) {
+      const err = new Error("Cannot write headers after they are sent to the client");
+      err.code = "ERR_HTTP_HEADERS_SENT";
+      throw err;
+    }
+    super.writeHead(status, headers);
+  }
+}
+
 test("translateRequest maps Anthropic Messages requests to OpenAI chat requests", () => {
   const translated = gateway.translateRequest({
     model: "claude-sonnet-4-5-20250929",
@@ -186,6 +197,94 @@ test("streaming Anthropic bridge suppresses generated tool_use missing required 
   assert.equal(res.status, 200);
   assert.equal(body.includes('"type":"tool_use"'), false);
   assert.match(body, /invalid tool call/i);
+});
+
+test("streaming Anthropic bridge ignores duplicate routed writeHead calls", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Done" }, finish_reason: null }],
+      })}\n\n`);
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new StrictFakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say done" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.equal(res.ended, true);
+  assert.match(body, /message_start/);
+  assert.match(body, /text_delta/);
+  assert.match(body, /message_stop/);
+});
+
+test("streaming Anthropic bridge preserves output usage from OpenAI final chunks", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Done" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say done" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /"usage":\{"output_tokens":4\}/);
+});
+
+test("streaming Anthropic bridge waits for post-stop OpenAI usage chunk", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Done" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say done" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /"usage":\{"output_tokens":4\}/);
 });
 
 test("streaming Anthropic bridge keeps multiple unindexed tool calls separate", async () => {

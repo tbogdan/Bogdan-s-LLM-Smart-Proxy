@@ -1,6 +1,6 @@
 # Project LLM Smart Proxy Instructions
 
-Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsurf, Claude, and Codex. The proxy listens on one local endpoint and routes `auto` model requests across the enabled provider families.
+Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. The proxy listens on one local endpoint and routes `auto` model requests across the enabled provider families.
 
 ## Setup Steps
 
@@ -16,6 +16,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    ENABLE_WINDSURF=true
    ENABLE_CLAUDE=true
    ENABLE_CODEX=true
+   ENABLE_COPILOT=true
    ```
 
 3. Authenticate enabled providers on the host.
@@ -27,9 +28,11 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    npx @openai/codex login
    mkdir -p data
    cp ~/.codex/auth.json data/codex-auth.json
+   node github-copilot-auth.js --env-file .env
    ```
 
    Choose the Anthropic Console account in the Claude browser flow. The helper extracts Claude Code's login-managed API key and writes `ANTHROPIC_API_KEY` into `.env`; if needed, you can manually create a key at `https://platform.claude.com/settings/keys`.
+   For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. Override it with `GITHUB_COPILOT_CLIENT_ID` or `--client-id` if you want to use your own app. The proxy exchanges that GitHub token for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
    If you use `./setup.sh`, Codex auth is copied automatically from `${CODEX_HOME:-$HOME/.codex}/auth.json` when Codex is enabled.
 
 4. Start Docker.
@@ -69,7 +72,7 @@ Or add the same values under `env` in `.claude/settings.local.json`.
 
 ## Operational Notes
 
-- Discovery is scoped to three provider families: Windsurf, Claude, and Codex.
+- Discovery is scoped to the supported provider families: Windsurf, Claude, Codex, and Copilot.
 - Windsurf discovery uses the built-in model catalog unless `WINDSURF_MODELS`, `WINDSURF_MODELS_JSON`, or `WINDSURF_MODELS_URL` is configured.
 - Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like `WINDSURF_IDE_VERSION`, `WINDSURF_USER_AGENT`, and `WINDSURF_CONNECT_RETRIES` compatibility settings.
 - Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, and `LLM_SPEED_TARGET`; these are soft targets, not hard caps.

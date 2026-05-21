@@ -134,7 +134,7 @@ test("public docs do not market or set up removed provider families", () => {
 test("README documents supported provider families and smart groups", () => {
   const readme = read("README.md");
 
-  for (const family of ["Windsurf", "Claude", "Codex"]) {
+  for (const family of ["Windsurf", "Claude", "Codex", "Copilot"]) {
     assert.match(readme, new RegExp(`\\b${family}\\b`));
   }
 

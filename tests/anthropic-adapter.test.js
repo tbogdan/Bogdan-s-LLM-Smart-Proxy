@@ -62,6 +62,29 @@ test("converts Anthropic response to OpenAI chat completion", () => {
   assert.deepEqual(output.usage, { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 });
 });
 
+test("converts Anthropic prompt cache usage details", () => {
+  const output = anthropic.toOpenAIResponse("claude/claude-sonnet-4-5", {
+    id: "msg_cache",
+    model: "claude-sonnet-4-5",
+    role: "assistant",
+    content: [{ type: "text", text: "ok" }],
+    stop_reason: "end_turn",
+    usage: {
+      input_tokens: 10,
+      output_tokens: 3,
+      cache_creation_input_tokens: 7,
+      cache_read_input_tokens: 5,
+    },
+  });
+
+  assert.equal(output.usage.prompt_tokens, 22);
+  assert.equal(output.usage.completion_tokens, 3);
+  assert.equal(output.usage.total_tokens, 25);
+  assert.equal(output.usage.prompt_tokens_details.cached_tokens, 5);
+  assert.equal(output.usage.prompt_tokens_details.cache_creation_tokens, 7);
+  assert.equal(output.usage.input_tokens_details.cache_read_tokens, 5);
+});
+
 test("converts assistant tool calls to Anthropic tool_use content", () => {
   const output = anthropic.toAnthropicRequest(
     { upstream_model: "claude-sonnet-4-5" },
@@ -146,6 +169,39 @@ test("converts buffered Anthropic text stream to OpenAI SSE", () => {
   assert.deepEqual(JSON.parse(chunks[1]).choices[0].delta, { content: "Hello" });
   assert.equal(JSON.parse(chunks[2]).choices[0].finish_reason, "stop");
   assert.equal(chunks[3], "[DONE]");
+});
+
+test("converts buffered Anthropic stream usage to OpenAI final chunk usage", () => {
+  const output = anthropic.toOpenAIStream(
+    "claude/claude-sonnet-4-5",
+    [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_usage","role":"assistant","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":5}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("")
+  );
+  const chunks = output
+    .split("\n\n")
+    .filter(Boolean)
+    .map((line) => line.slice("data: ".length));
+  const final = JSON.parse(chunks[2]);
+
+  assert.deepEqual(final.usage, {
+    prompt_tokens: 17,
+    completion_tokens: 3,
+    total_tokens: 20,
+    prompt_tokens_details: {
+      cached_tokens: 5,
+      cache_creation_tokens: 2,
+      cache_read_tokens: 5,
+    },
+    input_tokens_details: {
+      cached_tokens: 5,
+      cache_creation_tokens: 2,
+      cache_read_tokens: 5,
+    },
+  });
 });
 
 test("converts buffered Anthropic tool stream deltas to OpenAI SSE", () => {

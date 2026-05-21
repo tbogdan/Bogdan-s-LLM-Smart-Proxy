@@ -208,6 +208,49 @@ test("detectIncompatibility learns conservative context from overflow without nu
   });
 });
 
+test("detectIncompatibility does not learn real context from max_tokens cap errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Cap-Test",
+      400,
+      "max_tokens is invalid. Max size: 8192 tokens",
+      { inputTokens: 2000, providerContext: 200000 },
+    );
+
+    const compat = scoring.getCompat("Cap-Test");
+    assert.equal(compat.max_tokens_cap, 8192);
+    assert.equal(compat.real_context, undefined);
+  });
+});
+
+test("detectIncompatibility does not cool request-specific token limit errors as quota", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Request-Limit-Test",
+      429,
+      "max_tokens exceeded configured limit for this request",
+    );
+
+    assert.equal(scoring.isOnCooldown("Request-Limit-Test"), false);
+  });
+});
+
+test("getEffectiveContext applies learned real context across provider context field shapes", () => {
+  withIsolatedScoring(() => {
+    state.providerCompat["Context-Length-Test"] = { real_context: 24000 };
+    state.providerCompat["Missing-Context-Test"] = { real_context: 16000 };
+
+    assert.equal(
+      scoring.getEffectiveContext({ name: "Context-Length-Test", context_length: 100000 }),
+      24000,
+    );
+    assert.equal(
+      scoring.getEffectiveContext({ name: "Missing-Context-Test" }),
+      16000,
+    );
+  });
+});
+
 test("generic Anthropic rate_limit_error is treated as temporary rate limit", () => {
   assert.equal(
     scoring.isTemporaryRateLimit(

@@ -6,23 +6,23 @@ const assert = require("node:assert/strict");
 const config = require("../lib/provider-config");
 const providers = require("../lib/providers");
 
-test("supported families are exactly windsurf, claude, and codex", () => {
-  assert.deepEqual(config.SUPPORTED_FAMILIES, ["windsurf", "claude", "codex"]);
+test("supported families are exactly windsurf, claude, codex, and copilot", () => {
+  assert.deepEqual(config.SUPPORTED_FAMILIES, ["windsurf", "claude", "codex", "copilot"]);
 });
 
 test("fallback providers are namespaced and belong to supported families", () => {
   const seed = config.buildSeedConfig();
   assert.equal(seed.providers.length > 0, true);
   const families = new Set(seed.providers.map((p) => p.family));
-  assert.deepEqual([...families].sort(), ["claude", "codex", "windsurf"]);
+  assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.FALLBACK_MODELS).map(([family, models]) => [family, models.length])),
-    { windsurf: 17, claude: 9, codex: 6 },
+    { windsurf: 101, claude: 9, codex: 6, copilot: 1 },
   );
 
   for (const provider of seed.providers) {
     assert.equal(config.SUPPORTED_FAMILIES.includes(provider.family), true);
-    assert.match(provider.model, /^(windsurf|claude|codex)\//);
+    assert.match(provider.model, /^(windsurf|claude|codex|copilot)\//);
     assert.equal(typeof provider.protocol, "string");
     assert.equal(provider.caps.includes("text"), true);
   }
@@ -45,31 +45,22 @@ test("capabilities are inferred for supported model families", () => {
   assert.deepEqual(config.inferCapabilities("windsurf/swe-1.6-fast").sort(), ["coding", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("windsurf/adaptive").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("windsurf/claude-opus-4.7").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
+  assert.deepEqual(config.inferCapabilities("copilot/gpt-4.1").sort(), ["coding", "text", "thinking", "tools"].sort());
 });
 
 test("fallback catalog includes current discovered and Windsurf picker models", () => {
-  assert.deepEqual(
-    config.FALLBACK_MODELS.windsurf.map((model) => model.id),
-    [
-      "windsurf/adaptive",
-      "windsurf/swe-1.6-fast",
-      "windsurf/swe-1.6",
-      "windsurf/swe-1.5-fast",
-      "windsurf/swe-1.5",
-      "windsurf/swe-1",
-      "windsurf/gpt-5.5",
-      "windsurf/gpt-5.4",
-      "windsurf/gpt-5.4-mini",
-      "windsurf/gpt-5.3-codex-spark",
-      "windsurf/claude-opus-4.7",
-      "windsurf/claude-opus-4.6",
-      "windsurf/claude-sonnet-4.6",
-      "windsurf/gemini-3.1-pro",
-      "windsurf/glm-5",
-      "windsurf/minimax-m2.5",
-      "windsurf/grok-code-fast-1",
-    ],
-  );
+  const windsurfModels = config.FALLBACK_MODELS.windsurf.map((model) => model.id);
+  for (const model of [
+    "windsurf/adaptive",
+    "windsurf/swe-1.6-fast",
+    "windsurf/gpt-5-5-low",
+    "windsurf/gpt-5-4-none-priority",
+    "windsurf/gpt-5-2-codex-xhigh-priority",
+    "windsurf/private-9",
+    "windsurf/deepseek-v4",
+  ]) {
+    assert.equal(windsurfModels.includes(model), true, `fallback Windsurf catalog should include ${model}`);
+  }
   assert.deepEqual(config.FALLBACK_MODELS.claude.map((model) => model.upstream), [
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -82,15 +73,17 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
     "claude-sonnet-4-20250514",
   ]);
   assert.equal(config.FALLBACK_MODELS.codex.some((model) => model.upstream === "codex-auto-review"), true);
+  assert.deepEqual(config.FALLBACK_MODELS.copilot.map((model) => model.upstream), ["gpt-4.1"]);
 });
 
 test("contextForModel uses explicit provider limits before catalog defaults", () => {
-  assert.equal(config.contextForModel("codex", "gpt-5.5", {}), 1000000);
-  assert.equal(config.contextForModel("codex", "gpt-5.4", {}), 200000);
+  assert.equal(config.contextForModel("codex", "gpt-5.5", {}), 272000);
+  assert.equal(config.contextForModel("codex", "gpt-5.4", {}), 272000);
   assert.equal(config.contextForModel("claude", "claude-opus-4-7", {}), 1000000);
   assert.equal(config.contextForModel("claude", "claude-sonnet-4-5-20250929", { max_input_tokens: 1000000, max_tokens: 64000 }), 1000000);
   assert.equal(config.contextForModel("claude", "claude-haiku-4-5-20251001", { max_tokens: 64000 }), 200000);
   assert.equal(config.contextForModel("windsurf", "claude-opus-4.7", {}), 200000);
+  assert.equal(config.contextForModel("copilot", "gpt-4.1", {}), 128000);
   assert.equal(config.contextForModel("codex", "unknown-small", { context_length: 12345 }), 12345);
   assert.equal(config.contextForModel("codex", "gpt-5.5", { context_window: 272000, max_context_window: 1000000 }), 272000);
 });
@@ -249,6 +242,13 @@ test("providerForModel maps representative provider contracts", () => {
   const windsurf = config.providerForModel("windsurf", config.FALLBACK_MODELS.windsurf[0]);
   assert.equal(windsurf.protocol, "windsurf");
   assert.equal(windsurf.key_env, "WINDSURF_API_KEY");
+
+  const copilot = config.providerForModel("copilot", config.FALLBACK_MODELS.copilot[0]);
+  assert.equal(copilot.protocol, "openai");
+  assert.equal(copilot.key_env, "COPILOT_GITHUB_TOKEN");
+  assert.equal(copilot.url, "https://api.githubcopilot.com/chat/completions");
+  assert.equal(copilot.upstream_model, "gpt-4.1");
+  assert.equal(copilot.context, 128000);
 });
 
 test("hydrateSeedProviders preserves runtime protocol metadata", () => {
@@ -311,6 +311,14 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
         supports_parallel_tool_calls: true,
         supports_search_tool: true,
       },
+      {
+        name: "Copilot-GPT41",
+        family: "copilot",
+        protocol: "openai",
+        key_env: "COPILOT_GITHUB_TOKEN",
+        model: "copilot/gpt-4.1",
+        upstream_model: "gpt-4.1",
+      },
     ],
   });
 
@@ -318,6 +326,7 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
     "windsurf",
     "claude",
     "http://codex-proxy:10531/v1/chat/completions",
+    "https://api.githubcopilot.com/chat/completions",
   ]);
   const codex = hydrated.providers.find((provider) => provider.model === "codex/gpt-5.4");
   assert.equal(codex.context_window, 272000);
@@ -330,6 +339,71 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
   assert.equal(codex.display_name, "GPT-5.4");
   assert.equal(codex.supports_parallel_tool_calls, true);
   assert.equal(codex.supports_search_tool, true);
+});
+
+test("Copilot provider can fall back to GitHub token env names", () => {
+  const previousCopilot = process.env.COPILOT_GITHUB_TOKEN;
+  const previousGh = process.env.GH_TOKEN;
+  const previousGithub = process.env.GITHUB_TOKEN;
+  delete process.env.COPILOT_GITHUB_TOKEN;
+  process.env.GH_TOKEN = "gho-token";
+  delete process.env.GITHUB_TOKEN;
+
+  try {
+    const hydrated = providers.hydrateSeedProviders({
+      providers: [
+        {
+          name: "Copilot-GPT41",
+          family: "copilot",
+          protocol: "openai",
+          key_env: "COPILOT_GITHUB_TOKEN",
+          model: "copilot/gpt-4.1",
+          upstream_model: "gpt-4.1",
+        },
+      ],
+    });
+
+    assert.equal(hydrated.providers[0].key_env, "GH_TOKEN");
+    assert.equal(hydrated.providers[0].key, "gho-token");
+  } finally {
+    if (previousCopilot === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+    else process.env.COPILOT_GITHUB_TOKEN = previousCopilot;
+    if (previousGh === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = previousGh;
+    if (previousGithub === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previousGithub;
+  }
+});
+
+test("hydrateProvidersFile drops unsupported runtime providers into legacy_providers", () => {
+  const hydrated = providers.hydrateProvidersFile({
+    providers: [
+      {
+        name: "Windsurf-adaptive",
+        family: "windsurf",
+        protocol: "windsurf",
+        key_env: "WINDSURF_API_KEY",
+        model: "windsurf/adaptive",
+      },
+      {
+        name: "Removed-FreeRouter",
+        family: "openrouter",
+        protocol: "openai",
+        key_env: "OPENROUTER_API_KEY",
+        model: "openrouter/auto",
+      },
+      {
+        name: "Malformed-Codex",
+        family: "codex",
+        protocol: "openai",
+        key_env: "CODEX_API_KEY",
+        model: "gpt-5.4",
+      },
+    ],
+  });
+
+  assert.deepEqual(hydrated.providers.map((provider) => provider.name), ["Windsurf-adaptive"]);
+  assert.deepEqual(hydrated.legacy_providers.map((provider) => provider.name), ["Removed-FreeRouter", "Malformed-Codex"]);
 });
 
 test("hydrateSeedProviders can fall back to Claude OAuth token for legacy provider files", () => {

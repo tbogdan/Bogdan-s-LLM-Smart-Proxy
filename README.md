@@ -1,6 +1,6 @@
 # Project LLM Smart Proxy
 
-Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exactly three multi-model provider families: Windsurf, Claude, and Codex. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto`, `auto-coding`, and `coding-sm` to the best available provider.
+Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for the supported provider families: Windsurf, Claude, Codex, and GitHub Copilot. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto`, `auto-coding`, and `coding-sm` to the best available provider.
 
 ## Supported Providers
 
@@ -9,6 +9,7 @@ Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for exac
 | Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | SWE, GPT, Claude, Gemini, GLM, Minimax, and Grok models from the local catalog or overrides |
 | Claude | `claude auth login --console`, then `node claude-auth.js --env-path .env` to extract `ANTHROPIC_API_KEY` | Anthropic Messages adapter | `claude/...` from discovery/seed |
 | Codex | `npx @openai/codex login`; setup copies `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2`, `codex/codex-auto-review` |
+| GitHub Copilot | `node github-copilot-auth.js --env-file .env`, or set `COPILOT_GITHUB_TOKEN` manually | GitHub OAuth token exchange + OpenAI-compatible Copilot LLM endpoint | `copilot/gpt-4.1` by default, or `COPILOT_MODELS` overrides |
 
 ## Quick Start
 
@@ -36,6 +37,7 @@ MEMPALACE_PORT=8891
 ENABLE_WINDSURF=true
 ENABLE_CLAUDE=true
 ENABLE_CODEX=true
+ENABLE_COPILOT=true
 ```
 
 Authenticate enabled providers on the host:
@@ -47,9 +49,11 @@ node claude-auth.js --env-path .env
 npx @openai/codex login
 mkdir -p data
 cp ~/.codex/auth.json data/codex-auth.json
+node github-copilot-auth.js --env-file .env
 ```
 
 For Claude, choose the Anthropic Console account in the browser flow. The helper reads the login-managed API key from Claude Code's local credential store and writes it to `ANTHROPIC_API_KEY` in `.env`. As a manual fallback, create a key at `https://platform.claude.com/settings/keys` and put it into `ANTHROPIC_API_KEY`.
+For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. You can override it with `GITHUB_COPILOT_CLIENT_ID` or `--client-id`. The helper uses GitHub's device-flow authorization and writes the resulting GitHub token to `COPILOT_GITHUB_TOKEN`; the proxy exchanges it for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
 
 Start Docker with the Codex profile when Codex is enabled:
 
@@ -134,9 +138,9 @@ Defaults are intentionally conservative: sequential requests, one repeat, six ro
 
 ## Discovery
 
-The discovery daemon scans only the Windsurf, Claude, and Codex provider families. It merges discovered models with the seed configuration and writes runtime provider data under `data/`.
+The discovery daemon scans only the Windsurf, Claude, Codex, and Copilot provider families. It merges discovered models with the seed configuration and writes runtime provider data under `data/`.
 
-Discovery is intentionally scoped to the three supported families so `/v1/models`, smart routing, and Docker setup stay aligned.
+Discovery is intentionally scoped to the supported families so `/v1/models`, smart routing, and Docker setup stay aligned.
 
 Windsurf does not expose a stable public model list API, so the proxy ships a broader local catalog and supports explicit overrides:
 
@@ -232,3 +236,5 @@ Port variables:
 - [Claude Platform API authentication](https://platform.claude.com/docs/en/api/authentication/overview)
 - [Claude Code authentication docs](https://code.claude.com/docs/en/authentication)
 - [Claude Messages API docs](https://platform.claude.com/docs/en/api/messages)
+- [GitHub Copilot Extensions LLM endpoint](https://docs.github.com/en/copilot/how-tos/use-copilot-extensions/build-a-copilot-agent/use-copilots-llm)
+- [GitHub OAuth device authorization](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)

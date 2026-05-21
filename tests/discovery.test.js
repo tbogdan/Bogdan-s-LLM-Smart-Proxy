@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const discovery = require("../llm-discovery");
+const copilotToken = require("../lib/copilot-token");
 const windsurfCloud = require("../lib/windsurf-cloud");
 
 test("getEndpoints returns exactly enabled supported endpoints sorted by name", () => {
@@ -19,6 +20,8 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
     ANTHROPIC_API_KEY: "platform-key",
     ENABLE_CODEX: "true",
     CODEX_API_KEY: "codex-key",
+    ENABLE_COPILOT: "true",
+    COPILOT_GITHUB_TOKEN: "copilot-token",
     WINDSURF_MODELS: "windsurf/custom-model, explicit=explicit_uid",
     GROQ_API_KEY: "old-groq",
     OPENROUTER_API_KEY: "old-openrouter",
@@ -26,14 +29,17 @@ test("getEndpoints returns exactly enabled supported endpoints sorted by name", 
     DEEPSEEK_API_KEY: "old-deepseek",
   });
 
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.name), ["Claude", "Codex", "Windsurf"]);
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.family), ["claude", "codex", "windsurf"]);
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.protocol), ["anthropic", "openai", "windsurf"]);
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "WINDSURF_API_KEY"]);
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.name), ["Claude", "Codex", "Copilot", "Windsurf"]);
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.family), ["claude", "codex", "copilot", "windsurf"]);
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.protocol), ["anthropic", "openai", "openai", "windsurf"]);
+  assert.deepEqual(endpoints.map((endpoint) => endpoint.key_env), ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "COPILOT_GITHUB_TOKEN", "WINDSURF_API_KEY"]);
   assert.equal(endpoints[0].headers["x-api-key"], "platform-key");
   assert.equal(endpoints[0].headers.Authorization, undefined);
-  assert.deepEqual(endpoints[2].models.map((model) => model.id), ["windsurf/custom-model", "windsurf/explicit"]);
-  assert.equal(endpoints[2].models[1].windsurf_model_uid, "explicit_uid");
+  assert.equal(endpoints[2].chatUrl, "https://api.githubcopilot.com/chat/completions");
+  assert.equal(endpoints[2].modelsUrl, null);
+  assert.equal(endpoints[2].headers.Authorization, undefined);
+  assert.deepEqual(endpoints[3].models.map((model) => model.id), ["windsurf/custom-model", "windsurf/explicit"]);
+  assert.equal(endpoints[3].models[1].windsurf_model_uid, "explicit_uid");
 });
 
 test("getEndpoints falls back to Claude OAuth token when Console API key is absent", () => {
@@ -65,11 +71,24 @@ test("getEndpoints ignores old provider keys without supported enable flags", ()
 test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
-  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "windsurf"]);
+  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-coding", "auto-max", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
+  assert.deepEqual(
+    Object.fromEntries(
+      ["windsurf", "claude", "codex", "copilot"].map((family) => [
+        family,
+        seed.providers.filter((provider) => provider.family === family).length,
+      ]),
+    ),
+    { windsurf: 101, claude: 9, codex: 6, copilot: 1 },
+  );
 
   for (const provider of seed.providers) {
-    assert.match(provider.model, /^(windsurf|claude|codex)\//);
+    assert.match(provider.model, /^(windsurf|claude|codex|copilot)\//);
+  }
+
+  for (const model of ["windsurf/gpt-5-5-low", "windsurf/private-9", "windsurf/deepseek-v4"]) {
+    assert.equal(seed.providers.some((provider) => provider.model === model), true, `seed providers should include ${model}`);
   }
 });
 
@@ -164,6 +183,96 @@ test("providersFromEndpointModels maps Codex models to namespaced provider entri
   assert.equal(providers[0].cost_group, 3);
   assert.equal(providers[1].context, 200000);
   assert.equal(providers[1].thinking_effort, "low");
+});
+
+test("providersFromEndpointModels maps Copilot models to OpenAI-compatible provider entries", () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_COPILOT: "true",
+    COPILOT_GITHUB_TOKEN: "copilot-token",
+  })[0];
+  const providers = discovery.providersFromEndpointModels(endpoint, [
+    { id: "gpt-4.1", context_length: 128000 },
+  ]);
+
+  assert.deepEqual(providers.map((provider) => provider.model), ["copilot/gpt-4.1"]);
+  assert.equal(providers[0].name, "Copilot-gpt41");
+  assert.equal(providers[0].family, "copilot");
+  assert.equal(providers[0].protocol, "openai");
+  assert.equal(providers[0].url, "https://api.githubcopilot.com/chat/completions");
+  assert.equal(providers[0].key_env, "COPILOT_GITHUB_TOKEN");
+  assert.equal(providers[0].context, 128000);
+  assert.equal(providers[0].caps.includes("coding"), true);
+  assert.equal(providers[0].caps.includes("tools"), true);
+});
+
+test("discoverEndpointModels uses built-in Copilot model list without remote catalog by default", async () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_COPILOT: "true",
+    COPILOT_GITHUB_TOKEN: "github-token",
+  })[0];
+
+  const result = await discovery.discoverEndpointModels(endpoint, {
+    env: {
+      COPILOT_GITHUB_TOKEN: "github-token",
+    },
+    requestJSONFn: async () => {
+      throw new Error("Copilot token exchange should not run for default model list");
+    },
+    fetchJSONFn: async () => {
+      throw new Error("Copilot model catalog should not be fetched by default");
+    },
+  });
+
+  assert.equal(result.source, "configured");
+  assert.deepEqual(result.models.map((model) => model.id), ["gpt-4.1"]);
+});
+
+test("discoverEndpointModels reads explicit Copilot model catalog URL with runtime VS Code headers", async () => {
+  copilotToken.clearCopilotTokenCache();
+  const endpoint = discovery.getEndpoints({
+    ENABLE_COPILOT: "true",
+    COPILOT_GITHUB_TOKEN: "github-token",
+    COPILOT_MODELS_URL: "https://api.githubcopilot.com/models",
+  })[0];
+  let tokenRequests = 0;
+  let modelCatalogHeaders = null;
+
+  const result = await discovery.discoverEndpointModels(endpoint, {
+    env: {
+      COPILOT_GITHUB_TOKEN: "github-token",
+    },
+    requestJSONFn: async (url, headers) => {
+      tokenRequests += 1;
+      assert.equal(url, "https://api.github.com/copilot_internal/v2/token");
+      assert.equal(headers.Authorization, "token github-token");
+      return {
+        status: 200,
+        data: {
+          token: "runtime-token",
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        },
+      };
+    },
+    fetchJSONFn: async (url, headers) => {
+      assert.equal(url, "https://api.githubcopilot.com/models");
+      modelCatalogHeaders = headers;
+      return {
+        status: 200,
+        data: {
+          models: [
+            { id: "gpt-4.1", context_length: 128000 },
+            { id: "claude-sonnet-4.6", context_length: 200000 },
+          ],
+        },
+      };
+    },
+  });
+
+  assert.equal(tokenRequests, 1);
+  assert.equal(result.source, "models_url");
+  assert.deepEqual(result.models.map((model) => model.id), ["gpt-4.1", "claude-sonnet-4.6"]);
+  assert.equal(modelCatalogHeaders.Authorization, "Bearer runtime-token");
+  assert.equal(modelCatalogHeaders["Copilot-Integration-Id"], "vscode-chat");
 });
 
 test("discoverEndpointModels reads Codex backend metadata before proxy model list", async () => {
@@ -312,6 +421,44 @@ test("refreshDiscoveryFromProviders updates discovery view from loaded providers
   assert.equal(model.source, "codex_backend");
   assert.equal(model.refreshed_at, "2026-05-20T06:55:00.000Z");
   assert.equal(discoveryState.last_refresh, "2026-05-20T06:55:00.000Z");
+});
+
+test("markMissingDiscoveryModels marks endpoint models absent from a successful scan as stale", () => {
+  const discoveryState = {
+    models: [
+      {
+        provider: "Copilot",
+        name: "Copilot-gpt41",
+        model: "copilot/gpt-4.1",
+        refreshed_at: "2026-05-20T06:55:00.000Z",
+      },
+      {
+        provider: "Copilot",
+        name: "Copilot-old",
+        model: "copilot/old-model",
+        refreshed_at: "2026-05-20T06:55:00.000Z",
+      },
+      {
+        provider: "Codex",
+        name: "Codex-gpt54",
+        model: "codex/gpt-5.4",
+        refreshed_at: "2026-05-20T06:55:00.000Z",
+      },
+    ],
+  };
+
+  const result = discovery.markMissingDiscoveryModels(discoveryState, { name: "Copilot" }, [
+    { name: "Copilot-gpt41", model: "copilot/gpt-4.1" },
+  ], {
+    now: "2026-05-21T09:00:00.000Z",
+  });
+
+  assert.equal(result.marked, 1);
+  assert.equal(discoveryState.models[0].stale, undefined);
+  assert.equal(discoveryState.models[1].stale, true);
+  assert.equal(discoveryState.models[1].alive, false);
+  assert.equal(discoveryState.models[1].stale_since, "2026-05-21T09:00:00.000Z");
+  assert.equal(discoveryState.models[2].stale, undefined);
 });
 
 test("mergeProvidersConfig refreshes seed provider metadata from model endpoints without changing probe status", () => {
@@ -573,6 +720,177 @@ test("probeSeedProvider uses Windsurf cloud probe for Windsurf providers", async
   assert.equal(capturedInput.model, "windsurf/swe-1.6-fast");
   assert.deepEqual(capturedInput.messages, [{ role: "user", content: "Say hello in one word." }]);
   assert.equal(capturedInput.max_tokens, 50);
+});
+
+test("probeSeedProvider exchanges Copilot GitHub token before OpenAI-compatible probe", async () => {
+  copilotToken.clearCopilotTokenCache();
+  let tokenRequests = 0;
+  let tokenAuth = "";
+  let capturedHeaders = null;
+  let capturedRequest = null;
+
+  const ok = await discovery.probeSeedProvider(
+    {
+      name: "Copilot-GPT41",
+      family: "copilot",
+      protocol: "openai",
+      url: "https://api.githubcopilot.com/chat/completions",
+      key_env: "COPILOT_GITHUB_TOKEN",
+      model: "copilot/gpt-4.1",
+      upstream_model: "gpt-4.1",
+    },
+    "ghu_source",
+    {
+      tokenUrl: "https://github.example/copilot_internal/v2/token",
+      requestJSONFn: async (url, headers) => {
+        tokenRequests += 1;
+        tokenAuth = headers.Authorization || "";
+        assert.equal(url, "https://github.example/copilot_internal/v2/token");
+        return {
+          status: 200,
+          data: {
+            token: "capi-runtime-token",
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+            refresh_in: 1800,
+          },
+        };
+      },
+      postJSONFn: async (url, headers, request) => {
+        assert.equal(url, "https://api.githubcopilot.com/chat/completions");
+        capturedHeaders = headers;
+        capturedRequest = request;
+        return { status: 200, data: { choices: [{ message: { role: "assistant", content: "Hello" } }] } };
+      },
+    },
+  );
+
+  assert.equal(ok, true);
+  assert.equal(tokenRequests, 1);
+  assert.equal(tokenAuth, "token ghu_source");
+  assert.equal(capturedHeaders.Authorization, "Bearer capi-runtime-token");
+  assert.equal(capturedHeaders["Copilot-Integration-Id"], "vscode-chat");
+  assert.equal(capturedRequest.model, "gpt-4.1");
+  assert.deepEqual(capturedRequest.messages, [{ role: "user", content: "Say hello in one word." }]);
+});
+
+test("testSeedProviders re-probes recent no_key Copilot providers when token appears", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-discovery-copilot-reprobe-"));
+  const script = `
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const discovery = require("./llm-discovery");
+
+let hits = 0;
+const old = new Date(Date.now() - 10 * 60_000).toISOString();
+const dataDir = process.env.DATA_DIR;
+
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/chat/completions") {
+    hits += 1;
+    req.resume();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Hello" } }] }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(0, "127.0.0.1", async () => {
+  const url = "http://127.0.0.1:" + server.address().port + "/chat/completions";
+  const provider = {
+    name: "Copilot-GPT41",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-4.1",
+    upstream_model: "gpt-4.1",
+    url,
+    key_env: "COPILOT_CAPI_TOKEN",
+    authHeader: "copilot-runtime",
+  };
+  fs.writeFileSync(path.join(dataDir, "providers.json"), JSON.stringify({
+    providers: [{ ...provider, alive: false, last_tested: old, reason: "no_key" }],
+  }));
+  const result = await discovery.testSeedProviders({ providers: [provider] });
+  console.log("RESULT " + JSON.stringify({ result: result[0], hits }));
+  server.close(() => process.exit(0));
+});
+`;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: path.join(__dirname, ".."),
+    env: { ...process.env, DATA_DIR: dataDir, COPILOT_CAPI_TOKEN: "runtime-token" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const line = result.stdout.split("\n").find((entry) => entry.startsWith("RESULT "));
+  assert.ok(line, result.stdout);
+  const parsed = JSON.parse(line.slice("RESULT ".length));
+  assert.equal(parsed.hits, 1);
+  assert.equal(parsed.result.alive, true);
+  assert.equal(parsed.result.reason, undefined);
+  assert.notEqual(parsed.result.last_tested, undefined);
+  assert.notEqual(parsed.result.last_tested, JSON.parse(fs.readFileSync(path.join(dataDir, "providers.json"), "utf8")).providers[0].last_tested);
+});
+
+test("testSeedProviders records probe_failed instead of preserving stale no_key on keyed failures", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-discovery-copilot-fail-"));
+  const script = `
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const discovery = require("./llm-discovery");
+
+let hits = 0;
+const old = new Date(Date.now() - 10 * 60_000).toISOString();
+const dataDir = process.env.DATA_DIR;
+
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/chat/completions") {
+    hits += 1;
+    req.resume();
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "probe failed" } }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(0, "127.0.0.1", async () => {
+  const url = "http://127.0.0.1:" + server.address().port + "/chat/completions";
+  const provider = {
+    name: "Copilot-GPT41",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-4.1",
+    upstream_model: "gpt-4.1",
+    url,
+    key_env: "COPILOT_CAPI_TOKEN",
+    authHeader: "copilot-runtime",
+  };
+  fs.writeFileSync(path.join(dataDir, "providers.json"), JSON.stringify({
+    providers: [{ ...provider, alive: false, last_tested: old, reason: "no_key" }],
+  }));
+  const result = await discovery.testSeedProviders({ providers: [provider] });
+  console.log("RESULT " + JSON.stringify({ result: result[0], hits }));
+  server.close(() => process.exit(0));
+});
+`;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: path.join(__dirname, ".."),
+    env: { ...process.env, DATA_DIR: dataDir, COPILOT_CAPI_TOKEN: "runtime-token" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const line = result.stdout.split("\n").find((entry) => entry.startsWith("RESULT "));
+  assert.ok(line, result.stdout);
+  const parsed = JSON.parse(line.slice("RESULT ".length));
+  assert.equal(parsed.hits, 1);
+  assert.equal(parsed.result.alive, false);
+  assert.equal(parsed.result.reason, "probe_failed");
 });
 
 test("mergeProvidersConfig drops unsupported existing providers but keeps supported entries", () => {

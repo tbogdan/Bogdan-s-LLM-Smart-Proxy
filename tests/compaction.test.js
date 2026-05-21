@@ -28,6 +28,36 @@ test("recordCompactionDrops and applyCompactionDrops replay dropped old messages
   assert.deepEqual(replayed, [original[0], original[3]]);
 });
 
+test("recordCompactionDrops does not drop original tool result when compacted copy is kept", () => {
+  const sessionId = "test-session-tool-replacement";
+  delete state.compactionDropCache[sessionId];
+  state.truncationCache = {};
+
+  const longTool = `Reading src/example.js\n${"const value = 1;\n".repeat(120)}`;
+  const original = [
+    { role: "system", content: "System stays" },
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"src/example.js\"}" } }],
+    },
+    { role: "tool", name: "Read", tool_call_id: "call_read", content: longTool },
+    { role: "user", content: "Continue from that file." },
+  ];
+  const compacted = [
+    original[0],
+    original[1],
+    compaction.extractToolFacts(original[2], sessionId),
+    original[3],
+  ];
+
+  compaction.recordCompactionDrops(sessionId, original, compacted);
+  const replayed = compaction.applyCompactionDrops(sessionId, [...original]);
+
+  assert.equal(replayed.some((msg) => msg.role === "assistant" && msg.tool_calls?.[0]?.id === "call_read"), true);
+  assert.equal(replayed.some((msg) => msg.role === "tool" && msg.tool_call_id === "call_read"), true);
+});
+
 test("detectGarbledText ignores compaction artifacts but catches repeated sentence loops", () => {
   const compacted = "[CONTEXT COMPACTED - 20 messages removed]\nTool output lines] Search: 40 results]";
   const loop = Array.from({ length: 8 }, () => "We need to continue with the implementation carefully.").join(" ");
@@ -280,6 +310,49 @@ test("compactMessages summarizes dropped context by topic", () => {
   assert.ok(summary);
   assert.match(summary.content, /Topics compacted:/);
   assert.match(summary.content, /topic[01]\.js/);
+});
+
+test("compactMessages ultra-aggressive path still fits the target budget", () => {
+  const messages = [
+    { role: "system", content: "System stays." },
+  ];
+  for (let i = 0; i < 4; i += 1) {
+    messages.push({ role: "user", content: `Old request ${i}: ${"a ".repeat(200)}` });
+    messages.push({ role: "assistant", content: `Old response ${i}: ${"b ".repeat(200)}` });
+  }
+  messages.push({ role: "user", content: "Use the latest evidence to continue." });
+  messages.push({ role: "assistant", content: `Recent but huge assistant analysis: ${"c ".repeat(20000)}` });
+  const targetTokens = 700;
+  const maxOutputTokens = 100;
+
+  const compacted = compaction.compactMessages(messages, targetTokens, maxOutputTokens, [], "test-session-ultra-fit");
+
+  assert.ok(compacted);
+  assert.equal(compaction.estimateTokens(compacted.messages) + maxOutputTokens <= targetTokens, true);
+  assert.equal(
+    compacted.messages.some((msg) => String(msg.content).includes("[compacted recent message:")),
+    true,
+  );
+});
+
+test("compactMessages never truncates the latest user instruction to fit ultra-aggressive context", () => {
+  const messages = [
+    { role: "system", content: "System stays." },
+  ];
+  for (let i = 0; i < 4; i += 1) {
+    messages.push({ role: "user", content: `Old request ${i}: ${"a ".repeat(200)}` });
+    messages.push({ role: "assistant", content: `Old response ${i}: ${"b ".repeat(200)}` });
+  }
+  messages.push({ role: "assistant", content: `Recent assistant context: ${"c ".repeat(200)}` });
+  messages.push({ role: "user", content: `${"Important current request. ".repeat(800)} Tail constraint: DO NOT EDIT FILES.` });
+
+  const compacted = compaction.compactMessages(messages, 900, 100, [], "test-session-ultra-latest-user");
+
+  if (compacted) {
+    const latestUser = [...compacted.messages].reverse().find((msg) => msg.role === "user");
+    assert.match(latestUser.content, /Tail constraint: DO NOT EDIT FILES\./);
+    assert.doesNotMatch(latestUser.content, /\[compacted recent message:/);
+  }
 });
 
 test("buildCompactSummary reads decisions from content parts", () => {

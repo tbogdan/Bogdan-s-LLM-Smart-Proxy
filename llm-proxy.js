@@ -68,8 +68,8 @@ async function probeThinking() {
   for (const p of thinkingProviders) {
     try {
       const body = await transforms.transformRequest(p, {
-        messages: [{ role: "user", content: "What is 15 * 37? Think step by step." }],
-        max_tokens: 500,
+        messages: [{ role: "user", content: "What is 15 * 37? Return only the final number." }],
+        max_tokens: 64,
       });
       const resp = await routing.makeRequest(p.url, {
         method: "POST",
@@ -429,6 +429,7 @@ const server = http.createServer(async (req, res) => {
         requests: s.requests,
         input_tokens: s.totalInputTokens,
         output_tokens: s.totalOutputTokens,
+        cached_input_tokens: s.cachedInputTokens || 0,
         total_tokens: s.totalInputTokens + s.totalOutputTokens,
         started: new Date(s.startTime).toISOString(),
         last_request: new Date(s.lastRequest).toISOString(),
@@ -440,6 +441,7 @@ const server = http.createServer(async (req, res) => {
         total_requests: sessions.reduce((s, x) => s + x.requests, 0),
         total_input_tokens: sessions.reduce((s, x) => s + x.input_tokens, 0),
         total_output_tokens: sessions.reduce((s, x) => s + x.output_tokens, 0),
+        total_cached_input_tokens: sessions.reduce((s, x) => s + x.cached_input_tokens, 0),
       };
       totals.total_tokens = totals.total_input_tokens + totals.total_output_tokens;
 
@@ -450,26 +452,29 @@ const server = http.createServer(async (req, res) => {
       for (const sess of sessions) {
         for (const [prov, stats] of Object.entries(sess.providers || {})) {
           // Per provider
-          if (!byProvider[prov]) byProvider[prov] = { input: 0, output: 0, requests: 0, total: 0 };
+          if (!byProvider[prov]) byProvider[prov] = { input: 0, output: 0, cached_input: 0, requests: 0, total: 0 };
           byProvider[prov].input += stats.input;
           byProvider[prov].output += stats.output;
+          byProvider[prov].cached_input += stats.cachedInput || 0;
           byProvider[prov].requests += stats.requests;
           byProvider[prov].total = byProvider[prov].input + byProvider[prov].output;
 
           // Per source
           const source = prov.split("-")[0];
-          if (!bySource[source]) bySource[source] = { input: 0, output: 0, requests: 0, total: 0, providers: 0 };
+          if (!bySource[source]) bySource[source] = { input: 0, output: 0, cached_input: 0, requests: 0, total: 0, providers: 0 };
           bySource[source].input += stats.input;
           bySource[source].output += stats.output;
+          bySource[source].cached_input += stats.cachedInput || 0;
           bySource[source].requests += stats.requests;
           bySource[source].total = bySource[source].input + bySource[source].output;
 
           // Per model
           const p = state.PROVIDERS.find(x => x.name === prov);
           const model = p?.model || prov;
-          if (!byModel[model]) byModel[model] = { input: 0, output: 0, requests: 0, total: 0, sources: [] };
+          if (!byModel[model]) byModel[model] = { input: 0, output: 0, cached_input: 0, requests: 0, total: 0, sources: [] };
           byModel[model].input += stats.input;
           byModel[model].output += stats.output;
+          byModel[model].cached_input += stats.cachedInput || 0;
           byModel[model].requests += stats.requests;
           byModel[model].total = byModel[model].input + byModel[model].output;
           if (!byModel[model].sources.includes(source)) byModel[model].sources.push(source);

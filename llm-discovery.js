@@ -7,6 +7,7 @@ const { URL } = require("url");
 const fs = require("fs");
 const path = require("path");
 const anthropicAdapter = require("./lib/anthropic-adapter");
+const copilotToken = require("./lib/copilot-token");
 const providerConfig = require("./lib/provider-config");
 const routingPolicy = require("./lib/routing-policy");
 const windsurfCloud = require("./lib/windsurf-cloud");
@@ -23,11 +24,6 @@ const REQUEST_TIMEOUT = 30_000;
 const CODEX_BACKEND_URL = "https://chatgpt.com/backend-api/codex";
 const CODEX_REGISTRY_URL = "https://registry.npmjs.org/@openai/codex/latest";
 const FALLBACK_CODEX_CLIENT_VERSION = "0.132.0";
-const SUPPORTED_PROTOCOLS = {
-  claude: "anthropic",
-  codex: "openai",
-  windsurf: "windsurf",
-};
 const PROBE_PROMPT = "Say hello in one word.";
 const PROBE_MAX_TOKENS = 50;
 
@@ -39,14 +35,10 @@ const THINKING_PATTERNS = [
 ];
 
 // ---------------------------------------------------------------------------
-// URL resolution (e.g. Cloudflare accounts/me → actual account ID)
+// URL normalization hook for discovered provider configs
 // ---------------------------------------------------------------------------
 function resolveUrl(url) {
-  const resolved = String(url || "");
-  if (resolved.includes("cloudflare.com") && resolved.includes("/accounts/me/") && process.env.CLOUDFLARE_ACCOUNT_ID) {
-    return resolved.replace("/accounts/me/", `/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/`);
-  }
-  return resolved;
+  return String(url || "");
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +143,27 @@ function getEndpoints(env = process.env) {
     });
   }
 
+  if (env.ENABLE_COPILOT === "true") {
+    const keyEnv = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"].find((name) => env[name]);
+    if (keyEnv) {
+      const configuredModels = String(env.COPILOT_MODELS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((id) => ({ id }));
+      endpoints.push({
+        name: "Copilot",
+        family: "copilot",
+        protocol: "openai",
+        modelsUrl: env.COPILOT_MODELS_URL || null,
+        models: configuredModels.length > 0 ? configuredModels : providerConfig.FALLBACK_MODELS.copilot.map((model) => ({ id: model.upstream })),
+        chatUrl: providerConfig.runtimeUrlForFamily("copilot"),
+        headers: {},
+        key_env: keyEnv,
+      });
+    }
+  }
+
   if (env.ENABLE_WINDSURF === "true" && env.WINDSURF_API_KEY) {
     endpoints.push({
       name: "Windsurf",
@@ -224,6 +237,14 @@ function isProxyVirtualModelEntry(modelData) {
 function filterDiscoverableModelEntries(models) {
   if (!Array.isArray(models)) return [];
   return models.filter((model) => !isProxyVirtualModelEntry(model));
+}
+
+function extractModelList(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.models)) return data.models;
+  if (Array.isArray(data?.data?.models)) return data.data.models;
+  return null;
 }
 
 function providersFromEndpointModels(ep, models) {
@@ -333,13 +354,24 @@ async function discoverEndpointModels(ep, options = {}) {
   }
 
   if (ep.modelsUrl) {
-    const resp = await fetchJSONFn(ep.modelsUrl, ep.headers);
-    if (resp.status >= 400 || !resp.data?.data) {
+    let headers = ep.headers;
+    if (copilotToken.isCopilotProvider(ep)) {
+      const keyEnv = providerConfig.resolveKeyEnv(ep, env);
+      const key = keyEnv ? env[keyEnv] : "";
+      headers = await copilotToken.buildCopilotRuntimeHeaders(
+        { ...ep, key, key_env: keyEnv },
+        ep.headers || {},
+        options.copilotTokenOptions || options,
+      );
+    }
+    const resp = await fetchJSONFn(ep.modelsUrl, headers);
+    const models = extractModelList(resp.data);
+    if (resp.status >= 400 || !models) {
       const error = new Error(`failed (HTTP ${resp.status})`);
       error.status = resp.status;
       throw error;
     }
-    return { source: "models_url", models: resp.data.data };
+    return { source: "models_url", models };
   }
 
   if (Array.isArray(ep.models) && ep.models.length > 0) {
@@ -393,8 +425,9 @@ function detectCaps(modelId, modelData) {
 // Test a model with basic chat
 // ---------------------------------------------------------------------------
 function probeRequest(provider) {
+  const openAICompatible = provider.protocol === "openai" || provider.family === "codex" || provider.family === "copilot";
   return {
-    model: provider.model,
+    model: openAICompatible ? (provider.upstream_model || provider.model) : provider.model,
     messages: [{ role: "user", content: PROBE_PROMPT }],
     max_tokens: PROBE_MAX_TOKENS,
   };
@@ -420,9 +453,17 @@ function anthropicChatOk(response) {
   return Array.isArray(data?.content) && data.content.some((part) => part?.type === "text" && part.text);
 }
 
-function buildOpenAIHeaders(provider, key) {
+async function buildOpenAIHeaders(provider, key, options = {}) {
   const headers = { ...(provider.headers || {}) };
-  if (key && !(provider.no_auth && key === "anonymous" && !provider.kilo)) {
+  if (copilotToken.isCopilotProvider(provider)) {
+    return copilotToken.buildCopilotRuntimeHeaders(
+      { ...provider, key, key_env: providerConfig.resolveKeyEnv(provider) },
+      headers,
+      options.copilotTokenOptions || options,
+    );
+  }
+
+  if (key && !(provider.no_auth && key === "anonymous")) {
     if (provider.auth_style === "token") {
       headers.Authorization = `token ${key}`;
     } else {
@@ -451,7 +492,8 @@ async function probeSeedProvider(provider, key, options = {}) {
     }
 
     const url = resolveUrl(providerConfig.resolveProviderUrl(provider));
-    const response = await postJSONFn(url, buildOpenAIHeaders(provider, key), request);
+    const headers = await buildOpenAIHeaders(provider, key, options);
+    const response = await postJSONFn(url, headers, request);
     return openAIChatOk(response);
   } catch {
     return false;
@@ -465,8 +507,8 @@ async function testThinking(chatUrl, headers, model) {
   try {
     const body = {
       model,
-      messages: [{ role: "user", content: "What is 15 * 37? Think step by step." }],
-      max_tokens: 500,
+      messages: [{ role: "user", content: "What is 15 * 37? Return only the final number." }],
+      max_tokens: 64,
     };
 
     // Add enable_thinking for Qwen3 models
@@ -618,6 +660,7 @@ function upsertDiscoveryModel(discovery, ep, provider, options = {}) {
 function providerFamilyName(provider = {}) {
   const family = String(provider.family || "").toLowerCase();
   if (family === "codex") return "Codex";
+  if (family === "copilot") return "Copilot";
   if (family === "claude") return "Claude";
   if (family === "windsurf") return "Windsurf";
   return provider.provider || provider.family || "Unknown";
@@ -642,19 +685,45 @@ function refreshDiscoveryFromProviders(discovery, providerList, options = {}) {
   return { discovery, refreshed, created };
 }
 
+function markMissingDiscoveryModels(discovery, ep, currentProviders, options = {}) {
+  if (!discovery || typeof discovery !== "object") return { marked: 0 };
+  if (!Array.isArray(discovery.models)) discovery.models = [];
+
+  const providerName = ep?.name || ep?.family || "Unknown";
+  const now = options.now || new Date().toISOString();
+  const currentModels = new Set(
+    (currentProviders || [])
+      .map((provider) => provider?.model)
+      .filter(Boolean),
+  );
+  let marked = 0;
+
+  for (const model of discovery.models) {
+    if (!model || model.provider !== providerName) continue;
+    if (currentModels.has(model.model)) continue;
+    if (model.stale === true && model.alive === false) continue;
+
+    model.stale = true;
+    model.alive = false;
+    model.stale_since = model.stale_since || now;
+    model.disabled_reason = model.disabled_reason || `missing from ${providerName} discovery scan`;
+    marked++;
+  }
+
+  return { marked };
+}
+
 // ---------------------------------------------------------------------------
 // Write providers.json: merge seed + discovered
 // ---------------------------------------------------------------------------
 function isSupportedProvider(provider) {
-  if (!provider || typeof provider !== "object") return false;
-  if (!providerConfig.SUPPORTED_FAMILIES.includes(provider.family)) return false;
-  if (provider.protocol !== SUPPORTED_PROTOCOLS[provider.family]) return false;
-  return typeof provider.model === "string" && provider.model.startsWith(`${provider.family}/`);
+  return providerConfig.isSupportedProvider(provider);
 }
 
 function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
   const previousStatus = new Map();
   const providerMap = new Map();
+  const legacyMap = new Map();
   const refreshFields = [
     "context",
     "caps",
@@ -706,11 +775,18 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
   // the provider list source of truth.
   for (const p of (existingConfig?.providers || [])) {
     if (isSupportedProvider(p)) previousStatus.set(providerKey(p), p);
+    else legacyMap.set(providerKey(p), { ...p, alive: false, disabled_reason: "unsupported provider family/protocol/model namespace" });
+  }
+  for (const p of (existingConfig?.legacy_providers || [])) {
+    legacyMap.set(providerKey(p), { ...p, alive: false, disabled_reason: p.disabled_reason || "unsupported provider family/protocol/model namespace" });
   }
 
   // Layer seed providers on top (source of truth for seed config)
   for (const sp of (seed.providers || [])) {
-    if (!isSupportedProvider(sp)) continue;
+    if (!isSupportedProvider(sp)) {
+      legacyMap.set(providerKey(sp), { ...sp, alive: false, disabled_reason: "unsupported provider family/protocol/model namespace" });
+      continue;
+    }
     const key = providerKey(sp);
     const existing = previousStatus.get(key);
     providerMap.set(key, {
@@ -724,7 +800,10 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
 
   // Merge current scan results (update alive status, add new discoveries)
   for (const dp of discoveredProviders) {
-    if (!isSupportedProvider(dp)) continue;
+    if (!isSupportedProvider(dp)) {
+      legacyMap.set(providerKey(dp), { ...dp, alive: false, disabled_reason: "unsupported provider family/protocol/model namespace" });
+      continue;
+    }
     const key = providerKey(dp);
     const previous = previousStatus.get(key);
     if (providerMap.has(key)) {
@@ -756,6 +835,7 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     version: Date.now(),
     generated: new Date().toISOString(),
     providers: Array.from(providerMap.values()),
+    legacy_providers: Array.from(legacyMap.values()),
     groups: seed.groups || providerConfig.GROUPS,
   };
 }
@@ -858,8 +938,9 @@ async function testSeedProviders(seed) {
         log(`  SKIP:  ${sp.name} (alive, tested ${Math.round(age / 3600000)}h ago)`);
         continue;
       }
-      if (!existing.alive && age < RETEST_FAIL_MS) {
-        results.push({ ...sp, alive: false, last_tested: existing.last_tested });
+      const staleNoKeyNowKeyed = existing.reason === "no_key" && !!key;
+      if (!existing.alive && age < RETEST_FAIL_MS && !staleNoKeyNowKeyed) {
+        results.push({ ...sp, alive: false, last_tested: existing.last_tested, reason: existing.reason || "probe_failed" });
         log(`  SKIP:  ${sp.name} (dead, tested ${Math.round(age / 3600000)}h ago)`);
         continue;
       }
@@ -871,6 +952,7 @@ async function testSeedProviders(seed) {
       ...sp,
       alive: chatOk,
       last_tested: new Date().toISOString(),
+      ...(chatOk ? {} : { reason: "probe_failed" }),
     });
 
     if (chatOk) {
@@ -925,7 +1007,8 @@ async function runDiscoveryScan() {
         log(`  ${ep.name}: using built-in provider definitions`);
       }
 
-      for (const discoveredProvider of providersFromEndpointModels(ep, models)) {
+      const endpointProviders = providersFromEndpointModels(ep, models);
+      for (const discoveredProvider of endpointProviders) {
         const provider = { ...discoveredProvider, source: discoveredProvider.source || discoveryResult.source };
         if (!provider.name) continue;
         const discoveryUpdate = upsertDiscoveryModel(discovery, ep, provider);
@@ -940,6 +1023,11 @@ async function runDiscoveryScan() {
         }
 
         discoveredProviders.push(provider);
+      }
+
+      const staleResult = markMissingDiscoveryModels(discovery, ep, endpointProviders);
+      if (staleResult.marked > 0) {
+        log(`  ${ep.name}: marked ${staleResult.marked} stale discovery models absent from current catalog`);
       }
     } catch (err) {
       log(`  ${ep.name}: error - ${err.message}`);
@@ -1039,8 +1127,10 @@ module.exports = {
   providersFromEndpointModels,
   upsertDiscoveryModel,
   refreshDiscoveryFromProviders,
+  markMissingDiscoveryModels,
   shouldProbeSeedProvider,
   probeSeedProvider,
+  testSeedProviders,
   mergeProvidersConfig,
   loadSeed,
   writeProvidersFile,

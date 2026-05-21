@@ -6,6 +6,7 @@ const http = require("http");
 const fs = require("fs");
 const routing = require("../lib/routing");
 const state = require("../lib/state");
+const providerAdapters = require("../lib/provider-adapters");
 
 class FakeClientResponse {
   constructor() {
@@ -32,7 +33,9 @@ class FakeClientResponse {
 function withNoScoreWrites(fn) {
   const originalScores = state.scores;
   const originalWriteFileSync = fs.writeFileSync;
+  const originalSessionStats = { ...state.sessionStats };
   state.scores = {};
+  for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
   fs.writeFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
   return Promise.resolve()
@@ -40,7 +43,25 @@ function withNoScoreWrites(fn) {
     .finally(() => {
       fs.writeFileSync = originalWriteFileSync;
       state.scores = originalScores;
+      for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
+      Object.assign(state.sessionStats, originalSessionStats);
     });
+}
+
+function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) {
+  if (!state.sessionStats[sessionId]) {
+    state.sessionStats[sessionId] = { totalInputTokens: 0, totalOutputTokens: 0, requests: 0, startTime: Date.now(), lastRequest: 0, providers: {} };
+  }
+  const session = state.sessionStats[sessionId];
+  session.totalInputTokens += inputTokens;
+  session.totalOutputTokens += outputTokens || 0;
+  if (inputTokens > 0) session.requests += 1;
+  if (providerName) {
+    if (!session.providers[providerName]) session.providers[providerName] = { input: 0, output: 0, requests: 0 };
+    session.providers[providerName].input += inputTokens;
+    session.providers[providerName].output += outputTokens || 0;
+    if (inputTokens > 0) session.providers[providerName].requests += 1;
+  }
 }
 
 async function withServer(handler, fn) {
@@ -161,6 +182,145 @@ test("routeStreamToProvider preserves attached uppercase content after stream ma
       assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
       assert.equal(output.includes("Project "), true);
     });
+  });
+});
+
+test("routeStreamToProvider logs and tracks cached input tokens from streaming usage", async () => {
+  await withNoScoreWrites(async () => {
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(message);
+    routing.init({ sendError: () => {}, trackSessionTokens });
+    try {
+      await withServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "cached " } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          choices: [{ delta: { content: "usage" }, finish_reason: "stop" }],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 8,
+            total_tokens: 128,
+            prompt_tokens_details: { cached_tokens: 80 },
+          },
+        })}\n\n`);
+        res.end();
+      }, async (url) => {
+        const clientRes = new FakeClientResponse();
+        const req = requestBody();
+
+        await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+        const sid = require("../llm-mempalace").getSession(req.messages).id;
+        assert.equal(logs.some((line) => /cached=80/.test(line)), true);
+        assert.equal(state.sessionStats[sid].cachedInputTokens, 80);
+      });
+    } finally {
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("routeStreamToProvider rejects invalid streamed tool calls before sending client headers", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Bash", arguments: "{}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      };
+
+      await assert.rejects(
+        routing.routeStreamToProvider(streamProvider(url), req, clientRes),
+        (err) => err.statusCode === 422 && /missing required field "command"/.test(err.error?.message || err.message || ""),
+      );
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.ended, false);
+    });
+  });
+});
+
+test("routeStreamToProvider validates fragmented streamed tool calls before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "Bash", arguments: "{\"comm" } }] }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "and\":\"pwd\"}" } }] }, finish_reason: "tool_calls" }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      assert.equal(clientRes.status, 200);
+      assert.equal(clientRes.ended, true);
+      assert.match(clientRes.chunks.join(""), /tool_calls/);
+    });
+  });
+});
+
+test("handleChatCompletion estimates output tokens for native streaming providers", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({ sendError: () => {}, trackSessionTokens });
+    state.PROVIDERS = [{
+      name: "Native-Stream-Test",
+      model: "native-stream-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "native stream output ".repeat(8) } }] })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        model: "native-stream-model",
+        stream: true,
+        messages: [{ role: "user", content: "Produce native stream output." }],
+      };
+
+      await routing.handleChatCompletion(req, clientRes);
+
+      const sid = require("../llm-mempalace").getSession(req.messages).id;
+      assert.equal(clientRes.status, 200);
+      assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
+      assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
   });
 });
 

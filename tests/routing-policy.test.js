@@ -12,6 +12,7 @@ test("classifyProvider assigns five cost groups across supported model families"
   assert.equal(policy.classifyProvider({ family: "codex", model: "codex/gpt-5.4-mini", name: "Codex-GPT54Mini" }).cost_group, 2);
   assert.equal(policy.classifyProvider({ family: "codex", model: "codex/gpt-5.5", name: "Codex-GPT55" }).cost_group, 4);
   assert.equal(policy.classifyProvider({ family: "codex", model: "codex/gpt-5.4", name: "Codex-GPT54" }).cost_group, 3);
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41" }).cost_group, 3);
   assert.equal(policy.classifyProvider({ family: "windsurf", model: "windsurf/swe-1.6-fast", name: "Windsurf-SWE16Fast" }).cost_group, 1);
   assert.equal(policy.classifyProvider({ family: "windsurf", model: "windsurf/minimax-m2.5", name: "Windsurf-MinimaxM25" }).cost_group, 1);
 });
@@ -28,6 +29,10 @@ test("classifyProvider assigns researched quality, speed, and thinking defaults"
   assert.deepEqual(
     policy.classifyProvider({ family: "windsurf", model: "windsurf/grok-code-fast-1", name: "Windsurf-GrokCodeFast1" }),
     { cost_group: 2, quality_group: 3, speed_group: 5, thinking_effort: "low", thinking_level: 2 },
+  );
+  assert.deepEqual(
+    policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41", tc: true, caps: ["text", "coding", "tools", "thinking"] }),
+    { cost_group: 3, quality_group: 4, speed_group: 4, thinking_effort: "medium", thinking_level: 3 },
   );
 });
 
@@ -170,6 +175,102 @@ test("detectTaskKind covers the prompt-injection task matrix", () => {
   for (const [kind, content] of cases) {
     assert.equal(policy.detectTaskKind([{ role: "user", content }], {}), kind, content);
   }
+});
+
+test("detectTaskKind prioritizes the latest coding/debug request over stale architecture context", () => {
+  const staleArchitectureContext = [
+    { role: "system", content: "You are a software engineering agent." },
+    {
+      role: "user",
+      content: "Deep research production proxy incident: architecture recovery, routing class, long-context pressure, provider health, benchmark fairness.",
+    },
+    {
+      role: "assistant",
+      content: "Architecture recovery summary: keep provider health and routing fairness notes for later.",
+    },
+  ];
+
+  const implementReq = {
+    messages: [
+      ...staleArchitectureContext,
+      { role: "user", content: "Implement GitHub Copilot as a provider, edit the files, and run tests." },
+    ],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 18000,
+  };
+  const debugReq = {
+    messages: [
+      ...staleArchitectureContext,
+      { role: "user", content: "Check the logs: task kind is always architecture_recovery and routing goes to Opus. Debug the detector and improve it." },
+    ],
+    tools: [{ type: "function", function: { name: "Read" } }],
+    _estimatedTokens: 22000,
+  };
+
+  assert.equal(policy.detectTaskKind(implementReq.messages, implementReq), "agentic_coding");
+  assert.equal(policy.assessRequestDifficulty(implementReq.messages, implementReq).stepShape.shape, "write_heavy");
+  assert.equal(policy.detectTaskKind(debugReq.messages, debugReq), "debugging");
+});
+
+test("auth token implementation is routed as coding, not security review", () => {
+  const req = {
+    messages: [
+      { role: "assistant", content: "Prior note: security review requires human sign-off before release." },
+      { role: "user", content: "Implement GitHub Copilot auth token discovery, fix provider matching, edit code, and run tests." },
+    ],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 24000,
+  };
+
+  const assessed = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessed.taskKind, "agentic_coding");
+  assert.equal(assessed.stepShape.shape, "write_heavy");
+  assert.equal(assessed.costTarget <= 3, true);
+});
+
+test("explicit replay and timing verifier patches stay security gated", () => {
+  const req = {
+    messages: [
+      {
+        role: "user",
+        content:
+          "Fix this Node.js webhook verifier. Current code accepts replayed tokens and leaks timing info. Required: header format t=<unix>,v1=<hex>; reject timestamps older than 5 minutes; compare with constant-time semantics; handle malformed hex safely.",
+      },
+    ],
+    _estimatedTokens: 6000,
+  };
+
+  const assessed = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessed.taskKind, "security_review");
+  assert.equal(assessed.stepShape.shape, "security");
+  assert.equal(assessed.costTarget >= 4, true);
+});
+
+test("large context write-heavy coding does not imply frontier reasoning", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "You are Claude Code running as a software engineering agent with repository tools." },
+      { role: "user", content: "Implement the approved Copilot provider discovery fix, update tests, and deploy locally with Docker." },
+    ],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 197000,
+    _estimatedTokens: 229000,
+  };
+
+  const profile = policy.effectiveRequestProfile(req, {
+    LLM_COST_TARGET: "3",
+    LLM_THINKING_TARGET: "medium",
+    LLM_SPEED_TARGET: "4",
+    LLM_ROUTING_POLICY: "balanced",
+  });
+
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.stepShape.shape, "write_heavy");
+  assert.equal(profile.costTarget <= 3, true);
+  assert.equal(profile.thinkingLevel <= 3, true);
+  assert.equal(profile.speedTarget >= 4, true);
 });
 
 test("detectStepShape maps task shape to routing posture and validation gate", () => {
@@ -430,6 +531,52 @@ test("providerPolicyBonus does not reward heavy thinking for context-only pressu
   assert.equal(policy.providerPolicyBonus(medium, req) >= policy.providerPolicyBonus(high, req), true);
 });
 
+test("providerPolicyBonus prefers adequate context over one-million frontier for write-heavy coding", () => {
+  const adequate = {
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 400000,
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "high",
+  };
+  const millionOpus = {
+    name: "Windsurf-ClaudeOpus461M",
+    family: "windsurf",
+    model: "windsurf/claude-opus-4-6-1m",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 1000000,
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const gpt55 = {
+    name: "Codex-GPT55",
+    family: "codex",
+    model: "codex/gpt-5.5",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 272000,
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 4,
+    thinking_effort: "xhigh",
+  };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    messages: [{ role: "user", content: "Implement the provider discovery fix, update tests, and run Docker validation." }],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 197000,
+    _estimatedTokens: 229000,
+  };
+
+  assert.equal(policy.providerPolicyBonus(adequate, req, { env }) > policy.providerPolicyBonus(millionOpus, req, { env }), true);
+  assert.equal(policy.providerPolicyBonus(adequate, req, { env }) > policy.providerPolicyBonus(gpt55, req, { env }), true);
+});
+
 test("providerPolicyBonus treats SWE as task-list and summary specialist, not default coding choice", () => {
   const swe = { name: "Windsurf-SWE16Fast", family: "windsurf", model: "windsurf/swe-1.6-fast", caps: ["text", "coding", "tools", "thinking"], tc: true };
   const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };
@@ -579,6 +726,38 @@ test("profileFromAssessmentMarker preserves task kind and maps AI reason to rout
   assert.equal(profile.costTarget, 5);
 });
 
+test("assessment marker generic routing implementation reason stays coding, not architecture recovery", () => {
+  const req = {
+    messages: [{ role: "user", content: "Implement the routing detector fix and run tests." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 12000,
+  };
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=3 effort=medium speed=4 reason=routing_implementation");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.costTarget <= 3, true);
+});
+
+test("stale architecture context does not make Opus preferred for a normal implementation step", () => {
+  const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const opus = { name: "Claude-Opus47", family: "claude", model: "claude/claude-opus-4-7", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    messages: [
+      { role: "user", content: "Deep research production proxy incident: architecture recovery, routing class, long-context pressure, provider health, benchmark fairness." },
+      { role: "assistant", content: "Architecture recovery summary retained." },
+      { role: "user", content: "Implement the provider configuration cleanup, edit files, and run tests." },
+    ],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _inputTokens: 24000,
+    _estimatedTokens: 26000,
+  };
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "agentic_coding");
+  assert.equal(policy.providerPolicyBonus(codex, req, { env }) > policy.providerPolicyBonus(opus, req, { env }), true);
+});
+
 test("assessRequestDifficulty does not treat unrelated changes as completed-work review", () => {
   const req = {
     messages: [
@@ -589,6 +768,67 @@ test("assessRequestDifficulty does not treat unrelated changes as completed-work
   };
 
   assert.notEqual(policy.assessRequestDifficulty(req.messages, req).taskKind, "completion_review");
+});
+
+test("assessRequestDifficulty treats benchmark evidence in recovery workflows as planning context", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "Return five ordered steps. Each step must include evidence, action, and stop condition." },
+      { role: "user", content: "A terminal coding agent is midway through a repository migration. Signals: tests were green before a Docker rebuild, one generated file is dirty, a benchmark process was interrupted, and the next run must not hide regressions. Design a recovery workflow that mirrors terminal-agent benchmarks: inspect state, isolate unrelated changes, resume safely, verify, and report." },
+    ],
+    _estimatedTokens: 435,
+  };
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.notEqual(assessment.taskKind, "benchmarking");
+  assert.equal(assessment.stepShape.shape, "read_heavy");
+});
+
+test("assessRequestDifficulty does not classify deploy identifiers inside code snippets as deployment ops", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "Return minified JSON only with keys output, invariant, bug, fix." },
+      { role: "user", content: "Analyze this scheduler without running it:\nfunction schedule(jobs) {\n  const seen = new Set();\n  const out = [];\n  for (const job of jobs) {\n    if (seen.has(job.id)) continue;\n    seen.add(job.id);\n    if (job.dep && !seen.has(job.dep)) out.push(`wait:${job.id}`);\n    out.push(job.id);\n  }\n  return out;\n}\nInput: [{id:'build'},{id:'test',dep:'build'},{id:'deploy',dep:'package'},{id:'test'}]\nWhat is the exact output, what invariant is violated, and what minimal fix avoids scheduling deploy before package?" },
+    ],
+  };
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.notEqual(assessment.taskKind, "deployment_ops");
+  assert.equal(assessment.stepShape.shape, "read_heavy");
+});
+
+test("assessRequestDifficulty treats narrow corrected-function bugfixes as write-heavy work", () => {
+  const req = {
+    messages: [
+      { role: "system", content: "Return only the corrected JavaScript function and one short note." },
+      { role: "user", content: "Fix the leak and cancellation bug:\nasync function fetchWithTimeout(url, ms) {\n  const controller = new AbortController();\n  const timeout = setTimeout(() => controller.abort(), ms);\n  const res = await fetch(url, { signal: controller.signal });\n  return res.json();\n}" },
+    ],
+  };
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessment.stepShape.shape, "write_heavy");
+});
+
+test("detectTaskKind does not treat routing log review as code review without diff evidence", () => {
+  const req = {
+    messages: [{ role: "user", content: "Review the last regression in routing logs and tell me likely root cause." }],
+  };
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "debugging");
+});
+
+test("read-only audits with regression-test suggestions stay review-oriented", () => {
+  const req = {
+    messages: [{
+      role: "user",
+      content: "Read-only audit of lib/routing-policy.js, lib/routing.js, and lib/scoring.js. Look for cached token logging issues and include suggested regression tests. Do not edit files.",
+    }],
+  };
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.notEqual(assessment.taskKind, "test_generation");
+  assert.equal(["verification", "code_review", "data_analysis"].includes(assessment.taskKind), true);
+  assert.notEqual(assessment.stepShape.shape, "security");
 });
 
 test("profileFromAssessmentMarker keeps cost aligned with inherited complex task level", () => {
@@ -709,4 +949,113 @@ test("assessment reroute still upgrades clearly underpowered providers", () => {
   };
 
   assert.equal(policy.shouldRerouteForMarker(provider, marker, {}), true);
+});
+
+test("assessment marker cannot escalate simple deterministic tasks by itself", () => {
+  const provider = {
+    name: "Cheap-Direct",
+    model: "windsurf/swe-1.6-fast",
+    family: "windsurf",
+    cost_group: 1,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const marker = {
+    level: 5,
+    costTarget: 5,
+    thinkingLevel: 5,
+    speedTarget: 1,
+    effort: "xhigh",
+  };
+  const req = {
+    messages: [{ role: "user", content: "Reply exactly: ok" }],
+  };
+
+  assert.equal(policy.shouldRerouteForMarker(provider, marker, req), false);
+});
+
+test("old completion summaries do not turn later routing log debugging into completion review", () => {
+  const req = {
+    tools: [{ name: "Read" }],
+    messages: [
+      { role: "assistant", content: "Changes: routing tests passed and providers were updated." },
+      { role: "user", content: "Review routing logs and identify root cause for why provider matching still picks expensive models." },
+    ],
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(profile.taskKind, "debugging");
+  assert.notEqual(profile.taskKind, "completion_review");
+});
+
+test("assessment marker cannot convert normal Copilot implementation into security review", () => {
+  const req = {
+    tools: [{ name: "Edit" }],
+    messages: [
+      { role: "user", content: "Implement Copilot auth and provider matching, edit code, run tests, and deploy locally with Docker." },
+    ],
+  };
+  const provider = {
+    name: "Windsurf-GPT54Mini",
+    model: "windsurf/gpt-5.4-mini",
+    family: "windsurf",
+    cost_group: 2,
+    speed_group: 5,
+    thinking_effort: "medium",
+  };
+  const marker = {
+    level: 4,
+    effort: "high",
+    speed: 3,
+    reason: "security_review",
+  };
+
+  const markerProfile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "agentic_coding");
+  assert.equal(markerProfile.taskKind, "agentic_coding");
+  assert.equal(markerProfile.costTarget <= 3, true);
+  assert.equal(policy.shouldRerouteForMarker(provider, marker, req), false);
+});
+
+test("balanced policy preserves security and destructive routing floors", () => {
+  const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "5" };
+  const security = policy.effectiveRequestProfile({
+    messages: [{ role: "user", content: "Review this auth and permission code for privilege bypass before release." }],
+  }, env);
+  const destructive = policy.effectiveRequestProfile({
+    messages: [{ role: "user", content: "Plan a database migration that deletes old rows; dry-run first and rollback required." }],
+  }, env);
+
+  assert.equal(security.costTarget >= 4, true);
+  assert.equal(security.thinkingLevel >= 4, true);
+  assert.equal(security.speedTarget <= 3, true);
+  assert.equal(destructive.costTarget >= 4, true);
+  assert.equal(destructive.thinkingLevel >= 4, true);
+  assert.equal(destructive.speedTarget <= 3, true);
+});
+
+test("providerPolicyBonus uses learned effective context instead of advertised context", () => {
+  const provider = {
+    name: "Windsurf-ClaudeOpus461M",
+    family: "windsurf",
+    model: "windsurf/claude-opus-4-6-1m",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 1000000,
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "Deep research with one million token context and architecture risk." }],
+    _estimatedTokens: 1000,
+  };
+
+  const advertisedBonus = policy.providerPolicyBonus(provider, req, { env });
+  const learnedBonus = policy.providerPolicyBonus(provider, req, { env, getEffectiveContext: () => 200000 });
+
+  assert.equal(learnedBonus < advertisedBonus, true);
 });
