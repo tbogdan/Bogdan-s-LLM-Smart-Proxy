@@ -11,6 +11,15 @@ const discovery = require("../llm-discovery");
 const copilotToken = require("../lib/copilot-token");
 const windsurfCloud = require("../lib/windsurf-cloud");
 
+const COPILOT_CLIENT_TEST_OPTIONS = {
+  extensionVersion: "0.48.1",
+  vscodeVersion: "1.121.0",
+  sessionId: "session-123",
+  machineId: "machine-123",
+  deviceId: "device-123",
+  interactionId: "interaction-123",
+};
+
 test("getEndpoints returns exactly enabled supported endpoints sorted by name", () => {
   const endpoints = discovery.getEndpoints({
     ENABLE_WINDSURF: "true",
@@ -80,7 +89,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
         seed.providers.filter((provider) => provider.family === family).length,
       ]),
     ),
-    { windsurf: 101, claude: 9, codex: 6, copilot: 1 },
+    { windsurf: 101, claude: 9, codex: 6, copilot: 32 },
   );
 
   for (const provider of seed.providers) {
@@ -191,10 +200,12 @@ test("providersFromEndpointModels maps Copilot models to OpenAI-compatible provi
     COPILOT_GITHUB_TOKEN: "copilot-token",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
-    { id: "gpt-4.1", context_length: 128000 },
+    { id: "gpt-4.1", name: "GPT-4.1", context_length: 128000, billing: { multiplier: 0 } },
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", context_length: 200000, billing: { multiplier: 1 } },
+    { id: "claude-opus-4.7", name: "Claude Opus 4.7", context_length: 200000, billing: { multiplier: 15 } },
   ]);
 
-  assert.deepEqual(providers.map((provider) => provider.model), ["copilot/gpt-4.1"]);
+  assert.deepEqual(providers.map((provider) => provider.model), ["copilot/gpt-4.1", "copilot/claude-sonnet-4.6", "copilot/claude-opus-4.7"]);
   assert.equal(providers[0].name, "Copilot-gpt41");
   assert.equal(providers[0].family, "copilot");
   assert.equal(providers[0].protocol, "openai");
@@ -203,6 +214,12 @@ test("providersFromEndpointModels maps Copilot models to OpenAI-compatible provi
   assert.equal(providers[0].context, 128000);
   assert.equal(providers[0].caps.includes("coding"), true);
   assert.equal(providers[0].caps.includes("tools"), true);
+  assert.equal(providers[0].cost_multiplier, 0);
+  assert.equal(providers[0].cost_group, 3);
+  assert.equal(providers[1].cost_multiplier, 1);
+  assert.equal(providers[1].cost_group, 3);
+  assert.equal(providers[2].cost_multiplier, 15);
+  assert.equal(providers[2].cost_group, 4);
 });
 
 test("discoverEndpointModels uses built-in Copilot model list without remote catalog by default", async () => {
@@ -224,7 +241,12 @@ test("discoverEndpointModels uses built-in Copilot model list without remote cat
   });
 
   assert.equal(result.source, "configured");
-  assert.deepEqual(result.models.map((model) => model.id), ["gpt-4.1"]);
+  assert.equal(result.models.length, 32);
+  assert.equal(result.models.some((model) => model.id === "gpt-4.1"), true);
+  assert.equal(result.models.some((model) => model.id === "claude-sonnet-4.6"), true);
+  assert.equal(result.models.some((model) => model.id === "gpt-5.4"), true);
+  assert.equal(result.models.find((model) => model.id === "gpt-4.1").cost_multiplier, 0);
+  assert.equal(result.models.find((model) => model.id === "claude-opus-4.7").cost_multiplier, 15);
 });
 
 test("discoverEndpointModels reads explicit Copilot model catalog URL with runtime VS Code headers", async () => {
@@ -245,6 +267,9 @@ test("discoverEndpointModels reads explicit Copilot model catalog URL with runti
       tokenRequests += 1;
       assert.equal(url, "https://api.github.com/copilot_internal/v2/token");
       assert.equal(headers.Authorization, "token github-token");
+      assert.equal(headers["User-Agent"], "GitHubCopilotChat/0.48.1");
+      assert.equal(headers["X-VSCode-User-Agent-Library-Version"], "node-http");
+      assert.equal(headers["Copilot-Integration-Id"], undefined);
       return {
         status: 200,
         data: {
@@ -253,6 +278,8 @@ test("discoverEndpointModels reads explicit Copilot model catalog URL with runti
         },
       };
     },
+    ...COPILOT_CLIENT_TEST_OPTIONS,
+    requestId: "model-request-123",
     fetchJSONFn: async (url, headers) => {
       assert.equal(url, "https://api.githubcopilot.com/models");
       modelCatalogHeaders = headers;
@@ -272,7 +299,19 @@ test("discoverEndpointModels reads explicit Copilot model catalog URL with runti
   assert.equal(result.source, "models_url");
   assert.deepEqual(result.models.map((model) => model.id), ["gpt-4.1", "claude-sonnet-4.6"]);
   assert.equal(modelCatalogHeaders.Authorization, "Bearer runtime-token");
+  assert.equal(modelCatalogHeaders["User-Agent"], "GitHubCopilotChat/0.48.1");
+  assert.equal(modelCatalogHeaders["X-VSCode-User-Agent-Library-Version"], "node-http");
   assert.equal(modelCatalogHeaders["Copilot-Integration-Id"], "vscode-chat");
+  assert.equal(modelCatalogHeaders["Editor-Plugin-Version"], "copilot-chat/0.48.1");
+  assert.equal(modelCatalogHeaders["Editor-Version"], "vscode/1.121.0");
+  assert.equal(modelCatalogHeaders["VScode-SessionId"], "session-123");
+  assert.equal(modelCatalogHeaders["VScode-MachineId"], "machine-123");
+  assert.equal(modelCatalogHeaders["Editor-Device-Id"], "device-123");
+  assert.equal(modelCatalogHeaders["OpenAI-Intent"], "model-access");
+  assert.equal(modelCatalogHeaders["X-Request-Id"], "model-request-123");
+  assert.equal(modelCatalogHeaders["X-Interaction-Type"], "model-access");
+  assert.equal(modelCatalogHeaders["X-Agent-Task-Id"], "model-request-123");
+  assert.equal(modelCatalogHeaders["X-Interaction-Id"], undefined);
 });
 
 test("discoverEndpointModels reads Codex backend metadata before proxy model list", async () => {
@@ -742,10 +781,13 @@ test("probeSeedProvider exchanges Copilot GitHub token before OpenAI-compatible 
     "ghu_source",
     {
       tokenUrl: "https://github.example/copilot_internal/v2/token",
+      ...COPILOT_CLIENT_TEST_OPTIONS,
+      requestId: "probe-request-123",
       requestJSONFn: async (url, headers) => {
         tokenRequests += 1;
         tokenAuth = headers.Authorization || "";
         assert.equal(url, "https://github.example/copilot_internal/v2/token");
+        assert.equal(headers["User-Agent"], "GitHubCopilotChat/0.48.1");
         return {
           status: 200,
           data: {
@@ -769,6 +811,11 @@ test("probeSeedProvider exchanges Copilot GitHub token before OpenAI-compatible 
   assert.equal(tokenAuth, "token ghu_source");
   assert.equal(capturedHeaders.Authorization, "Bearer capi-runtime-token");
   assert.equal(capturedHeaders["Copilot-Integration-Id"], "vscode-chat");
+  assert.equal(capturedHeaders["User-Agent"], "GitHubCopilotChat/0.48.1");
+  assert.equal(capturedHeaders["OpenAI-Intent"], "conversation-panel");
+  assert.equal(capturedHeaders["X-Request-Id"], "probe-request-123");
+  assert.equal(capturedHeaders["X-Interaction-Id"], "interaction-123");
+  assert.equal(capturedHeaders["X-Initiator"], "user");
   assert.equal(capturedRequest.model, "gpt-4.1");
   assert.deepEqual(capturedRequest.messages, [{ role: "user", content: "Say hello in one word." }]);
 });

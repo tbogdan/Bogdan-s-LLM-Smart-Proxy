@@ -113,6 +113,7 @@ test("routeToProvider exchanges Copilot GitHub token before calling chat complet
     try {
       await withBaseServer((req, res) => {
         if (req.url === "/copilot_internal/v2/token") {
+          assert.equal(req.method, "GET");
           seen.tokenAuth = req.headers.authorization || "";
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
@@ -437,6 +438,24 @@ test("dedupeConsecutiveIdempotentToolCalls removes only exact consecutive read d
   assert.deepEqual(remainingCallIds, ["call_1", "call_3"]);
 });
 
+test("stripCachedProxyArtifacts removes proxy assistant diagnostics from IDE replay", () => {
+  const reqBody = {
+    messages: [
+      { role: "user", content: "run pwd" },
+      { role: "assistant", content: "Proxy suppressed invalid tool call \"Bash\": missing required field \"command\"." },
+      { role: "user", content: "continue" },
+    ],
+  };
+
+  const removed = routing.stripCachedProxyArtifacts(reqBody);
+
+  assert.equal(removed, 1);
+  assert.deepEqual(reqBody.messages, [
+    { role: "user", content: "run pwd" },
+    { role: "user", content: "continue" },
+  ]);
+});
+
 test("handleChatCompletion preserves duplicate history for direct benchmark bypass", async () => {
   await withRoutingState(async () => {
     let capturedRequest = null;
@@ -619,6 +638,84 @@ test("handleChatCompletion ignores client-supplied provider skip lists", async (
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion uses hidden AI task assessment before routing noisy cached logs", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalModel = process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"effort\":\"medium\",\"speed\":4,\"reason\":\"routing_debugging\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-text": "text" };
+      state.PROVIDERS = [provider(url, { name: "Assessment-Test", caps: ["text", "coding", "tools", "thinking"] })];
+      process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = "auto-text";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [{
+            role: "user",
+            content: "vezi ca tot pe security review intra, e gresit: reason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4\ncum se face clasificarea? hai sa vedem putin logica",
+          }],
+          tools: Array.from({ length: 75 }, (_, i) => ({
+            type: "function",
+            function: { name: i === 0 ? "Read" : `tool_${i}`, parameters: { type: "object" } },
+          })),
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /_llmProxyInternalAssessment|_llmProxyBypassOptimizations/);
+        const mainRequest = requests[1];
+        const mainSerialized = JSON.stringify(mainRequest);
+        assert.match(mainSerialized, /Route profile: task=debugging/);
+        assert.doesNotMatch(mainSerialized, /Route profile: task=security_review/);
+        assert.doesNotMatch(mainSerialized, /ROUTING ASSESSMENT|LLM_PROXY_TASK_DIFFICULTY/);
+        assert.doesNotMatch(fake.body, /routing_debugging|LLM proxy routing classifier/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalModel === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+        else process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = originalModel;
       }
     });
   });

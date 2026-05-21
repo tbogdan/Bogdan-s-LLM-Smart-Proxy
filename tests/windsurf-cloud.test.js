@@ -123,11 +123,15 @@ test("parseWindsurfModelConfigs exposes app context and routing traits", () => {
 
   assert.equal(opus.context, 1000000);
   assert.equal(opus.thinking_effort, "xhigh");
+  assert.equal(opus.cost_multiplier, 4);
   assert.equal(opus.cost_group, 4);
   assert.equal(gpt.thinking_effort, "high");
+  assert.equal(gpt.cost_multiplier, 2);
   assert.equal(gpt.speed_group, 5);
   assert.equal(gemini.thinking_effort, "minimal");
+  assert.equal(gemini.cost_multiplier, 1);
   assert.equal(gemini.context, 1048576);
+  assert.equal(gptProvider.cost_multiplier, 2);
   assert.equal(gptProvider.thinking_effort, "high");
   assert.equal(gptProvider.speed_group, 5);
 });

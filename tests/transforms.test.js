@@ -248,7 +248,7 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /You are autonomous after the user has authorized implementation/);
   assert.match(system, /Reply A to proceed without explicit user gate\|Press enter to continue without explicit user gate/);
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
-  assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5> effort=<none\|minimal\|low\|medium\|high\|xhigh> speed=<1-5> reason=<slug>/);
+  assert.doesNotMatch(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.match(system, /EFFICIENT FILE READING:/);
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
   assert.match(system, /Compacted tool outputs use \[READ/);
@@ -322,7 +322,7 @@ test("transformRequest uses compact assessment prompt for complex no-tool smart 
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /ARCHITECTURE RECOVERY MODE/);
   assert.match(system, /Route profile: task=architecture_recovery/);
-  assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
+  assert.doesNotMatch(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.equal(system.length < 1800, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
   assert.doesNotMatch(system, /TASK DECOMPOSITION/);
@@ -704,7 +704,7 @@ test("transformRequest includes legacy function schemas in final context budget"
 
   const transformed = await transforms.transformRequest({
     ...provider,
-    context: 5000,
+    context: 4700,
   }, {
     model: "auto-coding",
     max_tokens: 500,
@@ -717,7 +717,7 @@ test("transformRequest includes legacy function schemas in final context budget"
   const used = compaction.estimateTokens(transformed.messages)
     + compaction.estimateRequestSchemaTokens(transformed)
     + transformed.max_tokens;
-  assert.equal(used <= 5000, true);
+  assert.equal(used <= 4700, true);
   assert.equal(transformed.max_tokens < 500, true);
 });
 

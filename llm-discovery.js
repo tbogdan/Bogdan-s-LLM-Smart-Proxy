@@ -151,12 +151,16 @@ function getEndpoints(env = process.env) {
         .map((value) => value.trim())
         .filter(Boolean)
         .map((id) => ({ id }));
+      const fallbackModels = providerConfig.FALLBACK_MODELS.copilot.map((model) => {
+        const { id: _namespacedId, ...metadata } = model;
+        return { ...metadata, id: model.upstream || _namespacedId };
+      });
       endpoints.push({
         name: "Copilot",
         family: "copilot",
         protocol: "openai",
         modelsUrl: env.COPILOT_MODELS_URL || null,
-        models: configuredModels.length > 0 ? configuredModels : providerConfig.FALLBACK_MODELS.copilot.map((model) => ({ id: model.upstream })),
+        models: configuredModels.length > 0 ? configuredModels : fallbackModels,
         chatUrl: providerConfig.runtimeUrlForFamily("copilot"),
         headers: {},
         key_env: keyEnv,
@@ -358,10 +362,17 @@ async function discoverEndpointModels(ep, options = {}) {
     if (copilotToken.isCopilotProvider(ep)) {
       const keyEnv = providerConfig.resolveKeyEnv(ep, env);
       const key = keyEnv ? env[keyEnv] : "";
+      const copilotOptions = {
+        ...(options.copilotTokenOptions || options),
+        env,
+        intent: "model-access",
+        interactionType: "model-access",
+        includeInteractionHeaders: false,
+      };
       headers = await copilotToken.buildCopilotRuntimeHeaders(
         { ...ep, key, key_env: keyEnv },
         ep.headers || {},
-        options.copilotTokenOptions || options,
+        copilotOptions,
       );
     }
     const resp = await fetchJSONFn(ep.modelsUrl, headers);
@@ -599,6 +610,7 @@ function discoveryEntryFromProvider(ep, provider, existing, now) {
     thinking_effort: provider.thinking_effort,
     speed_group: provider.speed_group,
     cost_group: provider.cost_group,
+    cost_multiplier: provider.cost_multiplier,
     quality_group: provider.quality_group,
     app_cost_tier: provider.app_cost_tier,
     display_name: provider.display_name,
@@ -617,8 +629,18 @@ function discoveryEntryFromProvider(ep, provider, existing, now) {
     supports_structured_outputs: provider.supports_structured_outputs,
     supports_pdf_input: provider.supports_pdf_input,
     supports_parallel_tool_calls: provider.supports_parallel_tool_calls,
+    supports_tool_calls: provider.supports_tool_calls,
+    supports_streaming: provider.supports_streaming,
     supports_search_tool: provider.supports_search_tool,
     supports_verbosity: provider.supports_verbosity,
+    vendor: provider.vendor,
+    version: provider.version,
+    tokenizer: provider.tokenizer,
+    model_picker_enabled: provider.model_picker_enabled,
+    model_picker_category: provider.model_picker_category,
+    is_chat_default: provider.is_chat_default,
+    is_chat_fallback: provider.is_chat_fallback,
+    supported_endpoints: provider.supported_endpoints,
     default_verbosity: provider.default_verbosity,
     shell_type: provider.shell_type,
     apply_patch_tool_type: provider.apply_patch_tool_type,
@@ -733,6 +755,7 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     "upstream_model",
     "max_tokens",
     "app_cost_tier",
+    "cost_multiplier",
     "cost_group",
     "quality_group",
     "speed_group",
@@ -753,6 +776,8 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     "supports_structured_outputs",
     "supports_pdf_input",
     "supports_parallel_tool_calls",
+    "supports_tool_calls",
+    "supports_streaming",
     "supports_search_tool",
     "supports_verbosity",
     "default_verbosity",
@@ -767,6 +792,14 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     "visibility",
     "supported_in_api",
     "truncation_policy",
+    "vendor",
+    "version",
+    "tokenizer",
+    "model_picker_enabled",
+    "model_picker_category",
+    "is_chat_default",
+    "is_chat_fallback",
+    "supported_endpoints",
     "thinking_level",
     "source",
   ];

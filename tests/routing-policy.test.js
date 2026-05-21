@@ -17,6 +17,14 @@ test("classifyProvider assigns five cost groups across supported model families"
   assert.equal(policy.classifyProvider({ family: "windsurf", model: "windsurf/minimax-m2.5", name: "Windsurf-MinimaxM25" }).cost_group, 1);
 });
 
+test("classifyProvider keeps API cost multipliers out of global cost groups", () => {
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41", cost_multiplier: 0 }).cost_group, 3);
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/claude-haiku-4.5", name: "Copilot-Haiku45", cost_multiplier: 0.33 }).cost_group, 2);
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/claude-sonnet-4.6", name: "Copilot-Sonnet46", cost_multiplier: 1 }).cost_group, 3);
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/claude-opus-4.6", name: "Copilot-Opus46", cost_multiplier: 3 }).cost_group, 4);
+  assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/claude-opus-4.7", name: "Copilot-Opus47", cost_multiplier: 15 }).cost_group, 4);
+});
+
 test("classifyProvider assigns researched quality, speed, and thinking defaults", () => {
   assert.deepEqual(
     policy.classifyProvider({ family: "claude", model: "claude/claude-sonnet-4-6", name: "Claude-Sonnet46" }),
@@ -34,6 +42,44 @@ test("classifyProvider assigns researched quality, speed, and thinking defaults"
     policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41", tc: true, caps: ["text", "coding", "tools", "thinking"] }),
     { cost_group: 3, quality_group: 4, speed_group: 4, thinking_effort: "medium", thinking_level: 3 },
   );
+});
+
+test("source-local cost multiplier bonus compares only providers from the same source", () => {
+  const req = {
+    messages: [{ role: "user", content: "Summarize this short status update." }],
+    _estimatedTokens: 1200,
+  };
+  const cheap = {
+    name: "Cheap-Sonnet",
+    family: "copilot",
+    model: "copilot/cheap-sonnet",
+    cost_group: 3,
+    cost_multiplier: 1,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const expensive = {
+    ...cheap,
+    name: "Expensive-Sonnet",
+    model: "copilot/expensive-sonnet",
+    cost_multiplier: 3,
+  };
+  const windsurf = {
+    ...cheap,
+    name: "Windsurf-Expensive",
+    family: "windsurf",
+    model: "windsurf/expensive",
+    cost_multiplier: 3,
+  };
+
+  assert.equal(policy.providerPolicyBonus(cheap, req), policy.providerPolicyBonus(expensive, req));
+  assert.equal(
+    policy.sourceLocalCostMultiplierBonus(cheap, [cheap, expensive, windsurf], req) >
+      policy.sourceLocalCostMultiplierBonus(expensive, [cheap, expensive, windsurf], req),
+    true,
+  );
+  assert.equal(policy.sourceLocalCostMultiplierBonus(windsurf, [cheap, expensive, windsurf], req), 0);
 });
 
 test("routing targets parse elastic env budgets", () => {
@@ -989,6 +1035,99 @@ test("old completion summaries do not turn later routing log debugging into comp
   assert.notEqual(profile.taskKind, "completion_review");
 });
 
+test("routing log diagnostics that mention security mode stay debugging and avoid Opus fallback", () => {
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{
+      role: "user",
+      content: [
+        "Routing keeps sending simple tasks to Opus for the wrong reason, fix it:",
+        "llm-proxy | ROUTING-PROFILE: auto-coding level=4/complex source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4/high speed=3 input=114397tok estimated=146397tok tools=75",
+        "llm-proxy | REROUTE: Windsurf-ClaudeSonnet46Thinking timeout/502 -> trying next provider",
+        "llm-proxy | Route: auto-coding -> Windsurf-ClaudeOpus46 (windsurf/claude-opus-4.6) via=Windsurf ctx=200000",
+      ].join("\n"),
+    }],
+    _inputTokens: 120000,
+    _estimatedTokens: 152000,
+  };
+  const sonnet = {
+    name: "Windsurf-ClaudeSonnet46",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4.6",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 200000,
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const opus = {
+    name: "Windsurf-ClaudeOpus46",
+    family: "windsurf",
+    model: "windsurf/claude-opus-4.6",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 200000,
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(profile.taskKind, "debugging");
+  assert.notEqual(profile.stepShape.shape, "security");
+  assert.equal(policy.providerPolicyBonus(sonnet, req, { env }) > policy.providerPolicyBonus(opus, req, { env }), true);
+});
+
+test("cached tool output cannot turn the current local deploy task into a security gate", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [
+      { role: "user", content: "redeploy local docker" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_logs",
+          type: "function",
+          function: { name: "Bash", arguments: JSON.stringify({ command: "docker compose logs llm-proxy" }) },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_logs",
+        content: "llm-proxy-1 | [2026-05-21T13:48:13.005Z] ASSESS: Windsurf-ClaudeSonnet46Thinking level=4 effort=high speed=3 reason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4",
+      },
+    ],
+    _inputTokens: 125888,
+    _estimatedTokens: 157888,
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(profile.taskKind, "deployment_ops");
+  assert.notEqual(profile.stepShape.shape, "security");
+});
+
+test("single ASSESS routing log complaints stay debugging, not security review", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{
+      role: "user",
+      content: "same issue: 5-21T13:48:13.005Z] ASSESS: Windsurf-ClaudeSonnet46Thinking level=4 effort=high speed=3 reason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4",
+    }],
+    _inputTokens: 125888,
+    _estimatedTokens: 157888,
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(profile.taskKind, "debugging");
+  assert.notEqual(profile.stepShape.shape, "security");
+});
+
 test("assessment marker cannot convert normal Copilot implementation into security review", () => {
   const req = {
     tools: [{ name: "Edit" }],
@@ -1017,6 +1156,31 @@ test("assessment marker cannot convert normal Copilot implementation into securi
   assert.equal(markerProfile.taskKind, "agentic_coding");
   assert.equal(markerProfile.costTarget <= 3, true);
   assert.equal(policy.shouldRerouteForMarker(provider, marker, req), false);
+});
+
+test("trusted AI task assessment overrides stale security routing log text", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{
+      role: "user",
+      content: "vezi ca tot pe security review intra, e gresit: reason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4\ncum se face clasificarea? hai sa vedem putin logica",
+    }],
+    _inputTokens: 132373,
+    _estimatedTokens: 164373,
+  };
+
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 3,
+    effort: "medium",
+    speed: 4,
+    reason: "routing_debugging",
+  });
+
+  assert.equal(profile.source, "assessment");
+  assert.equal(profile.taskKind, "debugging");
+  assert.notEqual(profile.stepShape.shape, "security");
+  assert.equal(profile.costTarget <= 3, true);
+  assert.equal(profile.speedTarget >= 4, true);
 });
 
 test("balanced policy preserves security and destructive routing floors", () => {

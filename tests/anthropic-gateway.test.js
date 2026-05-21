@@ -154,7 +154,7 @@ test("toAnthropicResponse suppresses generated tool_use missing required input",
 
   assert.equal(response.stop_reason, "end_turn");
   assert.equal(response.content.some((part) => part.type === "tool_use"), false);
-  assert.match(response.content.map((part) => part.text || "").join("\n"), /invalid tool call/i);
+  assert.equal(/invalid tool call/i.test(response.content.map((part) => part.text || "").join("\n")), false);
 });
 
 test("streaming Anthropic bridge suppresses generated tool_use missing required input", async () => {
@@ -196,7 +196,49 @@ test("streaming Anthropic bridge suppresses generated tool_use missing required 
   const body = res.chunks.join("");
   assert.equal(res.status, 200);
   assert.equal(body.includes('"type":"tool_use"'), false);
-  assert.match(body, /invalid tool call/i);
+  assert.equal(/invalid tool call/i.test(body), false);
+});
+
+test("streaming Anthropic bridge keeps invalid tool diagnostics out of IDE-visible text", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "Bash" },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "tool_calls" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "run pwd" }],
+    tools: [{ name: "Bash", input_schema: { type: "object", required: ["command"] } }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.equal(body.includes('"type":"tool_use"'), false);
+  assert.equal(/invalid tool call/i.test(body), false);
 });
 
 test("streaming Anthropic bridge ignores duplicate routed writeHead calls", async () => {

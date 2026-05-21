@@ -17,7 +17,7 @@ test("fallback providers are namespaced and belong to supported families", () =>
   assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.FALLBACK_MODELS).map(([family, models]) => [family, models.length])),
-    { windsurf: 101, claude: 9, codex: 6, copilot: 1 },
+    { windsurf: 101, claude: 9, codex: 6, copilot: 32 },
   );
 
   for (const provider of seed.providers) {
@@ -73,7 +73,9 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
     "claude-sonnet-4-20250514",
   ]);
   assert.equal(config.FALLBACK_MODELS.codex.some((model) => model.upstream === "codex-auto-review"), true);
-  assert.deepEqual(config.FALLBACK_MODELS.copilot.map((model) => model.upstream), ["gpt-4.1"]);
+  assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "gpt-4.1"), true);
+  assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "claude-sonnet-4.6"), true);
+  assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "gpt-5.4"), true);
 });
 
 test("contextForModel uses explicit provider limits before catalog defaults", () => {
@@ -243,7 +245,10 @@ test("providerForModel maps representative provider contracts", () => {
   assert.equal(windsurf.protocol, "windsurf");
   assert.equal(windsurf.key_env, "WINDSURF_API_KEY");
 
-  const copilot = config.providerForModel("copilot", config.FALLBACK_MODELS.copilot[0]);
+  const copilot = config.providerForModel(
+    "copilot",
+    config.FALLBACK_MODELS.copilot.find((model) => model.upstream === "gpt-4.1"),
+  );
   assert.equal(copilot.protocol, "openai");
   assert.equal(copilot.key_env, "COPILOT_GITHUB_TOKEN");
   assert.equal(copilot.url, "https://api.githubcopilot.com/chat/completions");
