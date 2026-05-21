@@ -1183,6 +1183,51 @@ test("trusted AI task assessment overrides stale security routing log text", () 
   assert.equal(profile.speedTarget >= 4, true);
 });
 
+test("post-route assessment marker does not inherit stale security gate", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{
+      role: "user",
+      content: "vezi ca tot pe security review intra, e gresit: reason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4\ncum se face clasificarea? raspunde scurt",
+    }],
+    _inputTokens: 1867,
+    _estimatedTokens: 1883,
+  };
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=4 effort=minimal speed=5 reason=classification_explanation");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(profile.source, "assessment");
+  assert.equal(profile.taskKind, "explanation");
+  assert.notEqual(profile.stepShape.shape, "security");
+  assert.equal(profile.stepShape.gate, "none");
+  assert.equal(profile.costTarget <= 2, true);
+  assert.equal(profile.speedTarget, 5);
+});
+
+test("trusted AI task assessment maps canonical deployment reason before stale fallback", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{
+      role: "user",
+      content: "redeploy pe local docker\nreason=security_review source=heuristic task=security_review shape=security gate=human_signoff cost=4 thinking=4",
+    }],
+    _inputTokens: 132373,
+    _estimatedTokens: 164373,
+  };
+
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 3,
+    effort: "medium",
+    speed: 4,
+    reason: "deployment_ops",
+  });
+
+  assert.equal(profile.source, "assessment");
+  assert.equal(profile.taskKind, "deployment_ops");
+  assert.notEqual(profile.stepShape.shape, "security");
+  assert.equal(profile.costTarget <= 3, true);
+});
+
 test("balanced policy preserves security and destructive routing floors", () => {
   const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "5" };
   const security = policy.effectiveRequestProfile({

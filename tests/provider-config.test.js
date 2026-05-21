@@ -31,6 +31,8 @@ test("fallback providers are namespaced and belong to supported families", () =>
 test("smart groups keep existing routing names except removed image and video groups", () => {
   assert.deepEqual(config.GROUPS, {
     "auto-tools": "tools",
+    "auto-assess": "assessment",
+    "auto-sm": "text-sm",
     "auto-coding": "coding",
     "coding-sm": "coding-sm",
     "auto-text": "text",

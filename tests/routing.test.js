@@ -43,8 +43,10 @@ class FakeClientResponse {
 
 async function withRoutingState(fn) {
   const originalScores = state.scores;
+  const originalAssessmentCache = { ...state.sessionAssessmentCache };
   const originalWriteFileSync = fs.writeFileSync;
   state.scores = {};
+  for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
   fs.writeFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
   try {
@@ -52,6 +54,8 @@ async function withRoutingState(fn) {
   } finally {
     fs.writeFileSync = originalWriteFileSync;
     state.scores = originalScores;
+    for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
+    Object.assign(state.sessionAssessmentCache, originalAssessmentCache);
   }
 }
 
@@ -314,6 +318,45 @@ test("routeToProvider accepts exact text-only replies without tool calls when to
 
       assert.equal(resp.status, 200);
       assert.equal(JSON.parse(resp.body).choices[0].message.content, "metadata-ok");
+    });
+  });
+});
+
+test("routeToProvider accepts assessment-rerouted direct answers without tool calls", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "Clasificarea se face pe un profil curent, nu pe loguri vechi.",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "cum se face clasificarea? raspunde scurt" }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        _llmProxyDifficulty: {
+          source: "assessment",
+          taskKind: "direct_answer",
+          level: 1,
+          taskLevel: 1,
+          contextLevel: 1,
+          thinkingEffort: "none",
+          thinkingLevel: 0,
+          speedTarget: 5,
+          costTarget: 2,
+          stepShape: { shape: "direct", gate: "none" },
+        },
+      });
+
+      assert.equal(resp.status, 200);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /profil curent/);
     });
   });
 });
@@ -648,6 +691,7 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalModel = process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
     const requests = [];
 
     await withServer((req, res) => {
@@ -685,9 +729,10 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
         }));
       });
     }, async (url) => {
-      state.GROUPS = { "auto-coding": "coding", "auto-text": "text" };
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment", "auto-sm": "text-sm", "auto-text": "text" };
       state.PROVIDERS = [provider(url, { name: "Assessment-Test", caps: ["text", "coding", "tools", "thinking"] })];
       process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = "auto-text";
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
       try {
         const fake = new FakeClientResponse();
         await routing.handleChatCompletion({
@@ -705,17 +750,211 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
         assert.equal(fake.status, 200);
         assert.equal(requests.length, 2);
         assert.doesNotMatch(JSON.stringify(requests[0]), /_llmProxyInternalAssessment|_llmProxyBypassOptimizations/);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /heuristic_task=|heuristic_shape=|heuristic_level=/);
         const mainRequest = requests[1];
         const mainSerialized = JSON.stringify(mainRequest);
         assert.match(mainSerialized, /Route profile: task=debugging/);
         assert.doesNotMatch(mainSerialized, /Route profile: task=security_review/);
-        assert.doesNotMatch(mainSerialized, /ROUTING ASSESSMENT|LLM_PROXY_TASK_DIFFICULTY/);
-        assert.doesNotMatch(fake.body, /routing_debugging|LLM proxy routing classifier/);
+        assert.match(mainSerialized, /ROUTING ASSESSMENT|LLM_PROXY_TASK_DIFFICULTY/);
+        assert.doesNotMatch(fake.body, /routing_debugging|LLM proxy routing classifier|LLM_PROXY_TASK_DIFFICULTY/);
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
         if (originalModel === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
         else process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = originalModel;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion defaults hidden AI assessment to cheapest small provider", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const originalModel = process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+    const logs = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":2,\"effort\":\"low\",\"speed\":5,\"reason\":\"list_summary\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment", "auto-sm": "text-sm", "auto-text": "text" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Expensive-Sonnet",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          cost_multiplier: 3,
+          speed_group: 4,
+        }),
+        provider(url, {
+          name: "Free-Mini-Assessor",
+          model: "test/free-mini",
+          caps: ["text"],
+          cost_group: 1,
+          cost_multiplier: 0,
+          speed_group: 5,
+        }),
+      ];
+      delete process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      state.log = (msg) => logs.push(msg);
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [{ role: "user", content: "summarize current status" }],
+          tools: Array.from({ length: 75 }, (_, i) => ({
+            type: "function",
+            function: { name: i === 0 ? "Read" : `tool_${i}`, parameters: { type: "object" } },
+          })),
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(JSON.stringify(requests[0]), /LLM proxy routing classifier/);
+        assert.equal(requests[0].model, "test/free-mini");
+        const assessmentLog = logs.find((line) => line.startsWith("AI-ASSESS:"));
+        assert.match(assessmentLog, /assessor=Free-Mini-Assessor/);
+        assert.match(assessmentLog, /assessor_model=test\/free-mini/);
+        assert.match(assessmentLog, /assessor_via=Free/);
+        assert.match(assessmentLog, /assessor_ctx=131072/);
+        assert.match(assessmentLog, /assessor_cost=1/);
+        assert.match(assessmentLog, /assessor_cost_multiplier=0/);
+        assert.match(assessmentLog, /assessor_speed=5/);
+        assert.match(assessmentLog, /assessment_model=auto-assess/);
+        assert.match(assessmentLog, /assessment_temp=0/);
+        assert.match(assessmentLog, /assessment_max_tokens=48/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        if (originalModel === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT_MODEL;
+        else process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = originalModel;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("post-route assessment is stripped from responses and reused for next route without hidden call", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":1,\"effort\":\"none\",\"speed\":5,\"reason\":\"direct_answer\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+          }));
+          return;
+        }
+        const firstNormalProviderCall = requests.filter((item) => !/LLM proxy routing classifier/.test(JSON.stringify(item))).length === 1;
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: firstNormalProviderCall
+                ? "LLM_PROXY_TASK_DIFFICULTY level=4 effort=high speed=3 reason=debugging\nInitial diagnostic response."
+                : "Next route used cached assessment.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 40, completion_tokens: 8, total_tokens: 48 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      const mainProvider = provider(url, {
+        name: "Main-Test",
+        caps: ["text", "coding", "tools", "thinking"],
+        cost_group: 3,
+        quality_group: 3,
+        speed_group: 4,
+        thinking_effort: "medium",
+      });
+      state.PROVIDERS = [mainProvider];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      try {
+        const messages = [
+          { role: "system", content: "Project /Users/test/routing-cache" },
+          { role: "user", content: "Fix the routing bug." },
+        ];
+        const first = await routing.routeToProvider(mainProvider, {
+          model: "auto-coding",
+          messages,
+          max_tokens: 64,
+        }, { allowAssessmentReroute: false });
+        assert.doesNotMatch(first.body, /LLM_PROXY_TASK_DIFFICULTY/);
+        assert.match(first.body, /Initial diagnostic response/);
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [...messages, { role: "assistant", content: "Initial diagnostic response." }],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(requests.some((body) => /LLM proxy routing classifier/.test(JSON.stringify(body))), false);
+        assert.match(JSON.stringify(requests[1]), /Route profile: task=debugging/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
       }
     });
   });
@@ -1385,6 +1624,179 @@ test("coding-sm avoids Opus-class providers for small fast coding work", () => {
       if (value == null) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("auto-text prefers light providers over Sonnet-class models", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-text": "text" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/sonnet", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 3,
+      cost_multiplier: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    }),
+    provider("http://127.0.0.1/light", {
+      name: "Free-Light-Mini",
+      model: "test/free-mini",
+      caps: ["text"],
+      cost_group: 1,
+      cost_multiplier: 0,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-text", 1000, {
+      model: "auto-text",
+      messages: [{ role: "user", content: "Summarize this in one sentence." }],
+    });
+
+    assert.equal(providers[0].name, "Free-Light-Mini");
+    assert.equal(providers.some((p) => /sonnet|opus/i.test(`${p.name} ${p.model}`)), false);
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-sm ranks free mini text providers before heavy models", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-sm": "text-sm" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/sonnet", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 3,
+      cost_multiplier: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    }),
+    provider("http://127.0.0.1/light", {
+      name: "Free-Light-Mini",
+      model: "test/free-mini",
+      caps: ["text"],
+      cost_group: 1,
+      cost_multiplier: 0,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-sm", 1000, {
+      model: "auto-sm",
+      messages: [{ role: "user", content: "Classify this tiny request." }],
+    });
+
+    assert.equal(providers[0].name, "Free-Light-Mini");
+    assert.equal(providers.some((p) => /sonnet|opus/i.test(`${p.name} ${p.model}`)), false);
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-sm prefers modern mini classifiers over legacy GPT-3.5", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-sm": "text-sm" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/legacy", {
+      name: "Copilot-gpt35turbo0613",
+      model: "copilot/gpt-3.5-turbo-0613",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/mini", {
+      name: "Copilot-gpt4omini",
+      model: "copilot/gpt-4o-mini",
+      caps: ["text", "coding", "tools", "thinking", "images", "max"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-sm", 1000, {
+      model: "auto-sm",
+      messages: [{ role: "user", content: "Classify this tiny request." }],
+    });
+
+    assert.equal(providers[0].name, "Copilot-gpt4omini");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-assess ranks cheapest pricing before larger light models", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-assess": "assessment" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/haiku", {
+      name: "Copilot-claudehaiku45",
+      model: "copilot/claude-haiku-4.5",
+      upstream_model: "claude-haiku-4.5",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/free", {
+      name: "Tiny-Free-Assessor",
+      model: "test/tiny-free-classifier",
+      caps: ["text"],
+      cost_group: 1,
+      cost_multiplier: 0,
+      quality_group: 2,
+      speed_group: 3,
+      thinking_effort: "none",
+    }),
+    provider("http://127.0.0.1/gpt4", {
+      name: "Copilot-gpt4",
+      model: "copilot/gpt-4",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-assess", 1000, {
+      model: "auto-assess",
+      messages: [{ role: "user", content: "Classify this tiny request." }],
+    });
+
+    assert.equal(providers[0].name, "Tiny-Free-Assessor");
+    assert.equal(providers.some((p) => p.name === "Copilot-gpt4"), false);
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
   }
 });
 

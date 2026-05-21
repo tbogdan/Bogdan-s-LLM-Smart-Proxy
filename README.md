@@ -122,7 +122,7 @@ curl http://localhost:18900/v1/messages/count_tokens \
 
 ## Benchmark
 
-The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
+The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-assess`, `auto-sm`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
 
 The command is a dry run unless `--run` is present:
 
@@ -168,6 +168,8 @@ Set `WINDSURF_ENTERPRISE=true` to use the enterprise app API origin (`https://se
 | Group | Purpose |
 | --- | --- |
 | `auto` | General smart routing across enabled providers |
+| `auto-assess` | Internal routing assessment using the cheapest viable classifier models by pricing |
+| `auto-sm` | Small, cheap/free light models for classification and simple text |
 | `auto-coding` | Coding, editing, and agentic development tasks |
 | `coding-sm` | Small/fast coding and tool-capable background tasks, suitable for Claude Code small fast model routing |
 | `auto-thinking` | Reasoning-heavy tasks |

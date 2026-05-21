@@ -147,7 +147,7 @@ test("README documents supported provider families and smart groups", () => {
     .filter(Boolean)
     .map((match) => match[1]);
 
-  for (const group of ["auto", "auto-coding", "coding-sm", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
+  for (const group of ["auto", "auto-assess", "auto-sm", "auto-coding", "coding-sm", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
     assert.equal(listedGroups.includes(group), true, `README should list smart group \`${group}\``);
   }
 });
