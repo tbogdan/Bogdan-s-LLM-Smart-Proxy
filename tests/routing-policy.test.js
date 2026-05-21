@@ -95,6 +95,112 @@ test("routing targets parse elastic env budgets", () => {
   assert.equal(targets.speedTarget, 5);
 });
 
+test("routing policy exposes explicit operating modes and safe aliases", () => {
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "economy" }).routingPolicy, "economy");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "cheap" }).routingPolicy, "economy");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "balanced" }).routingPolicy, "balanced");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "speed" }).routingPolicy, "speed");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "fast" }).routingPolicy, "speed");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "quality" }).routingPolicy, "quality");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "capability" }).routingPolicy, "quality");
+  assert.equal(policy.getPolicyTargets({ LLM_ROUTING_POLICY: "typo-mode" }).routingPolicy, "balanced");
+});
+
+test("routing policy modes adjust standard coding targets without lowering safety gates", () => {
+  const req = {
+    messages: [{ role: "user", content: "Implement this small route fix and run the focused test." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _inputTokens: 6000,
+    _estimatedTokens: 12000,
+  };
+  const baseEnv = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+
+  const economy = policy.effectiveRequestProfile(req, { ...baseEnv, LLM_ROUTING_POLICY: "economy" });
+  const balanced = policy.effectiveRequestProfile(req, { ...baseEnv, LLM_ROUTING_POLICY: "balanced" });
+  const speed = policy.effectiveRequestProfile(req, { ...baseEnv, LLM_ROUTING_POLICY: "speed" });
+  const quality = policy.effectiveRequestProfile(req, { ...baseEnv, LLM_ROUTING_POLICY: "quality" });
+
+  assert.equal(economy.costTarget < balanced.costTarget, true);
+  assert.equal(economy.thinkingLevel <= balanced.thinkingLevel, true);
+  assert.equal(speed.speedTarget > balanced.speedTarget, true);
+  assert.equal(quality.costTarget > balanced.costTarget, true);
+  assert.equal(quality.thinkingLevel > balanced.thinkingLevel, true);
+
+  const security = policy.effectiveRequestProfile({
+    messages: [{ role: "user", content: "Review this auth code for privilege bypass before release." }],
+  }, { ...baseEnv, LLM_ROUTING_POLICY: "economy", LLM_SPEED_TARGET: "5" });
+
+  assert.equal(security.costTarget >= 4, true);
+  assert.equal(security.thinkingLevel >= 4, true);
+  assert.equal(security.speedTarget <= 3, true);
+});
+
+test("routing policy modes change provider scoring posture", () => {
+  const req = {
+    messages: [{ role: "user", content: "Implement this focused routing fix and run the test." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _inputTokens: 6000,
+    _estimatedTokens: 12000,
+    _llmProxyDifficulty: {
+      level: 3,
+      taskKind: "agentic_coding",
+      taskLevel: 3,
+      contextLevel: 2,
+      thinkingLevel: 3,
+      speedTarget: 4,
+      costTarget: 3,
+      stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+    },
+  };
+  const fastCheap = {
+    name: "FastCheapMini",
+    family: "windsurf",
+    model: "windsurf/gpt-5-4-mini",
+    caps: ["coding", "tools", "thinking"],
+    cost_group: 1,
+    quality_group: 3,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const balancedModel = {
+    name: "BalancedSonnet",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4.6",
+    caps: ["coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const premiumModel = {
+    name: "PremiumOpus",
+    family: "windsurf",
+    model: "windsurf/claude-opus-4.6",
+    caps: ["coding", "tools", "thinking", "max"],
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "high",
+  };
+  const baseEnv = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+
+  assert.equal(
+    policy.providerPolicyBonus(fastCheap, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "economy" } }) >
+      policy.providerPolicyBonus(premiumModel, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "economy" } }),
+    true,
+  );
+  assert.equal(
+    policy.providerPolicyBonus(fastCheap, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "speed" } }) >
+      policy.providerPolicyBonus(balancedModel, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "speed" } }),
+    true,
+  );
+  assert.equal(
+    policy.providerPolicyBonus(premiumModel, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "quality" } }) >
+      policy.providerPolicyBonus(fastCheap, req, { env: { ...baseEnv, LLM_ROUTING_POLICY: "quality" } }),
+    true,
+  );
+});
+
 test("assessRequestDifficulty separates trivial prompts from agentic refactors", () => {
   const trivial = policy.assessRequestDifficulty(
     [{ role: "user", content: "Reply exactly: ok" }],
@@ -1228,6 +1334,54 @@ test("trusted AI task assessment maps canonical deployment reason before stale f
   assert.equal(profile.costTarget <= 3, true);
 });
 
+test("trusted AI assessment keeps heuristic task level when only context is large", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{ role: "user", content: "continua" }],
+    _inputTokens: 161000,
+    _estimatedTokens: 173000,
+  };
+
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 5,
+    effort: "high",
+    speed: 2,
+    reason: "agentic_coding",
+  });
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskLevel, 3);
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.taskLevel, 3);
+  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.level, 5);
+
+  const effective = policy.effectiveRequestProfile({
+    ...req,
+    _llmProxyDifficulty: profile,
+  }, { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" });
+  assert.equal(effective.qualityTarget, 3);
+  assert.equal(effective.costTarget, 3);
+  assert.equal(effective.thinkingLevel, 3);
+  assert.equal(effective.speedTarget, 4);
+});
+
+test("post-route marker keeps heuristic task level when only context is large", () => {
+  const req = {
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{ role: "user", content: "continua" }],
+    _inputTokens: 161000,
+    _estimatedTokens: 173000,
+  };
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=5 effort=high speed=2 reason=agentic_coding");
+
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.taskLevel, 3);
+  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.level, 5);
+});
+
 test("balanced policy preserves security and destructive routing floors", () => {
   const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "5" };
   const security = policy.effectiveRequestProfile({
@@ -1243,6 +1397,81 @@ test("balanced policy preserves security and destructive routing floors", () => 
   assert.equal(destructive.costTarget >= 4, true);
   assert.equal(destructive.thinkingLevel >= 4, true);
   assert.equal(destructive.speedTarget <= 3, true);
+});
+
+test("context-only write-heavy continuations keep task quality target standard", () => {
+  const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "continua" }],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 141000,
+    _estimatedTokens: 173000,
+    _llmProxyDifficulty: {
+      level: 5,
+      label: "deep",
+      taskKind: "agentic_coding",
+      taskLevel: 3,
+      contextLevel: 5,
+      thinkingEffort: "medium",
+      thinkingLevel: 3,
+      speedTarget: 4,
+      costTarget: 3,
+      stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+    },
+  };
+
+  const profile = policy.effectiveRequestProfile(req, env);
+
+  assert.equal(profile.taskLevel, 3);
+  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.qualityTarget, 3);
+  assert.equal(profile.costTarget, 3);
+  assert.equal(profile.thinkingLevel, 3);
+  assert.equal(profile.speedTarget, 4);
+});
+
+test("context-only write-heavy continuations prefer medium thinking over higher thinking", () => {
+  const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "continua" }],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 141000,
+    _estimatedTokens: 173000,
+    _llmProxyDifficulty: {
+      level: 5,
+      label: "deep",
+      taskKind: "agentic_coding",
+      taskLevel: 3,
+      contextLevel: 5,
+      thinkingEffort: "medium",
+      thinkingLevel: 3,
+      speedTarget: 4,
+      costTarget: 3,
+      stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+    },
+  };
+  const medium = {
+    name: "Windsurf-ClaudeSonnet46",
+    model: "windsurf/claude-sonnet-4.6",
+    family: "windsurf",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 200000,
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const high = {
+    ...medium,
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    thinking_effort: "high",
+  };
+
+  const mediumBonus = policy.providerPolicyBonus(medium, req, { env, getEffectiveContext: (provider) => provider.context });
+  const highBonus = policy.providerPolicyBonus(high, req, { env, getEffectiveContext: (provider) => provider.context });
+
+  assert.equal(mediumBonus > highBonus + 0.25, true);
 });
 
 test("providerPolicyBonus uses learned effective context instead of advertised context", () => {

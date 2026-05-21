@@ -235,6 +235,20 @@ test("detectIncompatibility does not cool request-specific token limit errors as
   });
 });
 
+test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as no_tools", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-claudesonnet46",
+      400,
+      "Bad Request",
+      { hasTools: true },
+    );
+
+    const compat = scoring.getCompat("Copilot-claudesonnet46");
+    assert.equal(compat.no_tools, true);
+  });
+});
+
 test("getEffectiveContext applies learned real context across provider context field shapes", () => {
   withIsolatedScoring(() => {
     state.providerCompat["Context-Length-Test"] = { real_context: 24000 };

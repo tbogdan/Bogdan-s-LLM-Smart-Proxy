@@ -129,7 +129,7 @@ test("toAnthropicResponse preserves OpenAI text content parts", () => {
   ]);
 });
 
-test("toAnthropicResponse suppresses generated tool_use missing required input", () => {
+test("toAnthropicResponse returns clear help for generated tool_use missing required input", () => {
   const response = gateway.toAnthropicResponse({
     model: "auto-coding",
     choices: [
@@ -154,10 +154,15 @@ test("toAnthropicResponse suppresses generated tool_use missing required input",
 
   assert.equal(response.stop_reason, "end_turn");
   assert.equal(response.content.some((part) => part.type === "tool_use"), false);
-  assert.equal(/invalid tool call/i.test(response.content.map((part) => part.text || "").join("\n")), false);
+  const text = response.content.map((part) => part.text || "").join("\n");
+  assert.match(text, /Tool call error/i);
+  assert.match(text, /Bash/);
+  assert.match(text, /missing required field "command"/);
+  assert.match(text, /retry/i);
+  assert.match(text, /required fields: command/i);
 });
 
-test("streaming Anthropic bridge suppresses generated tool_use missing required input", async () => {
+test("streaming Anthropic bridge returns clear help for generated tool_use missing required input", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -196,10 +201,14 @@ test("streaming Anthropic bridge suppresses generated tool_use missing required 
   const body = res.chunks.join("");
   assert.equal(res.status, 200);
   assert.equal(body.includes('"type":"tool_use"'), false);
-  assert.equal(/invalid tool call/i.test(body), false);
+  assert.match(body, /Tool call error/i);
+  assert.match(body, /Bash/);
+  assert.match(body, /missing required field \\"command\\"/);
+  assert.match(body, /retry/i);
+  assert.match(body, /Required fields: command/i);
 });
 
-test("streaming Anthropic bridge keeps invalid tool diagnostics out of IDE-visible text", async () => {
+test("streaming Anthropic bridge explains invalid tool diagnostics in IDE-visible text", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -238,7 +247,8 @@ test("streaming Anthropic bridge keeps invalid tool diagnostics out of IDE-visib
   const body = res.chunks.join("");
   assert.equal(res.status, 200);
   assert.equal(body.includes('"type":"tool_use"'), false);
-  assert.equal(/invalid tool call/i.test(body), false);
+  assert.match(body, /Tool call error/i);
+  assert.match(body, /missing required field \\"command\\"/);
 });
 
 test("streaming Anthropic bridge ignores duplicate routed writeHead calls", async () => {

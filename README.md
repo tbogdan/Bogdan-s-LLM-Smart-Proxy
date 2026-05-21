@@ -2,6 +2,17 @@
 
 Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for the supported provider families: Windsurf, Claude, Codex, and GitHub Copilot. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto`, `auto-coding`, and `coding-sm` to the best available provider.
 
+## Summary
+
+Project LLM Smart Proxy reduces AI operating cost by automatically routing each request to the right LLM for the task, context size, latency target, and business policy.
+
+- Cost-aware automation: steers simple work to small, free, or low-cost models and escalates only when quality, tools, reasoning, or context require it.
+- Multi-source provider fabric: unifies Windsurf, Claude, Codex, and GitHub Copilot behind one local API, so clients are not locked to one vendor path.
+- Context continuity: preserves working context across requests, compacts long sessions automatically, and carries forward built-in memory summaries.
+- Multi-client API support: serves OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, token counting, and model discovery for IDEs, SDKs, and agents.
+- Auditable operations: emits detailed routing, assessment, provider, cost, speed, thinking, cache, fallback, and context-escalation logs for transparent governance.
+- Policy-driven control: lets operators tune spend, latency, and reasoning depth centrally without changing client applications.
+
 ## Supported Providers
 
 | Provider family | Host authentication | Runtime adapter | Models |
@@ -201,6 +212,15 @@ LLM_PROXY_AI_SUMMARY_MAX_TOKENS=500
 
 The targets are averages/preferences. Simple prompts are steered toward cheaper/faster models; complex agentic work can exceed the configured cost target when capability is more important.
 When context compaction removes old turns, the proxy also makes an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` and embeds the AI summary into the compacted context for the current request.
+
+| Variable | Values | Executive effect |
+| --- | --- | --- |
+| `LLM_COST_TARGET` | `1` to `5`, default `3` | Lower values favor savings and free/mini models; higher values allow more premium models when the task justifies it. |
+| `LLM_THINKING_TARGET` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; default `medium` | Sets the preferred reasoning depth, from fast execution to deeper deliberation. |
+| `LLM_SPEED_TARGET` | `1` to `5`, default `4` | Higher values prioritize latency; lower values permit slower high-capability models. |
+| `LLM_ROUTING_POLICY` | `economy`, `balanced`, `speed`, `quality`; default `balanced` | Selects the operating posture: `economy` maximizes savings, `balanced` optimizes cost and quality, `speed` prioritizes latency, and `quality` allows more capable models when the task benefits. Unknown values safely fall back to `balanced`. |
+
+Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficient`, `lowcost`, `low-cost`, and `savings` map to `economy`; `fast`, `latency`, and `throughput` map to `speed`; `capability`, `premium`, and `frontier` map to `quality`.
 
 ## Docker Profiles
 

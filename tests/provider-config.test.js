@@ -41,6 +41,21 @@ test("smart groups keep existing routing names except removed image and video gr
   });
 });
 
+test("runtime provider files inherit newly added default smart groups", () => {
+  const hydrated = providers.hydrateProvidersFile({
+    groups: {
+      "auto-tools": "tools",
+      "auto-coding": "coding",
+      "auto-text": "text",
+    },
+    providers: [],
+  });
+
+  assert.equal(hydrated.groups["auto-assess"], "assessment");
+  assert.equal(hydrated.groups["auto-sm"], "text-sm");
+  assert.equal(hydrated.groups["auto-coding"], "coding");
+});
+
 test("capabilities are inferred for supported model families", () => {
   assert.deepEqual(config.inferCapabilities("claude/claude-sonnet-4-5").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("codex/gpt-5.5").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
