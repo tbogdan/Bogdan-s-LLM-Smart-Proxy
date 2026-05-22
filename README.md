@@ -189,7 +189,7 @@ The proxy does more than choose a cheaper model. It applies managed system-promp
 - Lightweight mode strips unnecessary tool schemas for passive or exact-answer tasks.
 - Use-case focus adds routing profile, task shape, gates, and verification posture.
 - Memory instructions tell models to use injected memory first and request private recall with `LLM_PROXY_RECALL` only when needed.
-- Post-route assessment markers let the response carry hidden metadata for the next route without leaking it to the user.
+- Post-route assessment markers let the response carry hidden metadata for the next route without leaking it to the user; continuations reuse that marker/cache instead of asking a classifier again for the same user intent.
 
 This improves productivity because client prompts do not need to repeatedly restate workflow rules, memory behavior, tool discipline, or routing expectations. The user and IDE can ask naturally; the proxy supplies the operating policy.
 
@@ -205,8 +205,8 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - `write_heavy`: implementation or output generation, optimize for fast useful work.
    - `read_heavy`: analysis, architecture, root cause, or planning, spend reasoning before output.
    - `review`: adversarial validation against a diff or completed work.
-   - `security`: high-risk review that can require human sign-off.
-   - `destructive`: dry-run-first execution posture; it does not by itself create a human approval state.
+   - `security`: security review that requires human sign-off before provider execution.
+   - `destructive`: dry-run-first execution posture; real irreversible or production-impacting execution requires human sign-off.
    - `benchmark`: preserve fair arms and measurable outputs.
 5. Build an effective request profile:
    - `taskLevel`: difficulty of the current user task.
@@ -215,8 +215,9 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - `costTarget`, `speedTarget`, `thinkingLevel`: adjusted by the operator policy (`economy`, `balanced`, `speed`, `quality`).
 6. Gate large-model access:
    - Low-tier models can be selected directly.
-   - Sonnet/Opus/Pro/max/high-thinking candidates require AI assessment when the top candidate is a large model or the context is noisy.
+   - Sonnet/Opus/Pro/max/high-thinking candidates require AI assessment on a new user task or explicit upgrade.
    - The assessor uses `auto-assess`, favoring cheap fast providers, and returns minified JSON used only by the proxy.
+   - Agent continuations reuse the previous response marker or post-route assessment cache when the latest user intent has not changed.
    - Only final `human_signoff` assessments create a human approval state; `dry_run_first` remains a routing/execution posture.
 7. Score candidates:
    - Base provider health and compatibility.
@@ -357,16 +358,16 @@ Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficien
 
 ### Human Sign-Off Gate
 
-Human approval is enabled by default. Large-model access gates first run the hidden AI assessment; access assessment never creates a human approval state. If the assessed task is still high risk and carries the `human_signoff` gate, such as explicit security sign-off work, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`.
+Human approval is enabled by default. Large-model access gates first run the hidden AI assessment only for a new task or explicit upgrade; access assessment never creates a human approval state by itself. If the assessed task carries the `human_signoff` gate, currently `security_review` or real destructive/production-impacting execution, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`. Completion review, test generation, dry-run-first work, and normal large-model access do not create human approval states. Trusted AI assessment can only create `security_review` sign-off when the current deterministic request also shows security/high-risk intent.
 
-The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, reply with the exact `approved_by_user:<challenge>` token shown in the proxy message, or retry the same payload with one of these approval forms:
+The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, reply with the exact `approved_by_user:<challenge>` token shown in the proxy message. The proxy also accepts that token if an IDE sends it back as tool output, or if an API client retries the same payload with one of these approval forms:
 
 ```text
 X-LLM-Proxy-Approval: approved_by_user:<challenge>
 approved_by_user=approved_by_user:<challenge>
 ```
 
-The approval token is bound to a hash of the request, task gate, shape, tools, and messages, expires after 15 minutes by default, and is stripped before the upstream model sees the request. The visible proxy approval prompt and the user approval reply are also stripped before the original request is routed upstream. API clients that need the old hard HTTP error can set `LLM_PROXY_HUMAN_APPROVAL_RESPONSE_MODE=http_error`. `/health` exposes whether the approval system is enabled, the pending count, and the audit file path. For local experiments only, it can be disabled with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
+The approval token is bound to a hash of the original request, task gate, shape, tools, and messages, expires after 15 minutes by default, and is stripped before the upstream model sees the request. The visible proxy approval prompt and the approval reply are stripped before the original request is routed upstream, so the approval exchange cannot pollute routing assessment or provider context. API clients that need the old hard HTTP error can set `LLM_PROXY_HUMAN_APPROVAL_RESPONSE_MODE=http_error`. `/health` exposes whether the approval system is enabled, the pending count, and the audit file path. For local experiments only, it can be disabled with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
 
 ## Memory Layer
 

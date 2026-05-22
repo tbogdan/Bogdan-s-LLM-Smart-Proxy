@@ -381,6 +381,29 @@ test("auth token implementation is routed as coding, not security review", () =>
   assert.equal(assessed.costTarget <= 3, true);
 });
 
+test("security-review complaint text does not create human signoff for a read/build task", () => {
+  const req = {
+    messages: [
+      {
+        role: "user",
+        content:
+          "why is it asking for security review?! only high-risk tasks need that:\nwhich tools do we use from chaos-mesh and which tools are separate?\nlet's make a docker dashboard for chaos\nwe want to integrate the current logic, for example auto discovery from SSH_USER=btorcescu ./scripts/startup.sh\ndo a deep dive in the app and identify the best implementation path",
+      },
+    ],
+    tools: [
+      { type: "function", function: { name: "Read" } },
+      { type: "function", function: { name: "Bash" } },
+    ],
+    _estimatedTokens: 18000,
+  };
+
+  const assessed = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.notEqual(assessed.taskKind, "security_review");
+  assert.notEqual(assessed.stepShape.shape, "security");
+  assert.notEqual(assessed.stepShape.gate, "human_signoff");
+});
+
 test("explicit replay and timing verifier patches stay security gated", () => {
   const req = {
     messages: [
@@ -438,6 +461,10 @@ test("detectStepShape maps task shape to routing posture and validation gate", (
     [{ role: "user", content: "Plan a database migration that deletes old rows, includes rollback strategy, and must dry-run first on production-like data." }],
     { _estimatedTokens: 7000 },
   );
+  const destructiveExecution = policy.assessRequestDifficulty(
+    [{ role: "user", content: "Execute the production database migration that irreversibly deletes customer rows." }],
+    { _estimatedTokens: 7000 },
+  );
   const security = policy.assessRequestDifficulty(
     [{ role: "user", content: "Review this auth permission change for privilege bypass before merge." }],
     { _estimatedTokens: 4000 },
@@ -460,6 +487,9 @@ test("detectStepShape maps task shape to routing posture and validation gate", (
   assert.equal(destructive.stepShape.shape, "destructive");
   assert.equal(destructive.stepShape.gate, "dry_run_first");
   assert.equal(destructive.thinkingLevel >= 4, true);
+
+  assert.equal(destructiveExecution.stepShape.shape, "destructive");
+  assert.equal(destructiveExecution.stepShape.gate, "human_signoff");
 
   assert.equal(security.stepShape.shape, "security");
   assert.equal(security.stepShape.gate, "human_signoff");
@@ -576,6 +606,27 @@ test("difficulty marker stripping preserves same-line assistant content", () => 
 
   assert.equal(result.marker.level, 1);
   assert.equal(JSON.parse(result.body).choices[0].message.content, "ok");
+});
+
+test("difficulty marker stripping hides compact slash-level markers", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "LLM_PROXY_TASK_DIFFICULTY level=4/5 reason=major_architecture_pivot\nI will inspect the routing architecture.",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+  const content = JSON.parse(result.body).choices[0].message.content;
+
+  assert.equal(result.marker.level, 4);
+  assert.equal(result.marker.reason, "major_architecture_pivot");
+  assert.equal(content, "I will inspect the routing architecture.");
+  assert.doesNotMatch(content, /\/5 reason=major_architecture_pivot|LLM_PROXY_TASK_DIFFICULTY/);
 });
 
 test("difficulty marker stripping removes leading blank lines before marker", () => {
@@ -1353,6 +1404,31 @@ test("trusted AI task assessment overrides stale security routing log text", () 
   assert.notEqual(profile.stepShape.shape, "security");
   assert.equal(profile.costTarget <= 3, true);
   assert.equal(profile.speedTarget >= 4, true);
+});
+
+test("trusted AI task assessment cannot create security signoff without deterministic security intent", () => {
+  const req = {
+    tools: [{ type: "function", function: { name: "Read" } }],
+    messages: [
+      {
+        role: "user",
+        content: "Deep dive into the chaos_engineering codebase first. Read files and report architecture, tools, docker, kubernetes, ansible, SSH, and chaos-mesh integrations.",
+      },
+    ],
+    _inputTokens: 12000,
+    _estimatedTokens: 18000,
+  };
+
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 4,
+    effort: "high",
+    speed: 3,
+    reason: "security_review",
+  });
+
+  assert.equal(profile.source, "assessment");
+  assert.notEqual(profile.taskKind, "security_review");
+  assert.notEqual(profile.stepShape.gate, "human_signoff");
 });
 
 test("post-route assessment marker does not inherit stale security gate", () => {

@@ -161,6 +161,31 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
   });
 });
 
+test("routeStreamToProvider strips compact slash-level marker split across chunks", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_TASK_DIFFICULTY level=4",
+        "/5 reason=major_architecture_pivot\n",
+        "I will inspect the routing architecture.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
+      assert.equal(output.includes("/5 reason=major_architecture_pivot"), false);
+      assert.equal(output.includes("I will inspect the routing architecture."), true);
+    });
+  });
+});
+
 test("routeStreamToProvider preserves attached uppercase content after stream marker", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
