@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "graphiti-memory": {
+      "transport": "http",
+      "url": "http://localhost:18080/mcp/"
+    }
+  }
+}

@@ -179,6 +179,66 @@ test("detectGarbledText accepts coherent patch sketches with fenced code", () =>
   assert.equal(compaction.detectGarbledText(patch), false);
 });
 
+test("detectGarbledText accepts coherent patch sketches with repeated test assertions", () => {
+  const patch = [
+    "## Patch Sketch",
+    "",
+    "```js",
+    "const crypto = require('crypto');",
+    "",
+    "function verify(v1, body, secret) {",
+    "  if (!/^[0-9a-f]{64}$/i.test(v1)) return false;",
+    "  const expected = crypto.createHmac('sha256', secret).update(body).digest();",
+    "  const received = Buffer.from(v1, 'hex');",
+    "  return crypto.timingSafeEqual(expected, received);",
+    "}",
+    "",
+    "test('rejects malformed signatures', () => {",
+    "  assert.equal(verify('bad', '{}', 'secret'), false);",
+    "  assert.equal(verify('bad', '{}', 'secret'), false);",
+    "  assert.equal(verify('bad', '{}', 'secret'), false);",
+    "  assert.equal(verify('bad', '{}', 'secret'), false);",
+    "  assert.equal(verify('bad', '{}', 'secret'), false);",
+    "});",
+    "```",
+    "",
+    "Regression coverage:",
+    "- rejects malformed hex before Buffer comparison.",
+    "- rejects replayed timestamps older than five minutes.",
+    "- verifies constant-time comparison with timingSafeEqual.",
+    "- covers v1 HMAC signature handling and SHA256 payload signing.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(patch), false);
+});
+
+test("detectGarbledText accepts coherent tool translator designs with code separators", () => {
+  const report = [
+    "## Translator Design: Bash Tool Call Normalizer",
+    "",
+    "### Schema Normalization",
+    "",
+    "```ts",
+    "// ------------------------------",
+    "function translateBashToolCall(input: { cmd?: string; command?: string }) {",
+    "  if (typeof input.command === 'string') return input;",
+    "  if (typeof input.cmd === 'string') return { command: input.cmd };",
+    "  throw new Error('missing command');",
+    "}",
+    "// ------------------------------",
+    "```",
+    "",
+    "### Validation Rules",
+    "",
+    "- Accept `{ command: string }` unchanged.",
+    "- Translate `{ cmd: string }` into the required command shape.",
+    "- Reject empty input with 422 so routing can reroute and cooldown invalid providers.",
+    "- Add tests for valid command, cmd alias, empty input, and unrelated tool calls.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
 test("detectGarbledText accepts coherent markdown test-first patch reports", () => {
   const report = [
     "**Tests that fail BEFORE the patch**",
@@ -239,6 +299,122 @@ test("detectGarbledText accepts coherent recovery workflow reports", () => {
     "**Evidence:** The final report includes provider mix, latency, tokens, cost estimate, and correctness.",
     "**Action:** Summarize what changed, what remains risky, and which raw logs explain the route choices.",
     "**Stop condition:** Stop if benchmark correctness or route diversity regresses.",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
+test("detectGarbledText accepts coherent recovery workflow reports with markdown tables", () => {
+  const report = [
+    "# Recovery Workflow - Five Ordered Steps",
+    "",
+    "---",
+    "",
+    "## Step 1: Inspect State",
+    "",
+    "| Field | Detail |",
+    "|---|---|",
+    "| Evidence | Step 1 uses `git status --short`, `docker ps -a`, benchmark1 output, and generated-file1 state before any migration action. |",
+    "| Action | Step 1 isolates unrelated change1, resumes benchmark process1, reruns test1, and records stop-condition1. |",
+    "| Stop condition | Step 1 stops when regression1, process1, dirty-file1, and report1 evidence are all accounted for. |",
+    "",
+    "## Step 2: Isolate the Failure",
+    "",
+    "| Field | Detail |",
+    "|---|---|",
+    "| Evidence | Step 2 compares direct Opus output with proxy fallback output and keeps unrelated local edits intact. |",
+    "| Action | Step 2 checks route logs, verifies benchmark interruption state, and confirms the generated file is safe to leave alone. |",
+    "| Stop condition | Step 2 stops when the failure is tied to a detector decision rather than provider reasoning quality. |",
+    "",
+    "## Step 3: Resume Safely",
+    "",
+    "| Field | Detail |",
+    "|---|---|",
+    "| Evidence | Step 3 has the prior green tests, current benchmark process state, and Docker rebuild signal. |",
+    "| Action | Step 3 reruns the bounded benchmark slice and saves the JSON output for comparison. |",
+    "| Stop condition | Step 3 stops when the benchmark produces correctness, latency, and provider mix data. |",
+    "",
+    "## Step 4: Verify Regression Safety",
+    "",
+    "| Field | Detail |",
+    "|---|---|",
+    "| Evidence | Step 4 needs tests, route logs, and no hidden rollback of user changes. |",
+    "| Action | Step 4 runs focused tests, then full verification, then a smoke request through the proxy. |",
+    "| Stop condition | Step 4 stops when regression checks pass and routing remains explainable. |",
+    "",
+    "## Step 5: Report",
+    "",
+    "| Field | Detail |",
+    "|---|---|",
+    "| Evidence | Step 5 includes benchmark cost, latency, tokens, direct result, proxy result, and failure notes. |",
+    "| Action | Step 5 reports the saved artifact path and the exact benchmark command. |",
+    "| Stop condition | Step 5 stops when the summary separates proxy efficiency from upstream/provider errors. |",
+  ].join("\n");
+
+  assert.equal(compaction.detectGarbledText(report), false);
+});
+
+test("detectGarbledText accepts coherent recovery workflow reports with repeated section labels", () => {
+  const report = [
+    "# Recovery Workflow - Five Ordered Steps",
+    "",
+    "---",
+    "",
+    "## Step 1: Inspect State",
+    "",
+    "**Evidence**",
+    "- Run `git status` and `git diff --stat` to catalogue dirty, staged, and untracked files.",
+    "- Capture `docker ps -a` to confirm which image layer the rebuild reached.",
+    "",
+    "**Action**",
+    "- Record the changed paths and separate generated output from hand edits before making changes.",
+    "",
+    "**Stop condition**",
+    "- Every unknown file is explained and no user-owned file needs to be reverted.",
+    "",
+    "## Step 2: Isolate Unrelated Changes",
+    "",
+    "**Evidence**",
+    "- The generated file may be benchmark output rather than implementation work.",
+    "",
+    "**Action**",
+    "- Leave unrelated changes in place and scope the next edit to the failing benchmark/routing modules.",
+    "",
+    "**Stop condition**",
+    "- The migration can continue without rolling back user work.",
+    "",
+    "## Step 3: Resume Safely",
+    "",
+    "**Evidence**",
+    "- The benchmark process was interrupted after a Docker rebuild.",
+    "",
+    "**Action**",
+    "- Rerun the smallest benchmark slice that reproduces the route and compare logs.",
+    "",
+    "**Stop condition**",
+    "- The timeout is classified as upstream transport, detector false positive, or routing policy.",
+    "",
+    "## Step 4: Verify",
+    "",
+    "**Evidence**",
+    "- Tests were green before the rebuild and regression safety matters more than speed.",
+    "",
+    "**Action**",
+    "- Run focused tests, then full tests, then the bounded benchmark again.",
+    "",
+    "**Stop condition**",
+    "- All checks pass and the benchmark reaches the final case.",
+    "",
+    "## Step 5: Report",
+    "",
+    "**Evidence**",
+    "- The final output contains provider mix, latency, tokens, cost estimate, and correctness.",
+    "",
+    "**Action**",
+    "- Summarize what changed, remaining risk, and exact verification commands.",
+    "",
+    "**Stop condition**",
+    "- The report separates proxy efficiency from provider and guard failures.",
   ].join("\n");
 
   assert.equal(compaction.detectGarbledText(report), false);

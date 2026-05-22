@@ -147,6 +147,8 @@ curl http://localhost:18900/v1/messages/count_tokens \
 
 The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-assess`, `auto-sm`, `auto-memory`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
 
+Latest documented result: the 2026-05-22 clean ladder benchmark matched direct Opus at 9/9 correct while reducing estimated total cost from `$0.385830` to `$0.059077` (84.7% savings). Average proxy latency was 19.6s versus 14.8s direct, driven by one security patch outlier; excluding that case, proxy latency averaged 12.0s versus 13.3s direct. See [Smart Routing, Memory, and Compaction Benchmark](docs/smart-routing-memory-benchmark.md) for the executive comparison, route examples, algorithm details, optimization notes, and research bibliography.
+
 The command is a dry run unless `--run` is present:
 
 ```bash
