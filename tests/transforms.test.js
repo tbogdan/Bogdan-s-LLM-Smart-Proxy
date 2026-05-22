@@ -265,6 +265,8 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /You are autonomous after the user has authorized implementation/);
   assert.match(system, /Reply A to proceed without explicit user gate\|Press enter to continue without explicit user gate/);
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
+  assert.match(system, /ROUTING ASSESSMENT.*next route/i);
+  assert.match(system, /likely next route after the current response or tool call/i);
   assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.match(system, /EFFICIENT FILE READING:/);
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
@@ -339,6 +341,7 @@ test("transformRequest uses compact assessment prompt for complex no-tool smart 
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /ARCHITECTURE RECOVERY MODE/);
   assert.match(system, /Route profile: task=architecture_recovery/);
+  assert.match(system, /private routing metadata for the next route/i);
   assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.equal(system.length < 1800, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);

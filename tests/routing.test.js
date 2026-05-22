@@ -1165,7 +1165,134 @@ test("handleChatCompletion hard-prefers tiny low-thinking assessment providers o
   });
 });
 
-test("handleChatCompletion reuses hidden assessment after a provider response without marker", async () => {
+test("hidden assessment includes recent media and browser tool evidence", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"effort\":\"medium\",\"speed\":4,\"reason\":\"routing_debugging\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_next", type: "function", function: { name: "Bash", arguments: "{\"command\":\"echo next\"}" } }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tiny-Assessor",
+          model: "free/tiny-assessor",
+          caps: ["text"],
+          cost_group: 1,
+          speed_group: 5,
+          thinking_level: 1,
+          thinking_effort: "minimal",
+        }),
+        provider(url, {
+          name: "Main-Sonnet",
+          model: "windsurf/claude-sonnet-4.6",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue the browser automation for flow 5 and fix the protection panel." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_screenshot",
+                type: "function",
+                function: {
+                  name: "Bash",
+                  arguments: "{\"command\":\"cat tmp/screenshot_flow5_protect_panel_view.png | base64 | head -5 && ls -la tmp/screenshot_flow5_protect_panel_view.png\"}",
+                },
+              }],
+            },
+            {
+              role: "tool",
+              tool_call_id: "call_screenshot",
+              content: "stream did not contain valid UTF-8 while reading tmp/screenshot_flow5_protect_panel_view.png\nscreenshot_flow5_protect_panel_view.png shows skeleton loading state; protection panel never loaded; DOM left nav not details panel.",
+            },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_video",
+                type: "function",
+                function: {
+                  name: "Bash",
+                  arguments: "{\"command\":\"ffprobe -v error tmp/flow5-protect-panel.mp4 && ls -la tmp/flow5-protect-panel.mp4\"}",
+                },
+              }],
+            },
+            {
+              role: "tool",
+              tool_call_id: "call_video",
+              content: "flow5-protect-panel.mp4\nVideo evidence captured for frame-by-frame inspection.",
+            },
+          ],
+          tools: [{
+            type: "function",
+            function: { name: "Bash", parameters: { type: "object", required: ["command"], properties: { command: { type: "string" } } } },
+          }],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        const classifierBody = requests.find((body) => /LLM proxy routing classifier/.test(JSON.stringify(body)));
+        const classifierSerialized = JSON.stringify(classifierBody);
+        assert.match(classifierSerialized, /Recent assistant\/tool evidence/);
+        assert.match(classifierSerialized, /screenshot_flow5_protect_panel_view\.png/);
+        assert.match(classifierSerialized, /stream did not contain valid UTF-8/);
+        assert.match(classifierSerialized, /skeleton loading state/);
+        assert.match(classifierSerialized, /protection panel never loaded/);
+        assert.match(classifierSerialized, /flow5-protect-panel\.mp4/);
+        assert.match(classifierSerialized, /Video evidence/);
+        assert.match(classifierSerialized, /frame-by-frame inspection/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion reassesses fallback cache after assistant/tool transcript progress", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -1275,14 +1402,326 @@ test("handleChatCompletion reuses hidden assessment after a provider response wi
 
         assert.equal(second.status, 200);
         const classifierCalls = requests.filter((body) => /LLM proxy routing classifier/.test(JSON.stringify(body)));
+        assert.equal(classifierCalls.length, 2);
+        assert.equal(requests.length, 4);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE-DROP: stale fallback post-route assessment/);
+        assert.match(JSON.stringify(requests[3]), /Route profile: task=debugging/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion reassesses fallback cache when long tool output changes after preview", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const requests = [];
+    const logs = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"effort\":\"medium\",\"speed\":4,\"reason\":\"routing_debugging\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `call_read_${requests.length}`,
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tiny-Assessor",
+          model: "free/tiny-assessor",
+          caps: ["text"],
+          cost_group: 1,
+          speed_group: 5,
+          thinking_level: 1,
+          thinking_effort: "minimal",
+        }),
+        provider(url, {
+          name: "Main-Sonnet",
+          model: "windsurf/claude-sonnet-4.6",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      state.log = (msg) => logs.push(msg);
+      try {
+        const prefix = "same-prefix ".repeat(260);
+        const baseMessages = [
+          { role: "system", content: "Project /Users/test/routing-cache" },
+          { role: "user", content: "Fix the routing classifier bug." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_long",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"tmp/output.log\"}" },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_long", content: `${prefix} first-tail` },
+        ];
+        const tools = [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+          },
+        }];
+
+        const first = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: baseMessages,
+          tools,
+          max_tokens: 64,
+        }, first);
+        assert.equal(first.status, 200);
+
+        const second = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            ...baseMessages.slice(0, -1),
+            { role: "tool", tool_call_id: "call_long", content: `${prefix} changed-tail-after-preview` },
+          ],
+          tools,
+          max_tokens: 64,
+        }, second);
+
+        assert.equal(second.status, 200);
+        const classifierCalls = requests.filter((body) => /LLM proxy routing classifier/.test(JSON.stringify(body)));
+        assert.equal(classifierCalls.length, 2);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE-DROP: stale fallback post-route assessment/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion reuses fallback assessment when transcript has not advanced", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const requests = [];
+    const logs = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"effort\":\"medium\",\"speed\":4,\"reason\":\"routing_debugging\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        const mainCalls = requests.filter((item) => !/LLM proxy routing classifier/.test(JSON.stringify(item))).length;
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `call_read_${mainCalls}`,
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tiny-Assessor",
+          model: "free/tiny-assessor",
+          caps: ["text"],
+          cost_group: 1,
+          speed_group: 5,
+          thinking_level: 1,
+          thinking_effort: "minimal",
+        }),
+        provider(url, {
+          name: "Main-Sonnet",
+          model: "windsurf/claude-sonnet-4.6",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      state.log = (msg) => logs.push(msg);
+      try {
+        const baseMessages = [
+          { role: "system", content: "Project /Users/test/routing-cache" },
+          { role: "user", content: "Fix the routing classifier bug." },
+        ];
+        const tools = [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+          },
+        }];
+
+        const first = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: baseMessages,
+          tools,
+          max_tokens: 64,
+        }, first);
+        assert.equal(first.status, 200);
+
+        const second = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: baseMessages,
+          tools,
+          max_tokens: 64,
+        }, second);
+
+        assert.equal(second.status, 200);
+        const classifierCalls = requests.filter((body) => /LLM proxy routing classifier/.test(JSON.stringify(body)));
         assert.equal(classifierCalls.length, 1);
         assert.equal(requests.length, 3);
         assert.match(logs.join("\n"), /AI-ASSESS-CACHE-HIT/);
-        const fallbackAssessmentLog = logs.find((line) => line.includes("assessment_model=post-route-fallback"));
-        assert.match(fallbackAssessmentLog, /assessor=Tiny-Assessor/);
-        assert.match(fallbackAssessmentLog, /assessment_response_provider=Main-Sonnet/);
-        assert.doesNotMatch(fallbackAssessmentLog, /assessor=Main-Sonnet/);
         assert.match(JSON.stringify(requests[2]), /Route profile: task=debugging/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("post-route marker with usable response is cached for next route without rerouting current response", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const requests = [];
+    const logs = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "LLM_PROXY_TASK_DIFFICULTY level=5 effort=xhigh speed=2 reason=debugging\nCurrent response should be preserved.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 40, completion_tokens: 8, total_tokens: 48 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tiny-Current",
+          model: "tiny/current",
+          caps: ["text", "coding", "tools"],
+          cost_group: 1,
+          speed_group: 5,
+          thinking_level: 1,
+          thinking_effort: "low",
+        }),
+        provider(url, {
+          name: "Strong-Next",
+          model: "strong/next",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 5,
+          speed_group: 3,
+          thinking_level: 5,
+          thinking_effort: "xhigh",
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+      state.log = (msg) => logs.push(msg);
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "system", content: "Project /Users/test/next-route" },
+            { role: "user", content: "Debug this hard browser failure in the repo." },
+          ],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.match(fake.body, /Current response should be preserved/);
+        assert.doesNotMatch(fake.body, /LLM_PROXY_TASK_DIFFICULTY/);
+        assert.equal(requests.length, 1);
+        assert.doesNotMatch(logs.join("\n"), /REROUTE-ASSESS/);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE: stored post-route assessment/);
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
