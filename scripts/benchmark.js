@@ -215,7 +215,11 @@ async function postChatCompletion(config, model, testCase, arm = "proxy") {
 
     ({ response, text, json } = await send());
     const approvalToken = json?.approval?.token_format || json?.approval?.token || "";
-    const autoApproveHumanGate = arm === "proxy" && response.status === 409 && json?.error?.code === "human_signoff_required" && approvalToken && process.env.BENCH_AUTO_APPROVE_HUMAN_GATES !== "false";
+    const approvalContent = extractContent(json, text);
+    const approvalRequired =
+      json?.error?.code === "human_signoff_required" ||
+      /LLM_PROXY_HUMAN_APPROVAL_REQUIRED/.test(approvalContent);
+    const autoApproveHumanGate = arm === "proxy" && approvalRequired && approvalToken && process.env.BENCH_AUTO_APPROVE_HUMAN_GATES !== "false";
     if (autoApproveHumanGate) {
       approval = {
         auto_approved_for_benchmark: true,

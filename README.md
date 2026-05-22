@@ -356,16 +356,16 @@ Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficien
 
 ### Human Sign-Off Gate
 
-Human approval is enabled by default. When routing classifies a request with `human_signoff` or `dry_run_first`, the proxy stops before any provider or hidden assessor call and returns HTTP `409` with `error.code=human_signoff_required`.
+Human approval is enabled by default. Large-model access gates first run the hidden AI assessment so a noisy heuristic `dry_run_first` or `human_signoff` signal can be downgraded before it reaches the user. If the assessed task is still high risk, such as `security_review` or truly destructive work, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`.
 
-The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, retry the same payload with one of these approval forms:
+The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, reply with the exact `approved_by_user:<challenge>` token shown in the proxy message, or retry the same payload with one of these approval forms:
 
 ```text
 X-LLM-Proxy-Approval: approved_by_user:<challenge>
 approved_by_user=approved_by_user:<challenge>
 ```
 
-The approval token is bound to a hash of the request, task gate, shape, tools, and messages, expires after 15 minutes by default, and is stripped before the upstream model sees the request. `/health` exposes whether the approval system is enabled, the pending count, and the audit file path. For local experiments only, it can be disabled with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
+The approval token is bound to a hash of the request, task gate, shape, tools, and messages, expires after 15 minutes by default, and is stripped before the upstream model sees the request. The visible proxy approval prompt and the user approval reply are also stripped before the original request is routed upstream. API clients that need the old hard HTTP error can set `LLM_PROXY_HUMAN_APPROVAL_RESPONSE_MODE=http_error`. `/health` exposes whether the approval system is enabled, the pending count, and the audit file path. For local experiments only, it can be disabled with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
 
 ## Memory Layer
 

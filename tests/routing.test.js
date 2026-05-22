@@ -999,7 +999,7 @@ test("handleChatCompletion gates large automatic selections behind AI assessment
   });
 });
 
-test("handleChatCompletion blocks human-signoff requests before any provider call", async () => {
+test("handleChatCompletion defers heuristic dry-run gates until AI assessment can downgrade them", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -1010,11 +1010,94 @@ test("handleChatCompletion blocks human-signoff requests before any provider cal
       const chunks = [];
       req.on("data", (chunk) => chunks.push(chunk));
       req.on("end", () => {
-        requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const isAssessment = JSON.stringify(body.messages || []).includes("LLM proxy routing classifier");
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          choices: [{ message: { role: "assistant", content: "should not be called" }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          choices: [{
+            message: {
+              role: "assistant",
+              content: isAssessment
+                ? "{\"level\":2,\"taskLevel\":2,\"contextLevel\":1,\"effort\":\"low\",\"speed\":5,\"reason\":\"test_generation\"}"
+                : "generated safe tests",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Approval-Test",
+          model: "test/small-assessor",
+          caps: ["text", "coding", "tools"],
+          cost_group: 1,
+          speed_group: 5,
+        }),
+        provider(url, {
+          name: "Big-Sonnet",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          family: "windsurf",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+          tc: true,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Generate tests for delete stale cache entries. Do not touch production data." },
+          ],
+          tools: [{ type: "function", function: { name: "Edit", parameters: { type: "object" } } }],
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(JSON.stringify(requests[0].messages || []), /LLM proxy routing classifier/);
+        assert.equal(requests[1].model, "test/small-assessor");
+        assert.doesNotMatch(fake.body, /human_signoff_required|approval_required|approved_by_user/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion returns visible approval prompt for assessed high-risk work", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "{\"level\":4,\"taskLevel\":4,\"contextLevel\":2,\"effort\":\"high\",\"speed\":3,\"reason\":\"security_review\"}",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
         }));
       });
     }, async (url) => {
@@ -1038,14 +1121,14 @@ test("handleChatCompletion blocks human-signoff requests before any provider cal
           ],
         }, fake);
 
-        assert.equal(fake.status, 409);
+        assert.equal(fake.status, 200);
         const body = JSON.parse(fake.body);
-        assert.equal(body.error.code, "human_signoff_required");
-        assert.equal(body.approval.required, true);
-        assert.equal(body.approval.approved_by_user, false);
-        assert.equal(body.approval.gate, "human_signoff");
-        assert.match(body.approval.challenge, /^[a-f0-9]{32}$/);
-        assert.equal(requests.length, 0);
+        const content = body.choices[0].message.content;
+        assert.match(content, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED/);
+        assert.match(content, /approved_by_user:[a-f0-9]{32}/);
+        assert.match(content, /security_review/);
+        assert.equal(requests.length, 1);
+        assert.match(JSON.stringify(requests[0].messages || []), /LLM proxy routing classifier/);
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
@@ -1056,7 +1139,7 @@ test("handleChatCompletion blocks human-signoff requests before any provider cal
   });
 });
 
-test("handleChatCompletion accepts approved_by_user token and strips approval fields upstream", async () => {
+test("handleChatCompletion accepts approval reply messages and strips approval exchange upstream", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -1094,21 +1177,27 @@ test("handleChatCompletion accepts approved_by_user token and strips approval fi
           ],
         };
         await routing.handleChatCompletion(reqBody, first);
-        assert.equal(first.status, 409);
-        const challenge = JSON.parse(first.body).approval.challenge;
+        assert.equal(first.status, 200);
+        const approvalMessage = JSON.parse(first.body).choices[0].message.content;
+        const challenge = approvalMessage.match(/approved_by_user:([a-f0-9]{32})/)[1];
 
         const second = new FakeClientResponse();
         await routing.handleChatCompletion({
           ...reqBody,
-          approved_by_user: `approved_by_user:${challenge}`,
+          messages: [
+            ...reqBody.messages,
+            { role: "assistant", content: approvalMessage },
+            { role: "user", content: "da, mergem mai departe" },
+          ],
         }, second);
 
         assert.equal(second.status, 200);
         assert.equal(requests.length, 1);
+        assert.ok(requests[0].messages.some((message) => message.content === "Review this auth permission change for privilege bypass before merge."));
         assert.equal(requests[0].approved_by_user, undefined);
         assert.equal(requests[0].approval, undefined);
         assert.equal(requests[0].llm_proxy_approval, undefined);
-        assert.doesNotMatch(JSON.stringify(requests[0]), new RegExp(`approved_by_user|human_signoff_required|${challenge}`));
+        assert.doesNotMatch(JSON.stringify(requests[0]), new RegExp(`approved_by_user|LLM_PROXY_HUMAN_APPROVAL_REQUIRED|${challenge}`));
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;

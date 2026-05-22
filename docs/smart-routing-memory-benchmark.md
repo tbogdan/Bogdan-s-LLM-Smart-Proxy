@@ -27,7 +27,7 @@ The benchmark used the same nine-case ladder for both arms:
 - Cost: estimated from model-family pricing and normalized token usage. Bundled providers can report N/A for exact marginal price; in the benchmark math, those entries are treated as bundled/zero marginal cost unless a model-family estimator is available.
 - Artifact: `data/benchmarks/ladder-2026-05-22-clean.json`.
 - Current harness telemetry: new benchmark runs persist route traces, p50/p95 latency summaries, memory injection counters, compaction counters, post-stream warnings, and provider-family fairness metrics.
-- Human-gated benchmark cases are auto-approved only inside the benchmark harness by default so the comparison remains runnable; the artifact records this as approval/warning telemetry. Production traffic still receives a hard `409` until the user explicitly approves.
+- Human-gated benchmark cases are auto-approved only inside the benchmark harness by default so the comparison remains runnable; the artifact records this as approval/warning telemetry. Production traffic receives a visible `LLM_PROXY_HUMAN_APPROVAL_REQUIRED` assistant message and waits for explicit user approval before provider execution.
 
 This is a proxy-vs-optimized-proxy comparison, not a raw SDK comparison. The direct arm intentionally keeps the same local transport but forces a concrete premium model and disables the optimization layer, so the comparison isolates the business value of routing, memory, compaction, and prompt orchestration.
 
