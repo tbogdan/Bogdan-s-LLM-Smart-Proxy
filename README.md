@@ -44,7 +44,9 @@ Edit `.env` and enable the provider families you want:
 COMPOSE_PROJECT_NAME=llm-proxy
 LLM_PROXY_PORT=18900
 CODEX_PROXY_PORT=10531
-MEMPALACE_PORT=8891
+MEMORY_ENABLED=true
+MEMORY_BACKEND=local
+MEMORY_MAX_INJECT_TOKENS=2000
 ENABLE_WINDSURF=true
 ENABLE_CLAUDE=true
 ENABLE_CODEX=true
@@ -222,12 +224,25 @@ When context compaction removes old turns, the proxy also makes an internal self
 
 Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficient`, `lowcost`, `low-cost`, and `savings` map to `economy`; `fast`, `latency`, and `throughput` map to `speed`; `capability`, `premium`, and `frontier` map to `quality`.
 
+## Memory Layer
+
+The active runtime uses `lib/memory`. The default `MEMORY_BACKEND=local` keeps memory governance in-process while the app is in test, and the `memory` Docker profile provides a local Neo4j graph substrate for the future Graphiti backend.
+
+Models can request private memory work with first-line markers that the proxy strips before returning content to the client:
+
+```text
+LLM_PROXY_RECALL v=1 q="routing architecture" types=architecture,decisions budget=1200 reason=task_context
+LLM_PROXY_MEMORY v=1 op=user_correction target=routing_policy type=preference confidence=high
+```
+
+`LLM_PROXY_RECALL` triggers one internal retry with recalled memory injected into the system prompt. `LLM_PROXY_MEMORY` records memory governance intent, including user corrections that should supersede older facts when the graph backend is enabled. Context compaction archives dropped turns as `memory://...` references and tells the next model to use `LLM_PROXY_RECALL` when it needs details.
+
 ## Docker Profiles
 
 | Profile | When to use |
 | --- | --- |
 | `codex` | Required when `ENABLE_CODEX=true`; starts the local Codex proxy container using `data/codex-auth.json`. |
-| `memory` | Optional; starts MemPalace when `MEMPALACE_ENABLED=true`. |
+| `memory` | Optional; starts local Neo4j for the Graphiti-ready memory backend when `MEMORY_BACKEND=graphiti`. |
 
 Examples:
 
@@ -244,7 +259,8 @@ Port variables:
 | `COMPOSE_PROJECT_NAME` | `llm-proxy` | Prefix for Docker Compose container names |
 | `LLM_PROXY_PORT` | `18900` | Host port for the OpenAI/Anthropic proxy |
 | `CODEX_PROXY_PORT` | `10531` | Host port for the Codex proxy profile |
-| `MEMPALACE_PORT` | `8891` | Host port for the MemPalace profile |
+| `GRAPHITI_NEO4J_PORT` | `7687` | Host Bolt port for the local graph memory profile |
+| `GRAPHITI_NEO4J_HTTP_PORT` | `7474` | Host browser/API port for the local graph memory profile |
 
 ## Troubleshooting
 

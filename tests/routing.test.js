@@ -1264,7 +1264,7 @@ test("handleChatCompletion records provider usage once instead of double-countin
           messages: [{ role: "user", content: "Summarize this briefly." }],
         }, new FakeClientResponse());
 
-        const sid = require("../llm-mempalace").getSession([{ role: "user", content: "Summarize this briefly." }]).id;
+        const sid = require("../lib/memory").getSession([{ role: "user", content: "Summarize this briefly." }]).id;
         assert.equal(state.sessionStats[sid].totalInputTokens, 50);
         assert.equal(state.sessionStats[sid].totalOutputTokens, 7);
         assert.equal(state.sessionStats[sid].requests, 1);
@@ -1275,6 +1275,89 @@ test("handleChatCompletion records provider usage once instead of double-countin
         for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
         Object.assign(state.sessionStats, originalSessionStats);
         routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+      }
+    });
+  });
+});
+
+test("routeToProvider strips hidden memory markers from assistant content", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "LLM_PROXY_MEMORY v=1 op=user_correction target=f_123 type=preference confidence=high\nVisible answer.",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "remember this correction" }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      assert.equal(parsed.choices[0].message.content, "Visible answer.");
+      assert.equal(resp.body.includes("LLM_PROXY_MEMORY"), false);
+    });
+  });
+});
+
+test("handleChatCompletion retries once when provider asks for memory recall", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    let calls = 0;
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        calls += 1;
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (calls === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "LLM_PROXY_RECALL v=1 q=\"routing architecture\" types=architecture,decisions budget=800 reason=architecture_lookup",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }));
+          return;
+        }
+
+        const systemText = messageText(body.messages?.[0]);
+        assert.match(systemText, /LLM_PROXY_MEMORY_START/);
+        assert.match(systemText, /Recall query: routing architecture/);
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-text": "text" };
+      state.PROVIDERS = [provider(url, { name: "Recall-Test", model: "test-model", caps: ["text"] })];
+      try {
+        const clientRes = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-text",
+          messages: [{ role: "user", content: "Explain the current routing architecture." }],
+        }, clientRes);
+
+        assert.equal(clientRes.status, 200);
+        assert.equal(JSON.parse(clientRes.body).choices[0].message.content, "done");
+        assert.equal(calls, 2);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
       }
     });
   });

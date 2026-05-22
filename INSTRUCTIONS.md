@@ -42,7 +42,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    ```
 
    If Codex is not enabled, omit `--profile codex`.
-   When another checkout is already running on the host, set `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, `CODEX_PROXY_PORT`, and `MEMPALACE_PORT` in `.env` before starting Docker.
+   When another checkout is already running on the host, set `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, `CODEX_PROXY_PORT`, `GRAPHITI_NEO4J_PORT`, and `GRAPHITI_NEO4J_HTTP_PORT` in `.env` before starting Docker.
 
 5. Verify health.
 
@@ -77,6 +77,7 @@ Or add the same values under `env` in `.claude/settings.local.json`.
 - Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like `WINDSURF_IDE_VERSION`, `WINDSURF_USER_AGENT`, and `WINDSURF_CONNECT_RETRIES` compatibility settings.
 - Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, and `LLM_SPEED_TARGET`; these are soft targets, not hard caps.
 - Context compaction uses an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` so compacted turns carry an AI-generated summary in the current request.
+- The active memory layer is `lib/memory`. `MEMORY_BACKEND=local` is the default test backend; `MEMORY_BACKEND=graphiti` can be paired with the `memory` Docker profile for a local Neo4j graph substrate.
 - Use `docker compose --profile codex` when Codex is enabled.
-- Use `--profile memory` only when MemPalace is enabled with `MEMPALACE_ENABLED=true`.
+- Use `--profile memory` only when you want the local graph memory substrate.
 - Restart Docker services after changing `.env` credentials or enable flags.

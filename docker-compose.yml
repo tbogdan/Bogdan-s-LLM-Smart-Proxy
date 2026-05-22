@@ -8,8 +8,12 @@ services:
         required: false
     environment:
       LLM_PROXY_PORT: "18900"
-      MEMPALACE_ENABLED: ${MEMPALACE_ENABLED:-false}
-      MEMPALACE_URL: http://mempalace-mcp:8891
+      MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
+      MEMORY_BACKEND: ${MEMORY_BACKEND:-local}
+      MEMORY_MAX_INJECT_TOKENS: ${MEMORY_MAX_INJECT_TOKENS:-2000}
+      GRAPHITI_NEO4J_URI: bolt://graphiti-neo4j:7687
+      GRAPHITI_NEO4J_USER: ${GRAPHITI_NEO4J_USER:-neo4j}
+      GRAPHITI_NEO4J_PASSWORD: ${GRAPHITI_NEO4J_PASSWORD:-graphiti-memory-local}
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -20,9 +24,6 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      MEMPALACE_ENABLED: ${MEMPALACE_ENABLED:-false}
-      MEMPALACE_URL: http://mempalace-mcp:8891
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -38,14 +39,14 @@ services:
     restart: unless-stopped
     profiles: [codex]
 
-  mempalace-mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile.mempalace
+  graphiti-neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: "${GRAPHITI_NEO4J_USER:-neo4j}/${GRAPHITI_NEO4J_PASSWORD:-graphiti-memory-local}"
     volumes:
-      - ./palace:/palace
-      - ./data:/data
+      - ./data/neo4j:/data
     ports:
-      - "${MEMPALACE_PORT:-8891}:8891"
+      - "${GRAPHITI_NEO4J_PORT:-7687}:7687"
+      - "${GRAPHITI_NEO4J_HTTP_PORT:-7474}:7474"
     restart: unless-stopped
     profiles: [memory]

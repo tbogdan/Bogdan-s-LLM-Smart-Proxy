@@ -368,6 +368,24 @@ test("buildCompactSummary reads decisions from content parts", () => {
   assert.match(summary, /We chose the adapter approach/);
 });
 
+test("buildCompactSummary points recovery at memory recall markers", () => {
+  const summary = compaction.buildCompactSummary([
+    { role: "assistant", content: "We chose the graph memory layer because corrections need superseded edges." },
+  ], [{
+    uri: "memory://episode/test-session-123",
+    title: "test-session compacted context",
+    kind: "episode",
+    summary: "1 message archived",
+    preview: "We chose graph memory",
+  }], []);
+
+  assert.match(summary, /Full context archived to Memory:/);
+  assert.match(summary, /memory:\/\/episode\/test-session-123/);
+  assert.match(summary, /LLM_PROXY_RECALL/);
+  assert.equal(summary.includes("Mem" + "Palace"), false);
+  assert.equal(summary.includes("mem" + "palace_search"), false);
+});
+
 test("compactMessagesAsync awaits self-call AI summary and embeds it in current compaction", async () => {
   const messages = [
     { role: "system", content: "System stays." },

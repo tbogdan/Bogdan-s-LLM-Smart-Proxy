@@ -21,7 +21,7 @@ else
   echo ".env exists; preserving current values."
 fi
 
-mkdir -p data palace
+mkdir -p data
 
 set_env() {
   KEY="$1"
@@ -48,6 +48,14 @@ set_env() {
 get_env() {
   KEY="$1"
   awk -F= -v key="$KEY" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' .env 2>/dev/null
+}
+
+remove_env() {
+  KEY="$1"
+  TMP_FILE=".env.tmp.$$"
+
+  awk -F= -v key="$KEY" '$1 != key { print }' .env > "$TMP_FILE"
+  mv "$TMP_FILE" .env
 }
 
 CODEX_SOURCE_AUTH="${CODEX_HOME:-$HOME/.codex}/auth.json"
@@ -130,9 +138,14 @@ if [[ "$ENABLE_COPILOT_INPUT" =~ ^[Yy]$ ]]; then
   fi
 fi
 
-if grep -q "^MEMPALACE_ENABLED=true" .env 2>/dev/null; then
+if grep -q "^MEMORY_BACKEND=graphiti" .env 2>/dev/null; then
   PROFILES="$PROFILES --profile memory"
 fi
+
+remove_env MEMPALACE_ENABLED
+remove_env MEMPALACE_URL
+remove_env MEMPALACE_MAX_INJECT_TOKENS
+remove_env MEMPALACE_PORT
 
 echo ""
 echo "Building and starting containers..."
