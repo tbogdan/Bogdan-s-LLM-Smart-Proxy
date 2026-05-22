@@ -44,18 +44,32 @@ class FakeClientResponse {
 async function withRoutingState(fn) {
   const originalScores = state.scores;
   const originalAssessmentCache = { ...state.sessionAssessmentCache };
+  const originalHumanApprovals = {
+    pending: { ...state.humanApprovals.pending },
+    byRequestHash: { ...state.humanApprovals.byRequestHash },
+    audit: [...state.humanApprovals.audit],
+  };
   const originalWriteFileSync = fs.writeFileSync;
+  const originalAppendFileSync = fs.appendFileSync;
   state.scores = {};
   for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
   fs.writeFileSync = () => {};
+  fs.appendFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
   try {
     return await fn();
   } finally {
     fs.writeFileSync = originalWriteFileSync;
+    fs.appendFileSync = originalAppendFileSync;
     state.scores = originalScores;
     for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
     Object.assign(state.sessionAssessmentCache, originalAssessmentCache);
+    for (const key of Object.keys(state.humanApprovals.pending)) delete state.humanApprovals.pending[key];
+    for (const key of Object.keys(state.humanApprovals.byRequestHash)) delete state.humanApprovals.byRequestHash[key];
+    state.humanApprovals.audit.length = 0;
+    Object.assign(state.humanApprovals.pending, originalHumanApprovals.pending);
+    Object.assign(state.humanApprovals.byRequestHash, originalHumanApprovals.byRequestHash);
+    state.humanApprovals.audit.push(...originalHumanApprovals.audit);
   }
 }
 
@@ -323,6 +337,34 @@ test("buildUsageHeaders estimates legacy function schemas when usage is absent",
   }, null);
 
   assert.equal(Number(headers["X-LLM-Prompt-Tokens"]) > 20, true);
+});
+
+test("buildUsageHeaders exposes route trace, memory, compaction, and warning telemetry", () => {
+  const headers = routing.buildUsageHeaders(provider("http://example.test"), {
+    messages: [{ role: "user", content: "hello" }],
+    _routeTrace: {
+      requested_model: "auto-coding",
+      task_kind: "agentic_coding",
+      gate: "run_behavior",
+      shape: "write_heavy",
+      assessment_source: "heuristic",
+      candidates: [{ source: "Windsurf" }],
+    },
+    _memoryStats: { injected_tokens: 42, recall_retries: 1 },
+    _compactionStats: { archive_refs: 2, ai_summary_used: true, phase: "pre" },
+    _routeWarnings: ["post_stream_low_chunks"],
+  }, null);
+  const encodedTrace = headers["X-LLM-Route-Trace"].replace(/-/g, "+").replace(/_/g, "/");
+  const trace = JSON.parse(Buffer.from(encodedTrace.padEnd(Math.ceil(encodedTrace.length / 4) * 4, "="), "base64").toString("utf8"));
+
+  assert.equal(trace.task_kind, "agentic_coding");
+  assert.equal(headers["X-LLM-Route-Gate"], "run_behavior");
+  assert.equal(headers["X-LLM-Memory-Injected-Tokens"], "42");
+  assert.equal(headers["X-LLM-Memory-Recall-Retries"], "1");
+  assert.equal(headers["X-LLM-Compaction-Archive-Refs"], "2");
+  assert.equal(headers["X-LLM-Compaction-AI-Summary"], "true");
+  assert.equal(headers["X-LLM-Compaction-Phase"], "pre");
+  assert.equal(headers["X-LLM-Warning"], "post_stream_low_chunks");
 });
 
 test("routeToProvider accepts exact text-only replies without tool calls when tools are present", async () => {
@@ -952,6 +994,124 @@ test("handleChatCompletion gates large automatic selections behind AI assessment
         state.GROUPS = originalGroups;
         if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
         else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion blocks human-signoff requests before any provider call", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "should not be called" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Approval-Test",
+          model: "test/safe-route",
+          caps: ["text", "coding"],
+          cost_group: 1,
+          speed_group: 5,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Review this auth permission change for privilege bypass before merge." },
+          ],
+        }, fake);
+
+        assert.equal(fake.status, 409);
+        const body = JSON.parse(fake.body);
+        assert.equal(body.error.code, "human_signoff_required");
+        assert.equal(body.approval.required, true);
+        assert.equal(body.approval.approved_by_user, false);
+        assert.equal(body.approval.gate, "human_signoff");
+        assert.match(body.approval.challenge, /^[a-f0-9]{32}$/);
+        assert.equal(requests.length, 0);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion accepts approved_by_user token and strips approval fields upstream", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "approved route" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Approval-Test",
+          model: "test/approval",
+          caps: ["text", "coding"],
+          cost_group: 1,
+          speed_group: 5,
+        }),
+      ];
+      try {
+        const first = new FakeClientResponse();
+        const reqBody = {
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Review this auth permission change for privilege bypass before merge." },
+          ],
+        };
+        await routing.handleChatCompletion(reqBody, first);
+        assert.equal(first.status, 409);
+        const challenge = JSON.parse(first.body).approval.challenge;
+
+        const second = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          ...reqBody,
+          approved_by_user: `approved_by_user:${challenge}`,
+        }, second);
+
+        assert.equal(second.status, 200);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].approved_by_user, undefined);
+        assert.equal(requests[0].approval, undefined);
+        assert.equal(requests[0].llm_proxy_approval, undefined);
+        assert.doesNotMatch(JSON.stringify(requests[0]), new RegExp(`approved_by_user|human_signoff_required|${challenge}`));
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
       }
     });
   });

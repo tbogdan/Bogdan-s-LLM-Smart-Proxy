@@ -683,6 +683,45 @@ test("providerPolicyBonus does not reward heavy thinking for context-only pressu
   assert.equal(policy.providerPolicyBonus(medium, req) >= policy.providerPolicyBonus(high, req), true);
 });
 
+test("providerPolicyBonus applies thinking latency guard to deterministic security patches", () => {
+  const nonThinkingSonnet = {
+    name: "Windsurf-ClaudeSonnet46",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const thinkingSonnet = {
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "high",
+  };
+  const patchReq = {
+    max_tokens: 340,
+    messages: [{
+      role: "user",
+      content: "Fix this Node.js webhook verifier. Current code accepts replayed tokens and leaks timing info. Required: constant-time semantics, malformed hex handling, and three regression tests.",
+    }],
+    _estimatedTokens: 6000,
+  };
+  const threatModelReq = {
+    max_tokens: 900,
+    messages: [{ role: "user", content: "Threat model an ambiguous auth architecture for privilege bypass and exploit chains before release." }],
+    _estimatedTokens: 12000,
+  };
+
+  assert.equal(policy.providerPolicyBonus(nonThinkingSonnet, patchReq) > policy.providerPolicyBonus(thinkingSonnet, patchReq), true);
+  assert.equal(policy.providerPolicyBonus(thinkingSonnet, threatModelReq) > policy.providerPolicyBonus(nonThinkingSonnet, threatModelReq), true);
+});
+
 test("providerPolicyBonus prefers adequate context over one-million frontier for write-heavy coding", () => {
   const adequate = {
     name: "Windsurf-ClaudeSonnet46Thinking",

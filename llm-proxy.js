@@ -18,6 +18,7 @@ const anthropicGateway = require("./lib/anthropic-gateway");
 const httpHome = require("./lib/http-home");
 const discoveryTools = require("./llm-discovery");
 const embeddings = require("./lib/embeddings");
+const humanApproval = require("./lib/human-approval");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -240,6 +241,7 @@ function handleHealth() {
     quota_disabled: Object.keys(state.quotaDisabled).length > 0 ? state.quotaDisabled : undefined,
     compat_overrides: Object.keys(state.providerCompat).length > 0 ? Object.keys(state.providerCompat).length : undefined,
     memory: memory.health(),
+    human_approval: humanApproval.health(),
     scores_file: fs.existsSync(state.SCORES_FILE),
     discovery_file: fs.existsSync(state.DISCOVERY_FILE),
     providers_file: fs.existsSync(state.PROVIDERS_FILE),
@@ -340,7 +342,7 @@ const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-LLM-Proxy-Approval, X-LLM-Proxy-Approval-Token, X-Approved-By-User");
   if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   try {
@@ -382,7 +384,7 @@ const server = http.createServer(async (req, res) => {
       } else {
         state.log(`Request: model=${model} stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok sid=${sid}${sessionInfo}`);
       }
-      return await routing.handleChatCompletion(parsed, res);
+      return await routing.handleChatCompletion(parsed, res, { headers: req.headers });
     }
 
     // POST /v1/embeddings
