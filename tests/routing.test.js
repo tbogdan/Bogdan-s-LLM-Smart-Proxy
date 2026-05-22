@@ -2487,6 +2487,108 @@ test("routing keeps reliable 200k light model ahead until context is truly tight
   });
 });
 
+test("handleChatCompletion pre-compacts when policy dry-run would route to cheaper provider", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalEnv = {
+      LLM_COST_TARGET: process.env.LLM_COST_TARGET,
+      LLM_ROUTING_POLICY: process.env.LLM_ROUTING_POLICY,
+      LLM_PROXY_AI_ASSESSMENT: process.env.LLM_PROXY_AI_ASSESSMENT,
+    };
+    const previousSummary = compaction.configureAISummary({
+      requester: async () => "Earlier turns read files, inspected logs, and prepared the routing fix.",
+      minDroppedMessages: 1,
+    });
+    const captured = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        captured.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 2000, completion_tokens: 10, total_tokens: 2010 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Expensive-20k-Opus",
+          model: "test/expensive-opus-20k",
+          caps: ["text", "coding", "tools", "thinking", "max"],
+          context: 20000,
+          cost_group: 4,
+          quality_group: 5,
+          speed_group: 3,
+          thinking_effort: "xhigh",
+        }),
+        provider(url, {
+          name: "Efficient-8k-Coder",
+          model: "test/efficient-coder-8k",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 8192,
+          cost_group: 2,
+          quality_group: 4,
+          speed_group: 5,
+          thinking_effort: "medium",
+        }),
+      ];
+      process.env.LLM_COST_TARGET = "3";
+      process.env.LLM_ROUTING_POLICY = "balanced";
+      process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+
+      try {
+        const messages = [
+          { role: "system", content: "You are a software engineering agent." },
+          ...Array.from({ length: 24 }, (_, i) => ({
+            role: i % 2 === 0 ? "assistant" : "user",
+            content: `Historical routing turn ${i}: ${"read logs and considered provider behavior ".repeat(38)}`,
+          })),
+          { role: "user", content: "Continue the small routing fix and use tools if needed." },
+        ];
+        const originalInput = compaction.estimateTokens(messages);
+        assert.equal(originalInput > 8192, true);
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          max_tokens: 256,
+          messages,
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0].model, "test/efficient-coder-8k");
+        assert.equal(compaction.estimateTokens(captured[0].messages) + 256 <= 8192, true);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        compaction.configureAISummary(previousSummary);
+        for (const [key, value] of Object.entries(originalEnv)) {
+          if (value == null) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+  });
+});
+
 test("auto-max prefers one-million-token Opus-class providers for deep context requests", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;

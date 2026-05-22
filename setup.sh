@@ -123,7 +123,7 @@ read -p "Enable GitHub Copilot provider? (y/N): " ENABLE_COPILOT_INPUT
 if [[ "$ENABLE_COPILOT_INPUT" =~ ^[Yy]$ ]]; then
   set_env ENABLE_COPILOT true
   if [ -z "$(get_env COPILOT_GITHUB_TOKEN)" ]; then
-    echo "Copilot enabled. Run device-flow auth with the built-in VS Code public client id:"
+    echo "Copilot enabled. Run device-flow auth:"
     echo "  node github-copilot-auth.js --env-file .env"
     echo "Set GITHUB_COPILOT_CLIENT_ID first if you want to override the OAuth app."
     echo "Or set COPILOT_GITHUB_TOKEN manually before restarting Docker."
