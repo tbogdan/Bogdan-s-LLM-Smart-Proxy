@@ -143,6 +143,42 @@ function renderPlan(config, cases) {
   ].join("\n") + "\n";
 }
 
+function decodeBase64UrlJson(value) {
+  if (!value) return null;
+  try {
+    const padded = String(value).replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(String(value).length / 4) * 4, "=");
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function numberHeader(headers, name, fallback = 0) {
+  const value = headers.get(name);
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function boolHeader(headers, name) {
+  return String(headers.get(name) || "").toLowerCase() === "true";
+}
+
+function telemetryFromHeaders(headers) {
+  return {
+    route_trace: decodeBase64UrlJson(headers.get("x-llm-route-trace")) || null,
+    memory: {
+      injected_tokens: numberHeader(headers, "x-llm-memory-injected-tokens"),
+      recall_retries: numberHeader(headers, "x-llm-memory-recall-retries"),
+    },
+    compaction: {
+      archive_refs: numberHeader(headers, "x-llm-compaction-archive-refs"),
+      ai_summary_used: boolHeader(headers, "x-llm-compaction-ai-summary"),
+      phase: headers.get("x-llm-compaction-phase") || "",
+    },
+    warning: headers.get("x-llm-warning") || "",
+  };
+}
+
 async function postChatCompletion(config, model, testCase, arm = "proxy") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -160,21 +196,44 @@ async function postChatCompletion(config, model, testCase, arm = "proxy") {
 
   try {
     const started = Date.now();
-    const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const latencyMs = Date.now() - started;
-    const text = await response.text();
+    let approval = null;
+    let response;
+    let text;
     let json;
-    try { json = JSON.parse(text); } catch { json = {}; }
+    async function send(extraHeaders = {}) {
+      const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...extraHeaders },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const rawText = await res.text();
+      let parsed;
+      try { parsed = JSON.parse(rawText); } catch { parsed = {}; }
+      return { response: res, text: rawText, json: parsed };
+    }
+
+    ({ response, text, json } = await send());
+    const approvalToken = json?.approval?.token_format || json?.approval?.token || "";
+    const autoApproveHumanGate = arm === "proxy" && response.status === 409 && json?.error?.code === "human_signoff_required" && approvalToken && process.env.BENCH_AUTO_APPROVE_HUMAN_GATES !== "false";
+    if (autoApproveHumanGate) {
+      approval = {
+        auto_approved_for_benchmark: true,
+        gate: json.approval?.gate || "",
+        approval_id: json.approval?.approval_id || "",
+      };
+      ({ response, text, json } = await send({ "X-LLM-Proxy-Approval": approvalToken }));
+    }
+    const latencyMs = Date.now() - started;
     const content = extractContent(json, text);
     const usage = usageFromResponse(json, response.headers, content);
     const actualModel = response.headers.get("x-llm-model") || json.model || model;
     const provider = response.headers.get("x-llm-provider") || "unknown";
     const cost = estimateCostUsd(actualModel, usage);
+    const telemetry = telemetryFromHeaders(response.headers);
+    const warnings = [];
+    if (telemetry.warning) warnings.push(telemetry.warning);
+    if (approval?.auto_approved_for_benchmark) warnings.push("benchmark_auto_approved_human_gate");
     let grade = response.ok
       ? gradeOutput(testCase, content)
       : { passed: false, score: 0, detail: `http:${response.status}` };
@@ -212,6 +271,12 @@ async function postChatCompletion(config, model, testCase, arm = "proxy") {
       speed_group: Number(response.headers.get("x-llm-speed-group") || 0),
       estimated_cost_usd: cost.usd,
       pricing_source: cost.source,
+      route_trace: telemetry.route_trace,
+      memory: telemetry.memory,
+      compaction: telemetry.compaction,
+      warning: warnings[0] || "",
+      warnings,
+      approval,
       ok: response.ok && grade.passed,
       grade,
       error: response.ok ? "" : text.slice(0, 500),

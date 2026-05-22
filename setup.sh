@@ -21,7 +21,7 @@ else
   echo ".env exists; preserving current values."
 fi
 
-mkdir -p data palace
+mkdir -p data
 
 set_env() {
   KEY="$1"
@@ -48,6 +48,14 @@ set_env() {
 get_env() {
   KEY="$1"
   awk -F= -v key="$KEY" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' .env 2>/dev/null
+}
+
+remove_env() {
+  KEY="$1"
+  TMP_FILE=".env.tmp.$$"
+
+  awk -F= -v key="$KEY" '$1 != key { print }' .env > "$TMP_FILE"
+  mv "$TMP_FILE" .env
 }
 
 CODEX_SOURCE_AUTH="${CODEX_HOME:-$HOME/.codex}/auth.json"
@@ -125,14 +133,67 @@ if [[ "$ENABLE_COPILOT_INPUT" =~ ^[Yy]$ ]]; then
   if [ -z "$(get_env COPILOT_GITHUB_TOKEN)" ]; then
     echo "Copilot enabled. Run device-flow auth:"
     echo "  node github-copilot-auth.js --env-file .env"
-    echo "Set GITHUB_COPILOT_CLIENT_ID first if you want to override the OAuth app."
+    echo "Pass --client-id if you want to override the OAuth app."
     echo "Or set COPILOT_GITHUB_TOKEN manually before restarting Docker."
   fi
 fi
 
-if grep -q "^MEMPALACE_ENABLED=true" .env 2>/dev/null; then
-  PROFILES="$PROFILES --profile memory"
-fi
+for KEY in \
+  MEMPALACE_ENABLED \
+  MEMPALACE_URL \
+  MEMPALACE_MAX_INJECT_TOKENS \
+  MEMPALACE_PORT \
+  MEMORY_ENABLED \
+  MEMORY_BACKEND \
+  MEMORY_MAX_INJECT_TOKENS \
+  MEMORY_ARCHIVE_MAX_CHARS \
+  GRAPHITI_NEO4J_URI \
+  GRAPHITI_NEO4J_USER \
+  GRAPHITI_NEO4J_PASSWORD \
+  GRAPHITI_NEO4J_DATABASE \
+  GRAPHITI_NEO4J_PORT \
+  GRAPHITI_NEO4J_HTTP_PORT \
+  GRAPHITI_MCP_ENABLED \
+  GRAPHITI_MCP_URL \
+  GRAPHITI_MCP_PUBLIC_URL \
+  GRAPHITI_MCP_PORT \
+  GRAPHITI_MCP_GROUP_ID \
+  GRAPHITI_MCP_MODEL_NAME \
+  GRAPHITI_MCP_API_KEY \
+  GRAPHITI_MCP_OPENAI_API_URL \
+  GRAPHITI_MCP_EMBEDDING_MODEL \
+  GRAPHITI_MCP_EMBEDDING_DIMENSIONS \
+  GRAPHITI_MCP_SEMAPHORE_LIMIT \
+  GRAPHITI_MCP_TIMEOUT_MS \
+  GRAPHITI_MCP_WRITE_TIMEOUT_MS \
+  GRAPHITI_MCP_SEARCH_TIMEOUT_MS \
+  GRAPHITI_MCP_OUTBOX_BATCH \
+  GRAPHITI_TELEMETRY_ENABLED \
+  LLM_PROXY_AI_SUMMARY_MODEL \
+  LLM_PROXY_AI_SUMMARY_TIMEOUT_MS \
+  LLM_PROXY_AI_SUMMARY_MAX_TOKENS \
+  LLM_PROXY_AI_SUMMARY_MIN_MESSAGES \
+  LLM_PROXY_EMBEDDING_MODEL \
+  LLM_PROXY_EMBEDDING_DIMENSIONS \
+  CODEX_API_KEY \
+  WINDSURF_MODELS \
+  WINDSURF_MODELS_JSON \
+  WINDSURF_MODELS_URL \
+  WINDSURF_IDE_VERSION \
+  WINDSURF_USER_AGENT \
+  WINDSURF_API_ORIGIN \
+  WINDSURF_CHAT_ORIGIN \
+  WINDSURF_CONNECT_TIMEOUT_MS \
+  WINDSURF_CONNECT_TIMEOUT_HEADER \
+  WINDSURF_INCLUDE_ACCEPT_HEADER \
+  WINDSURF_CONNECT_RETRIES \
+  GITHUB_COPILOT_CLIENT_ID \
+  GITHUB_COPILOT_SCOPE \
+  COPILOT_MODELS \
+  COPILOT_MODELS_URL
+do
+  remove_env "$KEY"
+done
 
 echo ""
 echo "Building and starting containers..."

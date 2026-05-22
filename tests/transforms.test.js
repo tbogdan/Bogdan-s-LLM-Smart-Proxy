@@ -175,6 +175,23 @@ test("detectUseCase keeps direct identity replies cheap even when IDE tools are 
   assert.equal(result.caps.has("coding"), false);
 });
 
+test("detectUseCase keeps passive Romanian why questions cheap even when IDE tools are present", () => {
+  const result = transforms.detectUseCase([
+    { role: "system", content: "You are a software engineering agent with codebase tools." },
+    { role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" },
+  ], {
+    tools: Array.from({ length: 8 }, (_, i) => ({
+      type: "function",
+      function: { name: `tool_${i}`, parameters: { type: "object" } },
+    })),
+  });
+
+  assert.equal(result.difficulty.taskKind, "explanation");
+  assert.equal(result.isAgent, false);
+  assert.equal(result.caps.has("tools"), false);
+  assert.equal(result.caps.has("coding"), false);
+});
+
 test("smartnessBonus stays model-quality focused and leaves routing policy to routing", () => {
   const originalEnv = {
     LLM_COST_TARGET: process.env.LLM_COST_TARGET,
@@ -248,6 +265,8 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /You are autonomous after the user has authorized implementation/);
   assert.match(system, /Reply A to proceed without explicit user gate\|Press enter to continue without explicit user gate/);
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
+  assert.match(system, /ROUTING ASSESSMENT.*next route/i);
+  assert.match(system, /likely next route after the current response or tool call/i);
   assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.match(system, /EFFICIENT FILE READING:/);
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
@@ -322,6 +341,7 @@ test("transformRequest uses compact assessment prompt for complex no-tool smart 
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /ARCHITECTURE RECOVERY MODE/);
   assert.match(system, /Route profile: task=architecture_recovery/);
+  assert.match(system, /private routing metadata for the next route/i);
   assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
   assert.equal(system.length < 1800, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
@@ -560,6 +580,24 @@ test("transformRequest strips tool schemas from direct no-tool answers", async (
   assert.equal(transformed.function_call, undefined);
   assert.equal(transformed.parallel_tool_calls, undefined);
   assert.doesNotMatch(JSON.stringify(transformed.messages), /Claude Code/);
+});
+
+test("transformRequest strips tool schemas from passive explanation questions", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tool_choice: "auto",
+    parallel_tool_calls: true,
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" },
+    ],
+  });
+
+  assert.equal(transformed.tools, undefined);
+  assert.equal(transformed.tool_choice, undefined);
+  assert.equal(transformed.parallel_tool_calls, undefined);
+  assert.doesNotMatch(JSON.stringify(transformed.messages), /TOOL STRATEGY.*MUST use tools/);
 });
 
 test("transformRequest preserves required tool contracts for direct-looking requests", async () => {

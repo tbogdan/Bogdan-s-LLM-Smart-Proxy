@@ -1,0 +1,653 @@
+{
+  "generated_at": "2026-05-22T11:03:07.436Z",
+  "runs": [
+    {
+      "status": 200,
+      "latency_ms": 5550,
+      "content": "proxy-benchmark-ok",
+      "usage": {
+        "prompt_tokens": 392,
+        "completion_tokens": 5,
+        "total_tokens": 397,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.006255,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "exact"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "exact-reply",
+      "case_title": "Exact low-cost reply",
+      "category": "smoke",
+      "complexity": 1,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 1177,
+      "content": "proxy-benchmark-ok",
+      "usage": {
+        "prompt_tokens": 392,
+        "completion_tokens": 5,
+        "total_tokens": 397,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-Gemini3FlashMinimal",
+      "requested_model": "auto-coding",
+      "actual_model": "windsurf/google-gemini-3-0-flash-minimal",
+      "cost_group": 1,
+      "thinking_effort": "minimal",
+      "speed_group": 5,
+      "estimated_cost_usd": 0.000062,
+      "pricing_source": "family_estimate",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "exact"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "exact-reply",
+      "case_title": "Exact low-cost reply",
+      "category": "smoke",
+      "complexity": 1,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 3700,
+      "content": "**API Validation** — Finished; no remaining actions.\n- **Deployment Checklist** — Prepared and ready; no blockers.\n- **Cache Cleanup** — Pending; must be completed before handoff closes.\n- **Health Checks** — Both local and remote checks passed successfully.\n- **Documentation Update** — Pending; needs to be finalized as a remaining handoff item.",
+      "usage": {
+        "prompt_tokens": 455,
+        "completion_tokens": 87,
+        "total_tokens": 542,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.01335,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "session-summary",
+      "case_title": "Session task summary",
+      "category": "summary",
+      "complexity": 2,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 3256,
+      "content": "* API: Validation process is finished.\n* Deployment: Checklist has been fully prepared.\n* Cache: Cleanup operation is currently pending.\n* Health: Local and remote checks passed.\n* Documentation: Update task remains pending.",
+      "usage": {
+        "prompt_tokens": 449,
+        "completion_tokens": 56,
+        "total_tokens": 505,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-Gemini3FlashLow",
+      "requested_model": "auto-text",
+      "actual_model": "windsurf/google-gemini-3-0-flash-low",
+      "cost_group": 1,
+      "thinking_effort": "low",
+      "speed_group": 5,
+      "estimated_cost_usd": 0.000101,
+      "pricing_source": "family_estimate",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "session-summary",
+      "case_title": "Session task summary",
+      "category": "summary",
+      "complexity": 2,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 4813,
+      "content": "```js\nasync function fetchWithTimeout(url, ms) {\n  const controller = new AbortController();\n  const timeout = setTimeout(() => controller.abort(), ms);\n  try {\n    const res = await fetch(url, { signal: controller.signal });\n    return await res.json();\n  } finally {\n    clearTimeout(timeout);\n  }\n}\n```\n\n**Note:** The timer was never cleared, leaking it on success or non-abort errors. Wrapping in `try/finally` with `clearTimeout` fixes the leak, and `await`-ing `res.json()` ensures the timeout still covers body parsing and the `finally` block runs only after the full operation completes.",
+      "usage": {
+        "prompt_tokens": 461,
+        "completion_tokens": 149,
+        "total_tokens": 610,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.01809,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "async-resource-leak",
+      "case_title": "Async timeout resource leak",
+      "category": "coding",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 2809,
+      "content": "```javascript\nasync function fetchWithTimeout(url, ms) {\n  const controller = new AbortController();\n  const timeout = setTimeout(() => controller.abort(), ms);\n  \n  try {\n    const res = await fetch(url, { signal: controller.signal });\n    return await res.json();\n  } finally {\n    clearTimeout(timeout);\n  }\n}\n```\n\nNote: The `clearTimeout` is called in a `finally` block to ensure it executes regardless of whether the fetch is successful or aborted.",
+      "usage": {
+        "prompt_tokens": 424,
+        "completion_tokens": 102,
+        "total_tokens": 526,
+        "cached_input_tokens": 0
+      },
+      "provider": "Copilot-gpt35turbo",
+      "requested_model": "coding-sm",
+      "actual_model": "copilot/gpt-3.5-turbo",
+      "cost_group": 3,
+      "thinking_effort": "medium",
+      "speed_group": 4,
+      "estimated_cost_usd": null,
+      "pricing_source": "unknown",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "async-resource-leak",
+      "case_title": "Async timeout resource leak",
+      "category": "coding",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 12450,
+      "content": "{\"output\":[\"build\",\"test\",\"wait:deploy\",\"deploy\"],\"invariant\":\"A job with a dependency must only be scheduled after its dependency has been scheduled (i.e., dep must be in seen before the job is emitted). The scheduler violates this: it emits deploy with only a soft 'wait' marker but never actually schedules 'package', so deploy is placed in the output without its dependency ever appearing.\",\"bug\":\"When a dependency (job.dep) has not been seen, the code pushes a 'wait:<id>' string and then unconditionally pushes the job itself. It never ensures the dependency is actually present in the job list or scheduled first; it just emits the job anyway. For 'deploy' whose dep 'package' never appears, deploy is scheduled without package ever being scheduled.\",\"fix\":\"Reject or defer jobs whose dependency hasn't been scheduled yet. Minimal fix: replace the wait-push with a guard that skips (or throws on) unmet dependencies:\\n\\nif (job.dep && !seen.has(job.dep)) continue;\\n\\nThis skips any job whose dependency hasn't been seen yet. To also handle reordering (not just missing deps), wrap the loop in a fixpoint:\\n\\nfunction schedule(jobs) {\\n  const seen = new Set();\\n  const out = [];\\n  let remaining = [...jobs];\\n  while (remaining.length) {\\n    const next = [];\\n    for (const job of remaining) {\\n      if (seen.has(job.id)) continue;\\n      if (job.dep && !seen.has(job.dep)) { next.push(job); continue; }\\n      seen.add(job.id);\\n      out.push(job.id);\\n    }\\n    if (next.length === remaining.length) throw new Error('unresolvable deps: ' + next.map(j=>j.id));\\n    remaining = next;\\n  }\\n  return out;\\n}\"}",
+      "usage": {
+        "prompt_tokens": 568,
+        "completion_tokens": 407,
+        "total_tokens": 975,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.039045,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "code-trace-invariant",
+      "case_title": "Code reasoning invariant trace",
+      "category": "code-reasoning",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 19381,
+      "content": "`{\"output\":[\"build\",\"test\",\"wait:deploy\",\"deploy\"],\"invariant\":\"every job must appear in output only after its dependency; deploy appears with package absent entirely\",\"bug\":\"when dep is unsatisfied the code emits wait:job then unconditionally pushes job.id in the same iteration, so the job is scheduled regardless of whether the dep ever exists\",\"fix\":\"replace the two lines `out.push(\\\\`wait:${job.id}\\\\`); out.push(job.id);` block with: if (job.dep && !seen.has(job.dep)) { seen.delete(job.id); continue; } out.push(job.id); — this removes the job from seen and skips it so deploy is never emitted when package is absent\"}`",
+      "usage": {
+        "prompt_tokens": 566,
+        "completion_tokens": 157,
+        "total_tokens": 723,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeSonnet46Thinking",
+      "requested_model": "auto-coding",
+      "actual_model": "windsurf/claude-sonnet-4-6-thinking",
+      "cost_group": 3,
+      "thinking_effort": "high",
+      "speed_group": 4,
+      "estimated_cost_usd": 0.004053,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "code-trace-invariant",
+      "case_title": "Code reasoning invariant trace",
+      "category": "code-reasoning",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 11935,
+      "content": "• **Regression risk – breaking existing production configs:** Switching from permissive to strict parsing means any config file that previously worked despite missing or mis-cased `serviceUrl` (e.g., `service_url`, empty string, or omitted field) will now throw a `ConfigError` at startup, potentially taking down services on deploy with no graceful degradation path.\n\n• **Silent default override may mask user intent:** Because fallback defaults (`retries: 2`, `timeoutMs: 3000`) are spread *before* `parsed`, they are correctly overridden—but if a production config explicitly sets `retries: 0` or `timeoutMs: 0` (falsy values), those values survive. However, if future validation treats falsy values as \"missing\" the same way `serviceUrl` is checked, legitimate zero-values could be rejected. Unit tests should cover falsy-but-valid fields to prevent this.\n\n• **Validation coverage gap – no test for real-world permissive configs:** The unit tests need to include cases that mirror actual production config shapes (extra keys, legacy field names, missing optional fields) to confirm the stricter parser doesn't reject them. Without this, the first signal of breakage will be a user-facing outage rather than a CI failure. Cheapest next step: audit a sample of deployed config files against the new `parseConfig` + validation path before merge.",
+      "usage": {
+        "prompt_tokens": 551,
+        "completion_tokens": 337,
+        "total_tokens": 888,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.03354,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "completion-review",
+      "case_title": "Completed feature review",
+      "category": "review",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 3298,
+      "content": "**Risk of Breaking Changes**: The stricter JSON config parsing may lead to failures in production if existing config files do not conform to the new requirements, potentially causing service disruptions for users relying on old configurations.\n\n- **Direct User Impact**: Users may experience unexpected errors or service outages due to the new validation rules, especially if they have not updated their config files to meet the stricter parsing criteria.\n\n- **Validation Coverage**: Ensure that the validation logic comprehensively checks all necessary fields and edge cases to prevent runtime errors. Inadequate validation could lead to unhandled exceptions and further degrade user experience.",
+      "usage": {
+        "prompt_tokens": 491,
+        "completion_tokens": 124,
+        "total_tokens": 615,
+        "cached_input_tokens": 0
+      },
+      "provider": "Copilot-gpt35turbo",
+      "requested_model": "auto-coding",
+      "actual_model": "copilot/gpt-3.5-turbo",
+      "cost_group": 3,
+      "thinking_effort": "medium",
+      "speed_group": 4,
+      "estimated_cost_usd": null,
+      "pricing_source": "unknown",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "completion-review",
+      "case_title": "Completed feature review",
+      "category": "review",
+      "complexity": 3,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 27113,
+      "content": "## Tests that fail before the patch\n\n1. **Replay test** — a valid signature with a timestamp 10 minutes in the past is accepted (should be rejected).\n2. **Timing-leak test** — `sig === expected` short-circuits on first differing byte; an attacker can statistically distinguish near-matches from total mismatches.\n3. **Malformed header test** — passing `sig = \"garbage\"` (no `t=` / `v1=` parts) does not throw or reject; it compares the raw garbage string against the HMAC and silently returns false without distinguishing \"malformed\" from \"invalid signature.\"\n\n---\n\n## Patch sketch\n\n```js\nconst crypto = require('crypto');\n\nconst TOLERANCE_SEC = 300; // 5 minutes\n\nfunction verify(sigHeader, body, secret) {\n  // --- 1. Parse header ---------------------------------------------------\n  if (typeof sigHeader !== 'string') {\n    throw new Error('webhook: signature header must be a string');\n  }\n\n  const parts = {};\n  for (const element of sigHeader.split(',')) {\n    const idx = element.indexOf('=');\n    if (idx === -1) throw new Error('webhook: malformed signature element');\n    const key = element.slice(0, idx);\n    const val = element.slice(idx + 1);\n    parts[key] = val;\n  }\n\n  const timestamp = parts['t'];\n  const sigHex    = parts['v1'];\n\n  if (!timestamp || !sigHex) {\n    throw new Error('webhook: missing t= or v1= in signature header');\n  }\n\n  // --- 2. Validate timestamp (anti-replay) --------------------------------\n  const ts = Number(timestamp);\n  if (!Number.isFinite(ts)) {\n    throw new Error('webhook: t= is not a valid number');\n  }\n\n  const nowSec = Math.floor(Date.now() / 1000);\n  if (Math.abs(nowSec - ts) > TOLERANCE_SEC) {\n    throw new Error('webhook: timestamp outside tolerance window');\n  }\n\n  // --- 3. Validate hex format before Buffer conversion --------------------\n  if (!/^[0-9a-f]{64}$/i.test(sigHex)) {\n    throw new Error('webhook: v1= is not valid sha256 hex');\n  }\n\n  // --- 4. Compute expected HMAC over \"timestamp.body\" ---------------------\n  //     Including the timestamp in the signed payload binds the sig to the ts,\n  //     preventing an attacker from swapping timestamps on a captured sig.\n  const expected = crypto\n    .createHmac('sha256', secret)\n    .update(`${timestamp}.${body}`)\n    .digest();\n\n  const sigBuf = Buffer.from(sigHex, 'hex');\n\n  // --- 5. Constant-time comparison ----------------------------------------\n  if (expected.length !== sigBuf.length) {\n    return false; // lengths are fixed at 32; this is a safeguard\n  }\n\n  return crypto.timingSafeEqual(expected, sigBuf);\n}\n\nmodule.exports = { verify };\n```\n\nKey changes:\n\n- **Header parsing** — expects `t=<unix>,v1=<hex>`; throws on anything else.\n- **Replay protection** — rejects if `|now − t| > 300 s`.\n- **Signed payload includes timestamp** — HMAC is computed over `\"<timestamp>.<body>\"` so the signature is bound to the exact timestamp; an attacker cannot graft a fresh `t=` onto an old signature.\n- **Constant-time compare** — uses `crypto.timingSafeEqual` on fixed-length Buffers.\n- **Malformed hex** — regex gate rejects non-hex or wrong-length strings before `Buffer.from`.\n\n---\n\n## Three regression tests\n\n```js\nconst assert = require('assert');\nconst crypto = require('crypto');\nconst { verify } = require('./verify');\n\nconst SECRET = 'test-secret-key';\n\nfunction sign(body, secret, timestampOverride) {\n  const ts = timestampOverride ?? Math.floor(Date.now() / 1000);\n  const sig = crypto.createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex');\n  return { header: `t=${ts},v1=${sig}`, ts };\n}\n\n// TEST 1 — Replay rejection (timestamp too old)\n(function testReplayRejected() {\n  const staleTs = Math.floor(Date.now() / 1000) - 600; // 10 min ago\n  const { header } = sign('payload', SECRET, staleTs);\n  assert.throws(\n    () => verify(header, 'payload', SECRET),\n    /timestamp outside tolerance/,\n    'must reject replayed signature with stale timestamp'\n  );\n  console.log('PASS: replay rejected');\n})();\n\n// TEST 2 — Malformed hex in v1= is rejected safely\n(function testMalformedHex() {\n  const ts = Math.floor(Date.now() / 1000);\n  const badHeader = `t=${ts},v1=ZZZZ_not_hex`;\n  assert.throws(\n    () => verify(badHeader, 'payload', SECRET),\n    /not valid sha256 hex/,\n    'must reject malformed hex'\n  );\n  console.log('PASS: malformed hex rejected');\n})();\n\n// TEST 3 — Valid signature within window succeeds\n(function testValidSignature() {\n  const body = '{\"event\":\"backup.completed\"}';\n  const { header } = sign(body, SECRET);\n  assert.strictEqual(\n    verify(header, body, SECRET),\n    true,\n    'must accept a valid, fresh signature'\n  );\n  console.log('PASS: valid signature accepted');\n})();\n```",
+      "usage": {
+        "prompt_tokens": 558,
+        "completion_tokens": 1166,
+        "total_tokens": 1724,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.09582,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "secure-token-patch",
+      "case_title": "Secure token verification patch",
+      "category": "secure-coding",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 79724,
+      "content": "PATCH SKETCH\n\n```javascript\nconst crypto = require('crypto');\nconst TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes\n\nfunction verify(sigHeader, body, secret) {\n  // 1. Parse \"t=<unix>,v1=<hex>\"\n  if (typeof sigHeader !== 'string') return false;\n  const map = {};\n  for (const part of sigHeader.split(',')) {\n    const eq = part.indexOf('=');\n    if (eq < 1) return false;\n    map[part.slice(0, eq)] = part.slice(eq + 1);\n  }\n  const { t: tStr, v1 } = map;\n  if (!tStr || !v1) return false;\n\n  // 2. Reject stale/future timestamps before any crypto work\n  const t = Number(tStr);\n  if (!Number.isInteger(t) || t <= 0) return false;\n  if (Math.abs(Date.now() - t * 1000) > TOLERANCE_MS) return false;\n\n  // 3. Validate hex strictly before calling Buffer.from to avoid\n  //    silent truncation or a thrown RangeError in timingSafeEqual\n  if (!/^[0-9a-f]{64}$/.test(v1)) return false;\n\n  // 4. Bind timestamp to body so a valid (t, sig) pair cannot be\n  //    replayed against a different body even within the window\n  const expected = crypto\n    .createHmac('sha256', secret)\n    .update(`${t}.${body}`)\n    .digest(); // raw 32-byte Buffer\n\n  // 5. Constant-time compare; both are exactly 32 bytes here\n  return crypto.timingSafeEqual(expected, Buffer.from(v1, 'hex'));\n}\n```\n\nKey changes versus old code:\n- Signed payload is `\"${t}.${body}\"`, binding the timestamp to the body.\n- Timestamp staleness check exits before crypto when replay is detected.\n- Hex regex guard prevents `timingSafeEqual` from receiving wrong-length Buffers (it throws on mismatch, which leaks info and can crash).\n- `timingSafeEqual` replaces `===` to eliminate early-exit timing side-channel.\n\n---\n\nREGRESSION TESTS\n\nTest 1 — replayed token is rejected\n\n```javascript\nconst secret = 'test-secret';\nconst body = '{\"event\":\"charge.succeeded\"}';\nconst staleT = Math.floor(Date.now() / 1000) - 600; // 10 min ago\nconst staleSig = crypto\n  .createHmac('sha256', secret)\n  .update(`${staleT}.${body}`)\n  .digest('hex');\nconst header = `t=${staleT},v1=${staleSig}`;\n\nassert.strictEqual(verify(header, body, secret), false,\n  'must reject replayed token with stale timestamp');\n\n// FAILS BEFORE PATCH: old code has no timestamp guard at all;\n// it would compare bare HMAC(body) against the full header string and\n// return false for the wrong reason — or, if the header were restructured\n// to pass the bare hex, it would silently return true for a 10-minute-old sig.\n```\n\nTest 2 — malformed hex in v1 must return false without throwing\n\n```javascript\nconst nowT = Math.floor(Date.now() / 1000);\nconst badHexHeader = `t=${nowT},v1=${'zz'.repeat(32)}`; // 64 chars, invalid hex\n\nlet result;\nassert.doesNotThrow(() => { result = verify(badHexHeader, body, secret); },\n  'must not throw on invalid hex input');\nassert.strictEqual(result, false,\n  'must return false for malformed hex');\n\n// FAILS BEFORE PATCH: any implementation that calls\n// crypto.timingSafeEqual(expected, Buffer.from('zz...', 'hex')) without\n// first validating the hex string will receive a Buffer shorter than 32 bytes\n// and timingSafeEqual will throw a RangeError, crashing the request handler.\n```\n\nTest 3 — fresh valid signature passes end-to-end\n\n```javascript\nconst nowT2 = Math.floor(Date.now() / 1000);\nconst goodSig = crypto\n  .createHmac('sha256', secret)\n  .update(`${nowT2}.${body}`)\n  .digest('hex');\nconst goodHeader = `t=${nowT2},v1=${goodSig}`;\n\nassert.strictEqual(verify(goodHeader, body, secret), true,\n  'must accept a fresh, correctly formed signature');\n\n// FAILS BEFORE PATCH: old code computes HMAC over bare `body`, not\n// `\"${t}.${body}\"`, so the expected digest never matches a signature\n// produced with the new scheme; also the old code never parses the header,\n// so `sig === expected` always fails for the new format.\n```\n\n---\n\nTESTS THAT FAIL BEFORE THE PATCH (summary)\n\nTest 1 — no timestamp check exists; old code would accept a correctly signed but 10-minute-old token.\n\nTest 2 — no hex validation exists; `timingSafeEqual` throws a `RangeError` when the decoded Buffer is shorter than 32 bytes, surfacing a crash instead of a safe false return.\n\nTest 3 — HMAC input is bare `body` instead of `\"${t}.${body}\"`; no header parsing; a legitimate new-format signature always fails to verify, breaking all valid callers.",
+      "usage": {
+        "prompt_tokens": 558,
+        "completion_tokens": 1071,
+        "total_tokens": 1629,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeSonnet46Thinking",
+      "requested_model": "auto-coding",
+      "actual_model": "windsurf/claude-sonnet-4-6-thinking",
+      "cost_group": 3,
+      "thinking_effort": "high",
+      "speed_group": 4,
+      "estimated_cost_usd": 0.017739,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "secure-token-patch",
+      "case_title": "Secure token verification patch",
+      "category": "secure-coding",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 15631,
+      "content": "## Tool Call Translator: Validation Rules\n\n- **Field normalization**: If the upstream emits `cmd`, `bash`, or `input` instead of `command`, map it to `{command: string}`. Apply `input.cmd ?? input.bash ?? input.command ?? input.input` in precedence order; after mapping, strip the original non-canonical key so the client sees only `{command: string}`.\n\n- **Empty/missing command rejection**: If `command` resolves to `undefined`, `null`, or a whitespace-only string after normalization, reject the tool call — do **not** forward it to the client. Log it as `invalid_tool_call:empty_command`, return a synthetic tool-result error (`\"error\": \"empty command\"`) back to the upstream so it can self-correct on the next turn, and increment the route's `consecutive_invalid` counter.\n\n- **Rerouting trigger**: If `consecutive_invalid` reaches **3** within a single session/task, mark the current upstream route as `degraded` and reroute the request to the next-priority model in the route group. Reset `consecutive_invalid` on any successfully normalized tool call. A single structural violation (e.g., tool name is `Bash` but input is a bare string, not an object) counts as **2** toward the threshold since it signals a deeper format mismatch.\n\n- **Cooldown policy**: A degraded route enters cooldown for `min(base × 2^(n−1), max_cooldown)` where `base = 30s` and `n` = number of consecutive degradation events for that route (cap `max_cooldown = 10min`). During cooldown, the route is excluded from selection. After cooldown expires, it re-enters the pool with `priority − 1` (soft demotion); full priority restores only after **5** consecutive clean exchanges on that route.",
+      "usage": {
+        "prompt_tokens": 499,
+        "completion_tokens": 418,
+        "total_tokens": 917,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.038835,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "tool-schema-bridge",
+      "case_title": "Tool schema bridge design",
+      "category": "coding",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 12281,
+      "content": "**Field normalization:** If the upstream payload contains `cmd` (string) but not `command`, remap `cmd → command`; if the payload is empty or `command` is `null`/`undefined`/non-string, reject with `INVALID_TOOL_INPUT` before forwarding — never pass a structurally invalid call to the client.\n\n- **Empty-input guard:** A Bash tool call with an empty object `{}`, `{cmd:\"\"}`, or `{command:\"\"}` is treated as a hard validation failure (not a remap candidate); log the call fingerprint and short-circuit execution, returning a synthetic tool error result so the LLM turn can continue without a hanging tool slot.\n\n- **Rerouting penalty on invalid calls:** Each `INVALID_TOOL_INPUT` event for a given upstream route increments a per-route failure counter; if the counter reaches **3 within a 60-second window**, the proxy marks that route `degraded` and reroutes subsequent tool-bearing requests to the next healthy upstream, resetting the counter only on a successful tool call from that route.\n\n- **Cooldown gating:** A route flagged `degraded` enters a **120-second cooldown** during which it receives no tool calls (non-tool text requests may still flow); after cooldown, one probe tool call is allowed — if it passes validation and executes cleanly the route is reinstated; a second failure during probe immediately extends cooldown by 2× (exponential backoff, capped at 1800 s).",
+      "usage": {
+        "prompt_tokens": 497,
+        "completion_tokens": 345,
+        "total_tokens": 842,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeSonnet46Thinking",
+      "requested_model": "auto-coding",
+      "actual_model": "windsurf/claude-sonnet-4-6-thinking",
+      "cost_group": 3,
+      "thinking_effort": "high",
+      "speed_group": 4,
+      "estimated_cost_usd": 0.006666,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:3/3"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "tool-schema-bridge",
+      "case_title": "Tool schema bridge design",
+      "category": "coding",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 42235,
+      "content": "# Recovery Workflow — Five Ordered Steps\n\n---\n\n## Step 1 · Inspect State\n\n**Evidence to gather**\n- `git status` / `git diff --stat` to enumerate every dirty, staged, and untracked file.\n- `docker ps -a` + `docker inspect` on the rebuild container to capture exit code, build-arg hash, and layer cache state.\n- Read the interrupted benchmark runner's log (`benchmarks/.run/latest.log` or equivalent) to determine the last completed suite and the exact point of interruption.\n- Collect the test-green commit SHA (`git log --oneline -1 --before=\"<rebuild-timestamp>\"`) as the known-good baseline.\n\n**Action**\nRecord a structured snapshot: `{baseline_sha, dirty_files[], container_state, benchmark_last_suite, benchmark_exit_signal}`. Persist this as `.recovery/state.json` so every subsequent step can reference it deterministically.\n\n**Stop condition**\nStop when every signal (dirty file list, container status, benchmark interruption point) is captured and the baseline SHA is confirmed to match the last green test run. If any signal is ambiguous (e.g., multiple dirty generated files), resolve before proceeding.\n\n---\n\n## Step 2 · Isolate Unrelated Changes\n\n**Evidence**\n- Diff the single dirty generated file against the baseline SHA: `git diff <baseline_sha> -- <generated_file>`.\n- Classify the diff: **expected regeneration artefact** (e.g., protobuf output, lockfile hash change after Docker rebuild) vs. **unexpected content change** (logic, schema).\n\n**Action**\n- If the diff is a pure regeneration artefact: `git stash push -m \"recovery-generated\" -- <generated_file>` to park it.\n- If the diff contains unexpected content: create a dedicated branch `recovery/dirty-<file>` with just that change for later review; then `git checkout <baseline_sha> -- <generated_file>` to restore clean state.\n- Confirm working tree now matches baseline SHA content (`git diff <baseline_sha> --exit-code`).\n\n**Stop condition**\n`git diff <baseline_sha>` returns exit-code 0 (no differences in tracked files) and only the stashed/branched artefact remains outside the working tree.\n\n---\n\n## Step 3 · Resume Safely\n\n**Evidence**\n- Verify Docker image integrity: rebuild with `--no-cache` or validate layer checksums against the image manifest used in the green run.\n- Confirm the migration script's idempotency contract (re-running from the baseline SHA must not duplicate side-effects such as DB migrations or registry pushes).\n\n**Action**\n1. Restart the migration from the **baseline SHA** inside the freshly validated container.\n2. Re-run the benchmark suite from the **beginning** (not from the interruption point) to avoid partial-state carry-over. Use `--fail-fast` to surface the first regression immediately.\n3. Pipe all stdout/stderr to `.recovery/resume.log` with timestamps.\n\n**Stop condition**\nMigration script exits 0 **and** benchmark runner exits 0 with a complete suite manifest (number of suites run == expected total). Any non-zero exit or suite-count mismatch halts this step for investigation.\n\n---\n\n## Step 4 · Verify — Regression Gate\n\n**Evidence**\n- Diff benchmark results against the last known-good baseline report: `bench-cmp <baseline_report> <new_report>`.\n- Re-run the full test suite (`test --all`) in the same container to confirm green status post-migration.\n- If the generated file was stashed in Step 2, pop it (`git stash pop`) and re-run only the tests that cover that file to validate it.\n\n**Action**\n- Assert: no test failures.\n- Assert: no benchmark metric regresses beyond the configured threshold (e.g., p95 latency ≤ 5 % delta, throughput ≥ 98 % of baseline).\n- If any assertion fails: tag the current state `recovery/regression-<timestamp>`, attach `.recovery/resume.log`, and **block the migration** — do not proceed to Step 5.\n\n**Stop condition**\nAll tests green **and** all benchmark deltas within threshold **and** generated-file tests green. Triple gate must pass.\n\n---\n\n## Step 5 · Report\n\n**Evidence**\n- `.recovery/state.json` (Step 1), stash/branch metadata (Step 2), `resume.log` (Step 3), benchmark comparison output (Step 4).\n\n**Action**\nProduce a machine-readable report (`.recovery/report.json`) and a human-readable summary containing:\n1. Baseline SHA and recovery SHA.\n2. Root cause of the dirty file and its disposition (stashed/branched/merged back).\n3. Benchmark comparison table with pass/fail per metric.\n4. Explicit verdict: **MIGRATION SAFE TO CONTINUE** or **BLOCKED — regressions detected**.\n\nPost the report to the team channel / CI artefact store. If blocked, include actionable next steps (which metric failed, suggested investigation commands).\n\n**Stop condition**\nReport is persisted, delivered to at least one durable destination (artefact store or VCS), and acknowledged by a human reviewer or an automated gate (e.g., CI status check set to `success` or `failure`).\n\n---\n\n### Self-Review\n\n| Criterion | Assessment |\n|---|---|\n| Covers all five requested phases | ✔ Inspect → Isolate → Resume → Verify → Report |\n| Each step has evidence / action / stop | ✔ |\n| Regression-hiding risk mitigated | ✔ Full (not partial) benchmark re-run + threshold gate + triple assertion in Step 4 |\n| Dirty-file ambiguity handled | ✔ Classified and parked before resumption |\n| Idempotency risk called out | ✔ Step 3 explicitly checks migration script idempotency |\n| Potential gap | If multiple generated files become dirty simultaneously, Step 2's single-file logic needs a loop — noted as a scaling caveat |\n\nPlan is ready for review. Confirm to proceed with implementation or flag adjustments.",
+      "usage": {
+        "prompt_tokens": 617,
+        "completion_tokens": 1386,
+        "total_tokens": 2003,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.113205,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "terminal-agent-plan",
+      "case_title": "Terminal agent recovery plan",
+      "category": "agent-planning",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 36961,
+      "content": "## Recovery Workflow: Five Ordered Steps\n\n---\n\n### Step 1 — Inspect State\n\n**Evidence:**\n- `git status` shows one dirty generated file (e.g., `generated/schema.pb.go`).\n- `docker inspect <image>` or build log confirms rebuild timestamp post-last-green commit.\n- Benchmark output file is truncated or absent (interrupted process left no final `PASS`/summary line).\n- Last known-green SHA is retrievable from CI log or `git reflog`.\n\n**Action:**\n```bash\ngit stash list                        # confirm no stashed work\ngit diff HEAD -- generated/schema.pb.go > /tmp/dirty.patch  # snapshot the diff\ngit log --oneline -5                  # anchor last-green SHA\ncat benchmark_output.txt | tail -20  # confirm truncation point\n```\nCapture: dirty patch, last-green SHA, truncation line number.\n\n**Stop condition:** You have an exact diff of the dirty file, a confirmed last-green SHA, and a known last-completed benchmark task index. Do not proceed if the reflog is ambiguous or the diff is binary.\n\n---\n\n### Step 2 — Isolate Unrelated Changes\n\n**Evidence:**\n- The dirty file is generated (not hand-authored); its content should be reproducible from a generator command.\n- Git diff confirms no logic changes were made by hand inside the generated file.\n- Any other unstaged edits (migration scripts, config) must be separated from the generated artifact.\n\n**Action:**\n```bash\n# Verify the dirty file is purely machine-generated\ngit diff HEAD -- generated/schema.pb.go | grep \"^+\" | grep -v \"^+++\" | head -30\n\n# If generator is deterministic, restore and re-generate to confirm equivalence\ngit checkout HEAD -- generated/schema.pb.go   # revert to committed baseline\nmake generate                                  # re-run generator\ngit diff generated/schema.pb.go               # diff should be empty or match /tmp/dirty.patch\n\n# Stage ONLY migration-related changes; quarantine anything else\ngit add <migration_files_only>\ngit stash push --keep-index -m \"non-migration-wip\"\n```\n\n**Stop condition:** `git diff --staged` contains exclusively intended migration changes. The generated file is either identical to HEAD or its divergence is fully explained by a deterministic generator. No unrelated edits remain in the working tree.\n\n---\n\n### Step 3 — Resume Safely\n\n**Evidence:**\n- Benchmark was interrupted; partial results exist up to task index N.\n- Docker image is rebuilt (environment may have changed); must not silently inherit a broken layer.\n- Migration is partially applied; resuming from scratch risks double-applying changes.\n\n**Action:**\n```bash\n# Validate the Docker image is consistent with last-green state\ndocker run --rm <image> python -m pytest tests/ -x -q 2>&1 | tee /tmp/pre-resume-tests.txt\ngrep -E \"passed|failed|error\" /tmp/pre-resume-tests.txt\n\n# Resume benchmark from last completed index (N+1), not from 0\n# Assumes benchmark runner supports --start-from or task-index file\nbenchmark_runner \\\n  --start-from $((LAST_COMPLETED_INDEX + 1)) \\\n  --output benchmark_output.txt \\\n  --append                          # append, never overwrite prior results\n  --no-cache                        # prevent stale fixture reuse\n```\nIf no `--start-from` flag exists: extract completed task IDs from the truncated output and pass an explicit exclude list.\n\n**Stop condition:** The pre-resume test suite exits 0 (`all N passed`). The benchmark runner acknowledges the correct starting index in its first log line. Do not resume if tests fail — that signals the Docker rebuild introduced a regression.\n\n---\n\n### Step 4 — Verify (Regression Gate)\n\n**Evidence:**\n- Full benchmark results now span original partial run + resumed continuation.\n- A baseline result file exists from the last-green run (stored in `benchmarks/baseline.json` or equivalent).\n- Regression definition: any task score that drops > threshold (e.g., 5% relative, or absolute pass→fail).\n\n**Action:**\n```bash\n# Merge partial + resumed results into a single canonical file\nbenchmark_merge \\\n  benchmarks/partial_output.txt \\\n  benchmark_output.txt \\\n  --out benchmarks/full_run.json\n\n# Compare against baseline; fail fast on any regression\nbenchmark_diff \\\n  benchmarks/baseline.json \\\n  benchmarks/full_run.json \\\n  --threshold 0.05 \\\n  --fail-on-regression \\\n  --report /tmp/regression_report.txt\n\necho \"Exit code: $?\"   # 0 = no regression, non-zero = regression detected\n```\nIf no merge tool exists, use `jq` to concatenate task arrays and sort by task ID.\n\n**Stop condition:** `benchmark_diff` exits 0 **and** `/tmp/regression_report.txt` shows zero regressed tasks. If exit code is non-zero, **halt the migration** and do not merge — surface the regression report first.\n\n---\n\n### Step 5 — Report\n\n**Evidence:**\n- All prior steps produced artifacts: `/tmp/dirty.patch`, `/tmp/pre-resume-tests.txt`, `benchmarks/full_run.json`, `/tmp/regression_report.txt`.\n- Migration commit is staged and ready.\n\n**Action:**\n```bash\n# Produce a structured summary for the agent log / PR description\ncat <<EOF > migration_recovery_report.md\n## Migration Recovery Report — $(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n\n### State at Recovery Start\n- Last-green SHA: $(git rev-parse HEAD)\n- Dirty file: generated/schema.pb.go — $(wc -l < /tmp/dirty.patch) lines diff\n- Benchmark interrupted at task index: $LAST_COMPLETED_INDEX\n\n### Pre-Resume Test Result\n$(grep -E \"passed|failed\" /tmp/pre-resume-tests.txt)\n\n### Benchmark Result\n$(jq '.summary' benchmarks/full_run.json)\n\n### Regression Gate\n$(cat /tmp/regression_report.txt)\n\n### Disposition\n- Generated file: restored via deterministic generator (diff confirmed zero-divergence)\n- Migration changes: committed as $(git rev-parse --short HEAD)\n- Non-migration WIP: stashed as \"non-migration-wip\" for later review\nEOF\n\n# Commit migration with report attached\ngit add migration_recovery_report.md <migration_files>\ngit commit -m \"chore(migration): resume + verify — no regressions detected\n\n$(cat migration_recovery_report.md)\"\n```\n\n**Stop condition:** Report file exists, commit is recorded, `git log --oneline -1` shows the migration commit. The stash `non-migration-wip` is explicitly noted for follow-up — it is **not** silently discarded. CI pipeline is triggered and green before the branch is merged.",
+      "usage": {
+        "prompt_tokens": 542,
+        "completion_tokens": 1552,
+        "total_tokens": 2094,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeSonnet46Thinking",
+      "requested_model": "auto-thinking",
+      "actual_model": "windsurf/claude-sonnet-4-6-thinking",
+      "cost_group": 3,
+      "thinking_effort": "high",
+      "speed_group": 4,
+      "estimated_cost_usd": 0.024906,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "terminal-agent-plan",
+      "case_title": "Terminal agent recovery plan",
+      "category": "agent-planning",
+      "complexity": 4,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 9900,
+      "content": "{\"decision\":\"adaptive-routing\",\"first_fix\":\"schema-translation for Windsurf: normalize all provider responses into the Claude tool-use schema so text-only replies are detected and re-prompted with explicit tool_choice before surfacing to the client\",\"fallback\":\"escalate to direct Opus when any provider fails tool-schema validation twice or hits rate-limit within the sliding window; cap Opus spend with a per-session token budget\",\"benchmark_signal\":\"tag benchmark requests with an immutable header the proxy verifies cryptographically; exempt tagged requests from prompt compaction and strip any injected system-prompt overrides before forwarding, ensuring raw model output for scoring\",\"risk\":\"adaptive-routing adds latency on fallback hops and complexity in retry logic; schema-translation may mask subtle capability gaps between providers; Opus fallback without budget guardrails can spike cost; benchmark bypass header is an injection surface itself—must be HMAC-signed and time-bound to prevent replay or spoofing\"}",
+      "usage": {
+        "prompt_tokens": 566,
+        "completion_tokens": 256,
+        "total_tokens": 822,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeOpus46",
+      "requested_model": "windsurf/claude-opus-4.6",
+      "actual_model": "windsurf/claude-opus-4.6",
+      "cost_group": 4,
+      "thinking_effort": "xhigh",
+      "speed_group": 3,
+      "estimated_cost_usd": 0.02769,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "direct",
+      "case_id": "production-incident",
+      "case_title": "Production proxy incident decision",
+      "category": "architecture",
+      "complexity": 5,
+      "repeat": 1
+    },
+    {
+      "status": 200,
+      "latency_ms": 17161,
+      "content": "{\"decision\":\"adaptive-routing\",\"first_fix\":\"Detect Windsurf text-only responses by asserting tool_calls presence when tools>0 were sent; on absence apply schema-translation to reformat tool definitions to Windsurf-native spec before retry, else re-route to Codex\",\"fallback\":\"Codex for agentic coding tasks when Claude is rate-limited and Windsurf schema-translation fails; SWE excluded from agentic paths, relegated to read-only summarization only\",\"benchmark_signal\":\"Benchmark direct calls routed via isolated passthrough lane with prompt-injection stripping, compaction disabled, no system-prompt prepend, and Opus forced only on that lane to preserve accuracy without cost bleed to standard traffic\",\"risk\":\"Adaptive routing state machine is itself an injection surface if provider responses influence routing decisions; mitigate by validating routing signals server-side only and requiring human sign-off before promoting any new routing rule to production; Opus cost spike if benchmark lane misclassifies standard traffic\"}",
+      "usage": {
+        "prompt_tokens": 560,
+        "completion_tokens": 258,
+        "total_tokens": 818,
+        "cached_input_tokens": 0
+      },
+      "provider": "Windsurf-ClaudeSonnet46Thinking",
+      "requested_model": "auto-max",
+      "actual_model": "windsurf/claude-sonnet-4-6-thinking",
+      "cost_group": 3,
+      "thinking_effort": "high",
+      "speed_group": 4,
+      "estimated_cost_usd": 0.00555,
+      "pricing_source": "anthropic_pricing",
+      "ok": true,
+      "grade": {
+        "passed": true,
+        "score": 1,
+        "detail": "all:4/4"
+      },
+      "error": "",
+      "arm": "proxy",
+      "case_id": "production-incident",
+      "case_title": "Production proxy incident decision",
+      "category": "architecture",
+      "complexity": 5,
+      "repeat": 1
+    }
+  ],
+  "direct": {
+    "runs": 9,
+    "correct": 9,
+    "unique_provider_count": 1,
+    "unique_model_count": 1,
+    "correctness_pct": 100,
+    "weighted_correctness_pct": 100,
+    "avg_latency_ms": 14814,
+    "avg_prompt_tokens": 519,
+    "avg_cached_input_tokens": 0,
+    "avg_completion_tokens": 468,
+    "avg_total_tokens": 986,
+    "estimated_cost_usd": 0.38583,
+    "avg_estimated_cost_usd": 0.04287,
+    "cost_per_correct_usd": 0.04287,
+    "avg_cost_group": 4,
+    "providers": {
+      "Windsurf-ClaudeOpus46": 9
+    },
+    "models": {
+      "windsurf/claude-opus-4.6": 9
+    }
+  },
+  "proxy": {
+    "runs": 9,
+    "correct": 9,
+    "unique_provider_count": 4,
+    "unique_model_count": 4,
+    "correctness_pct": 100,
+    "weighted_correctness_pct": 100,
+    "avg_latency_ms": 19561,
+    "avg_prompt_tokens": 498,
+    "avg_cached_input_tokens": 0,
+    "avg_completion_tokens": 408,
+    "avg_total_tokens": 905,
+    "estimated_cost_usd": 0.059077,
+    "avg_estimated_cost_usd": 0.006564,
+    "cost_per_correct_usd": 0.006564,
+    "avg_cost_group": 2.56,
+    "providers": {
+      "Windsurf-Gemini3FlashMinimal": 1,
+      "Windsurf-Gemini3FlashLow": 1,
+      "Copilot-gpt35turbo": 2,
+      "Windsurf-ClaudeSonnet46Thinking": 5
+    },
+    "models": {
+      "windsurf/google-gemini-3-0-flash-minimal": 1,
+      "windsurf/google-gemini-3-0-flash-low": 1,
+      "copilot/gpt-3.5-turbo": 2,
+      "windsurf/claude-sonnet-4-6-thinking": 5
+    }
+  },
+  "config": {
+    "baseUrl": "http://localhost:18900",
+    "suite": "ladder",
+    "directModel": "windsurf/claude-opus-4.6",
+    "proxyModel": "auto-coding",
+    "proxyModels": [
+      "auto-coding",
+      "auto-text",
+      "coding-sm",
+      "auto-thinking",
+      "auto-max"
+    ],
+    "maxCases": 9,
+    "repeat": 1,
+    "budgetUsd": 0,
+    "maxRuntimeMs": 360000,
+    "elapsedMs": 309391,
+    "stoppedByBudget": false,
+    "stoppedByRuntime": false
+  }
+}

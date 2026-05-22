@@ -139,8 +139,12 @@ test("loadScores migrates stale garbled-output cooldowns once", () => {
     assert.equal(state.scores["Real-Rate-Limit"].cooldown_until, future);
     assert.equal(state.scores.__migrations.garble_cooldown_v2.cleared, 1);
     assert.equal(state.scores.__migrations.garble_cooldown_v3.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v4.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v5.cleared, 1);
     assert.equal(written.__migrations.garble_cooldown_v2.cleared, 1);
     assert.equal(written.__migrations.garble_cooldown_v3.cleared, 1);
+    assert.equal(written.__migrations.garble_cooldown_v4.cleared, 1);
+    assert.equal(written.__migrations.garble_cooldown_v5.cleared, 1);
 
     scoreSource["Old-Garble"].cooldown_until = future;
     scoreSource["Old-Garble"].cooldown_reason = "garbled output";
@@ -148,6 +152,8 @@ test("loadScores migrates stale garbled-output cooldowns once", () => {
     assert.equal(state.scores["Old-Garble"].cooldown_until, future);
     assert.equal(state.scores.__migrations.garble_cooldown_v2.cleared, 1);
     assert.equal(state.scores.__migrations.garble_cooldown_v3.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v4.cleared, 1);
+    assert.equal(state.scores.__migrations.garble_cooldown_v5.cleared, 1);
   } finally {
     fs.existsSync = originalExistsSync;
     fs.readFileSync = originalReadFileSync;

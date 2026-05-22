@@ -4,7 +4,7 @@
 const http = require("http");
 const fs = require("fs");
 const { URL } = require("url");
-const mempalace = require("./llm-mempalace");
+const memory = require("./lib/memory");
 
 const state = require("./lib/state");
 const scoring = require("./lib/scoring");
@@ -17,6 +17,8 @@ const responses = require("./lib/responses");
 const anthropicGateway = require("./lib/anthropic-gateway");
 const httpHome = require("./lib/http-home");
 const discoveryTools = require("./llm-discovery");
+const embeddings = require("./lib/embeddings");
+const humanApproval = require("./lib/human-approval");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,16 @@ function handleModels(query) {
     description: "Auto-detects use case (coding, thinking, images, tools) and routes to best provider with full fallback",
   });
 
-  return { object: "list", data: [...groups, ...models] };
+  const embeddingModel = {
+    id: process.env.LLM_PROXY_EMBEDDING_MODEL || embeddings.DEFAULT_MODEL,
+    object: "model",
+    created: 0,
+    owned_by: "llm-proxy",
+    capabilities: ["embeddings"],
+    embedding_dimensions: parseInt(process.env.LLM_PROXY_EMBEDDING_DIMENSIONS || String(embeddings.DEFAULT_DIMENSIONS), 10),
+  };
+
+  return { object: "list", data: [...groups, embeddingModel, ...models] };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +240,8 @@ function handleHealth() {
     })),
     quota_disabled: Object.keys(state.quotaDisabled).length > 0 ? state.quotaDisabled : undefined,
     compat_overrides: Object.keys(state.providerCompat).length > 0 ? Object.keys(state.providerCompat).length : undefined,
-    mempalace: mempalace.mempalaceHealth(),
+    memory: memory.health(),
+    human_approval: humanApproval.health(),
     scores_file: fs.existsSync(state.SCORES_FILE),
     discovery_file: fs.existsSync(state.DISCOVERY_FILE),
     providers_file: fs.existsSync(state.PROVIDERS_FILE),
@@ -330,7 +342,7 @@ const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-LLM-Proxy-Approval, X-LLM-Proxy-Approval-Token, X-Approved-By-User");
   if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   try {
@@ -363,7 +375,7 @@ const server = http.createServer(async (req, res) => {
       }
       const est = compaction.estimateTokens(parsed.messages);
       const model = parsed.model || "auto";
-      const sid = mempalace.getSession(parsed.messages).id;
+      const sid = memory.getSession(parsed.messages).id;
       const ss = state.sessionStats[sid];
       const sessionInfo = ss ? ` session[reqs=${ss.requests} in=${Math.round(ss.totalInputTokens/1000)}K out=${Math.round(ss.totalOutputTokens/1000)}K age=${Math.round((Date.now()-ss.startTime)/60000)}min]` : "";
       if (model === "auto") {
@@ -372,7 +384,17 @@ const server = http.createServer(async (req, res) => {
       } else {
         state.log(`Request: model=${model} stream=${!!parsed.stream} msgs=${parsed.messages?.length || 0} ~${est}tok sid=${sid}${sessionInfo}`);
       }
-      return await routing.handleChatCompletion(parsed, res);
+      return await routing.handleChatCompletion(parsed, res, { headers: req.headers });
+    }
+
+    // POST /v1/embeddings
+    if (method === "POST" && pathname === "/v1/embeddings") {
+      const body = await readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch {
+        return sendError(res, 400, "Invalid JSON body");
+      }
+      return sendJSON(res, embeddings.handleEmbeddingsRequest(parsed, process.env));
     }
 
     // POST /v1/responses (Responses API bridge for Codex-style clients)
@@ -527,7 +549,7 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/embeddings, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
 });
 
 const wss = new WebSocketServer({ noServer: true });

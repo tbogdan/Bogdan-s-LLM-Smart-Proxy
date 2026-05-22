@@ -81,7 +81,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
   assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "copilot", "windsurf"]);
-  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
+  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-memory", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
   assert.deepEqual(
     Object.fromEntries(
       ["windsurf", "claude", "codex", "copilot"].map((family) => [
@@ -730,6 +730,30 @@ test("probeSeedProvider uses Anthropic Messages probe for Claude providers", asy
   assert.equal(capturedRequest.max_tokens, 50);
 });
 
+test("probeSeedProviderDetailed classifies Anthropic rate limits", async () => {
+  const result = await discovery.probeSeedProviderDetailed(
+    {
+      name: "Claude-Opus46",
+      family: "claude",
+      protocol: "anthropic",
+      url: "claude",
+      key_env: "ANTHROPIC_API_KEY",
+      model: "claude/claude-opus-4-6",
+      upstream_model: "claude-opus-4-6",
+    },
+    "sk-ant-api03-test",
+    {
+      postAnthropicFn: async () => ({
+        status: 429,
+        body: JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "Error" } }),
+      }),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "rate_limited");
+});
+
 test("probeSeedProvider uses Windsurf cloud probe for Windsurf providers", async () => {
   let capturedProvider = null;
   let capturedInput = null;
@@ -759,6 +783,31 @@ test("probeSeedProvider uses Windsurf cloud probe for Windsurf providers", async
   assert.equal(capturedInput.model, "windsurf/swe-1.6-fast");
   assert.deepEqual(capturedInput.messages, [{ role: "user", content: "Say hello in one word." }]);
   assert.equal(capturedInput.max_tokens, 50);
+});
+
+test("probeSeedProviderDetailed classifies Windsurf permission errors", async () => {
+  const result = await discovery.probeSeedProviderDetailed(
+    {
+      name: "Windsurf-GPT54",
+      family: "windsurf",
+      protocol: "windsurf",
+      url: "windsurf",
+      key_env: "WINDSURF_API_KEY",
+      model: "windsurf/gpt-5.4",
+      upstream_model: "gpt-5.4",
+    },
+    "ws-key",
+    {
+      callWindsurfCloudFn: async () => {
+        const error = new Error(JSON.stringify({ error: { code: "permission_denied", message: "not allowed" } }));
+        error.status = 403;
+        throw error;
+      },
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "permission_denied");
 });
 
 test("probeSeedProvider exchanges Copilot GitHub token before OpenAI-compatible probe", async () => {
@@ -818,6 +867,80 @@ test("probeSeedProvider exchanges Copilot GitHub token before OpenAI-compatible 
   assert.equal(capturedHeaders["X-Initiator"], "user");
   assert.equal(capturedRequest.model, "gpt-4.1");
   assert.deepEqual(capturedRequest.messages, [{ role: "user", content: "Say hello in one word." }]);
+});
+
+test("probeSeedProvider uses max_completion_tokens for Copilot GPT-5.4 probes", async () => {
+  copilotToken.clearCopilotTokenCache();
+  let capturedRequest = null;
+
+  const ok = await discovery.probeSeedProvider(
+    {
+      name: "Copilot-GPT54",
+      family: "copilot",
+      protocol: "openai",
+      url: "https://api.githubcopilot.com/chat/completions",
+      key_env: "COPILOT_GITHUB_TOKEN",
+      model: "copilot/gpt-5.4",
+      upstream_model: "gpt-5.4",
+    },
+    "ghu_source",
+    {
+      tokenUrl: "https://github.example/copilot_internal/v2/token",
+      ...COPILOT_CLIENT_TEST_OPTIONS,
+      requestJSONFn: async () => ({
+        status: 200,
+        data: {
+          token: "capi-runtime-token",
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          refresh_in: 1800,
+        },
+      }),
+      postJSONFn: async (_url, _headers, request) => {
+        capturedRequest = request;
+        return { status: 200, data: { choices: [{ message: { role: "assistant", content: "Hello" } }] } };
+      },
+    },
+  );
+
+  assert.equal(ok, true);
+  assert.equal(capturedRequest.model, "gpt-5.4");
+  assert.equal(capturedRequest.max_tokens, undefined);
+  assert.equal(capturedRequest.max_completion_tokens, 50);
+});
+
+test("probeSeedProviderDetailed classifies unsupported Copilot chat models", async () => {
+  copilotToken.clearCopilotTokenCache();
+  const result = await discovery.probeSeedProviderDetailed(
+    {
+      name: "Copilot-GPT52Codex",
+      family: "copilot",
+      protocol: "openai",
+      url: "https://api.githubcopilot.com/chat/completions",
+      key_env: "COPILOT_GITHUB_TOKEN",
+      model: "copilot/gpt-5.2-codex",
+      upstream_model: "gpt-5.2-codex",
+    },
+    "ghu_source",
+    {
+      tokenUrl: "https://github.example/copilot_internal/v2/token",
+      ...COPILOT_CLIENT_TEST_OPTIONS,
+      requestJSONFn: async () => ({
+        status: 200,
+        data: {
+          token: "capi-runtime-token",
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          refresh_in: 1800,
+        },
+      }),
+      postJSONFn: async () => ({
+        status: 400,
+        data: { error: { code: "unsupported_api_for_model", message: "model is not accessible via chat completions" } },
+      }),
+    },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "unsupported_api_for_model");
 });
 
 test("testSeedProviders re-probes recent no_key Copilot providers when token appears", () => {
@@ -881,7 +1004,7 @@ server.listen(0, "127.0.0.1", async () => {
   assert.notEqual(parsed.result.last_tested, JSON.parse(fs.readFileSync(path.join(dataDir, "providers.json"), "utf8")).providers[0].last_tested);
 });
 
-test("testSeedProviders records probe_failed instead of preserving stale no_key on keyed failures", () => {
+test("testSeedProviders records classified failure reason instead of preserving stale no_key", () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-discovery-copilot-fail-"));
   const script = `
 const fs = require("node:fs");
@@ -937,7 +1060,7 @@ server.listen(0, "127.0.0.1", async () => {
   const parsed = JSON.parse(line.slice("RESULT ".length));
   assert.equal(parsed.hits, 1);
   assert.equal(parsed.result.alive, false);
-  assert.equal(parsed.result.reason, "probe_failed");
+  assert.equal(parsed.result.reason, "temporary_provider_error");
 });
 
 test("mergeProvidersConfig drops unsupported existing providers but keeps supported entries", () => {

@@ -147,7 +147,7 @@ test("README documents supported provider families and smart groups", () => {
     .filter(Boolean)
     .map((match) => match[1]);
 
-  for (const group of ["auto", "auto-assess", "auto-sm", "auto-coding", "coding-sm", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
+  for (const group of ["auto", "auto-assess", "auto-sm", "auto-memory", "auto-coding", "coding-sm", "auto-thinking", "auto-tools", "auto-text", "auto-max"]) {
     assert.equal(listedGroups.includes(group), true, `README should list smart group \`${group}\``);
   }
 });
@@ -177,4 +177,72 @@ test("Codex auth bind mount stays writable for token refresh", () => {
 
   assert.match(compose, /- \.\/data\/codex-auth\.json:\/root\/\.codex\/auth\.json\s*$/m);
   assert.doesNotMatch(compose, /codex-auth\.json:\/root\/\.codex\/auth\.json:ro/);
+});
+
+test("Graphiti MCP image allows Compose service host headers for internal MCP traffic", () => {
+  const dockerfile = read("Dockerfile.graphiti-mcp");
+
+  assert.match(dockerfile, /TransportSecuritySettings/);
+  assert.match(dockerfile, /graphiti-mcp:\*/);
+});
+
+test("public env only exposes operator-owned source and routing settings", () => {
+  const envExample = read(".env.example");
+  const compose = read("docker-compose.yml");
+  const envKeys = envExample
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => line.split("=", 1)[0]);
+
+  assert.deepEqual(envKeys, [
+    "COMPOSE_PROJECT_NAME",
+    "LLM_PROXY_PORT",
+    "CODEX_PROXY_PORT",
+    "DATA_DIR",
+    "DEV_MODE",
+    "ENABLE_WINDSURF",
+    "WINDSURF_API_KEY",
+    "ENABLE_CLAUDE",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ENABLE_CODEX",
+    "ENABLE_COPILOT",
+    "COPILOT_GITHUB_TOKEN",
+    "LLM_COST_TARGET",
+    "LLM_THINKING_TARGET",
+    "LLM_SPEED_TARGET",
+    "LLM_ROUTING_POLICY",
+    "WINDSURF_ENTERPRISE",
+  ]);
+
+  for (const pattern of [
+    /^MEMORY_/m,
+    /^GRAPHITI_/m,
+    /^NEO4J_/m,
+    /^LLM_PROXY_AI_SUMMARY_/m,
+    /^LLM_PROXY_EMBEDDING_/m,
+    /^WINDSURF_(?:MODELS|IDE_VERSION|USER_AGENT|API_ORIGIN|CHAT_ORIGIN|CONNECT|INCLUDE_)/m,
+    /^GITHUB_COPILOT_/m,
+    /^COPILOT_MODELS/m,
+    /^CODEX_API_KEY=/m,
+  ]) {
+    assert.doesNotMatch(envExample, pattern, `.env.example should not expose internal config ${pattern}`);
+  }
+
+  for (const pattern of [/\$\{MEMORY_/, /\$\{GRAPHITI_/, /\$\{NEO4J_/, /\$\{LLM_PROXY_(?:AI_SUMMARY|EMBEDDING)_/]) {
+    assert.doesNotMatch(compose, pattern, `docker-compose.yml should hardcode internal config ${pattern}`);
+  }
+
+  assert.match(compose, /MEMORY_ENABLED:\s+"true"/);
+  assert.match(compose, /MEMORY_BACKEND:\s+graphiti/);
+  assert.match(compose, /GRAPHITI_MCP_ENABLED:\s+"true"/);
+  assert.match(compose, /MODEL_NAME:\s+auto-memory/);
+  assert.match(compose, /OPENAI_API_URL:\s+http:\/\/llm-proxy:18900\/v1/);
+  assert.match(compose, /NEO4J_AUTH:\s+"neo4j\/graphiti-memory-local"/);
+  assert.match(compose, /CODEX_API_KEY:\s+proxy/);
+  assert.doesNotMatch(compose, /profiles:\s+\[(?:memory|semantic-memory)/);
+  assert.doesNotMatch(compose, /["']7687:7687["']/);
+  assert.doesNotMatch(compose, /["']7474:7474["']/);
+  assert.doesNotMatch(compose, /["']127\.0\.0\.1:18080:8000["']/);
 });

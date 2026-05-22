@@ -121,6 +121,24 @@ test("summarizeRuns aggregates direct and proxy metrics", () => {
   assert.deepEqual(summary.proxy.providers, { ProxyA: 1, ProxyB: 1 });
 });
 
+test("summarizeRuns reports outlier-aware telemetry, memory counters, and provider fairness", () => {
+  const summary = benchmark.summarizeRuns([
+    { arm: "proxy", ok: true, latency_ms: 100, usage: { total_tokens: 10 }, estimated_cost_usd: 0.001, provider: "Windsurf-A", actual_model: "windsurf/a", complexity: 1, warning: "stream diagnostic", route_trace: { selected_source: "Windsurf", gate: "none", candidates: [{ source: "Windsurf" }, { source: "Copilot" }] }, memory: { injected_tokens: 40 }, compaction: { archive_refs: 1, ai_summary_used: true } },
+    { arm: "proxy", ok: true, latency_ms: 200, usage: { total_tokens: 12 }, estimated_cost_usd: 0.002, provider: "Copilot-B", actual_model: "copilot/b", complexity: 2, route_trace: { selected_source: "Copilot", gate: "human_signoff", candidates: [{ source: "Copilot" }, { source: "Windsurf" }] }, memory: { injected_tokens: 60 }, compaction: { archive_refs: 0, ai_summary_used: false } },
+    { arm: "proxy", ok: true, latency_ms: 10000, usage: { total_tokens: 14 }, estimated_cost_usd: 0.003, provider: "Windsurf-C", actual_model: "windsurf/c", complexity: 3, route_trace: { selected_source: "Windsurf", gated_sources: ["Claude"], candidates: [{ source: "Windsurf" }] }, memory: { injected_tokens: 50 }, compaction: { archive_refs: 1, ai_summary_used: false } },
+  ]);
+
+  assert.equal(summary.proxy.latency_p50_ms, 200);
+  assert.equal(summary.proxy.latency_p95_ms, 10000);
+  assert.equal(summary.proxy.warning_count, 1);
+  assert.deepEqual(summary.proxy.memory, { injected_tokens: 150, recall_retries: 0 });
+  assert.deepEqual(summary.proxy.compaction, { archive_refs: 2, ai_summary_uses: 1 });
+  assert.equal(summary.proxy.provider_fairness.Windsurf.eligible, 3);
+  assert.equal(summary.proxy.provider_fairness.Windsurf.selected, 2);
+  assert.equal(summary.proxy.provider_fairness.Copilot.top3, 2);
+  assert.equal(summary.proxy.provider_fairness.Claude.gated, 1);
+});
+
 test("renderReport includes ASCII charts and provider/model detail", () => {
   const summary = benchmark.summarizeRuns([
     { arm: "direct", case_id: "exact", ok: true, latency_ms: 1000, usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 }, estimated_cost_usd: 0, provider: "Windsurf-SWE16Fast", actual_model: "windsurf/swe-1.6-fast", complexity: 1 },

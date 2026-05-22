@@ -211,7 +211,7 @@ test("routeStreamToProvider logs and tracks cached input tokens from streaming u
 
         await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
 
-        const sid = require("../llm-mempalace").getSession(req.messages).id;
+        const sid = require("../lib/memory").getSession(req.messages).id;
         assert.equal(logs.some((line) => /cached=80/.test(line)), true);
         assert.equal(state.sessionStats[sid].cachedInputTokens, 80);
       });
@@ -219,6 +219,26 @@ test("routeStreamToProvider logs and tracks cached input tokens from streaming u
       state.log = originalLog;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
+  });
+});
+
+test("routeStreamToProvider strips hidden memory markers from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "LLM_PROXY_MEMORY v=1 op=user_correction target=f_123 type=preference confidence=high\nProject " } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Proxy." }, finish_reason: "stop" }] })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_MEMORY"), false);
+      assert.equal(output.includes("Project "), true);
+      assert.equal(output.includes("Proxy."), true);
+    });
   });
 });
 
@@ -312,7 +332,7 @@ test("handleChatCompletion estimates output tokens for native streaming provider
 
       await routing.handleChatCompletion(req, clientRes);
 
-      const sid = require("../llm-mempalace").getSession(req.messages).id;
+      const sid = require("../lib/memory").getSession(req.messages).id;
       assert.equal(clientRes.status, 200);
       assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
       assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);

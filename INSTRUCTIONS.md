@@ -32,7 +32,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    ```
 
    Choose the Anthropic Console account in the Claude browser flow. The helper extracts Claude Code's login-managed API key and writes `ANTHROPIC_API_KEY` into `.env`; if needed, you can manually create a key at `https://platform.claude.com/settings/keys`.
-   For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. Override it with `GITHUB_COPILOT_CLIENT_ID` or `--client-id` if you want to use your own app. The proxy exchanges that GitHub token for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
+   For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. Override it with `--client-id` if you want to use your own app. The proxy exchanges that GitHub token for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
    If you use `./setup.sh`, Codex auth is copied automatically from `${CODEX_HOME:-$HOME/.codex}/auth.json` when Codex is enabled.
 
 4. Start Docker.
@@ -42,7 +42,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    ```
 
    If Codex is not enabled, omit `--profile codex`.
-   When another checkout is already running on the host, set `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, `CODEX_PROXY_PORT`, and `MEMPALACE_PORT` in `.env` before starting Docker.
+   When another checkout is already running on the host, set `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, and `CODEX_PROXY_PORT` in `.env` before starting Docker.
 
 5. Verify health.
 
@@ -73,10 +73,13 @@ Or add the same values under `env` in `.claude/settings.local.json`.
 ## Operational Notes
 
 - Discovery is scoped to the supported provider families: Windsurf, Claude, Codex, and Copilot.
-- Windsurf discovery uses the built-in model catalog unless `WINDSURF_MODELS`, `WINDSURF_MODELS_JSON`, or `WINDSURF_MODELS_URL` is configured.
-- Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like `WINDSURF_IDE_VERSION`, `WINDSURF_USER_AGENT`, and `WINDSURF_CONNECT_RETRIES` compatibility settings.
+- Windsurf discovery uses the built-in model catalog. Set `WINDSURF_ENTERPRISE=true` when the source should use the enterprise app API origin.
+- Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like compatibility defaults from code and Compose.
 - Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, and `LLM_SPEED_TARGET`; these are soft targets, not hard caps.
-- Context compaction uses an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` so compacted turns carry an AI-generated summary in the current request.
+- Context compaction uses an internal self-call to the Compose default summary model so compacted turns carry an AI-generated summary in the current request.
+- The active memory layer is `lib/memory`. Docker Compose enables the local Neo4j graph backend by default; the in-process backend is only for tests or temporary non-Docker runs.
+- Graphiti MCP runs as a semantic sidecar behind the proxy. Keep the proxy's direct Neo4j ledger authoritative for automatic saves, user corrections, and compaction archives.
+- Graphiti MCP uses the proxy as its OpenAI-compatible endpoint with `auto-memory`. The local proxy serves `/v1/embeddings`, so a real `OPENAI_API_KEY` is not required for the sidecar path.
+- Neo4j and Graphiti MCP stay on the Compose network by default; publish their ports only in an explicit local override when direct host access is needed.
 - Use `docker compose --profile codex` when Codex is enabled.
-- Use `--profile memory` only when MemPalace is enabled with `MEMPALACE_ENABLED=true`.
 - Restart Docker services after changing `.env` credentials or enable flags.

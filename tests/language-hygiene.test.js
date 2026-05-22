@@ -10,7 +10,6 @@ const SCAN_DIRS = ["lib", "tests"];
 const ROOT_FILES = [
   "llm-proxy.js",
   "llm-discovery.js",
-  "llm-mempalace.js",
   "claude-auth.js",
   "windsurf-auth.js",
   "setup.sh",

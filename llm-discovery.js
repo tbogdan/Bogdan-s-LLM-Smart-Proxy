@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const anthropicAdapter = require("./lib/anthropic-adapter");
 const copilotToken = require("./lib/copilot-token");
+const providerAdapters = require("./lib/provider-adapters");
 const providerConfig = require("./lib/provider-config");
 const routingPolicy = require("./lib/routing-policy");
 const windsurfCloud = require("./lib/windsurf-cloud");
@@ -437,11 +438,12 @@ function detectCaps(modelId, modelData) {
 // ---------------------------------------------------------------------------
 function probeRequest(provider) {
   const openAICompatible = provider.protocol === "openai" || provider.family === "codex" || provider.family === "copilot";
-  return {
+  const request = {
     model: openAICompatible ? (provider.upstream_model || provider.model) : provider.model,
     messages: [{ role: "user", content: PROBE_PROMPT }],
     max_tokens: PROBE_MAX_TOKENS,
   };
+  return openAICompatible ? providerAdapters.normalizeOpenAIChatTokenLimit(provider, request) : request;
 }
 
 function parseResponseBody(response) {
@@ -464,6 +466,24 @@ function anthropicChatOk(response) {
   return Array.isArray(data?.content) && data.content.some((part) => part?.type === "text" && part.text);
 }
 
+function probeFailureReason(status, body) {
+  const data = typeof body === "string" ? (() => {
+    try { return JSON.parse(body); } catch { return null; }
+  })() : body;
+  const text = (typeof body === "string" ? body : JSON.stringify(body || "")).toLowerCase();
+  const code = String(data?.error?.code || data?.error?.type || data?.code || data?.type || "").toLowerCase();
+  const message = String(data?.error?.message || data?.message || text || "").toLowerCase();
+  const combined = `${code} ${message} ${text}`;
+
+  if (status === 429 || /rate[_ -]?limit|too many requests/.test(combined)) return "rate_limited";
+  if (/unsupported_api_for_model|not accessible via .*chat\/completions/.test(combined)) return "unsupported_api_for_model";
+  if (/permission_denied|permission denied|not allowed|forbidden/.test(combined)) return "permission_denied";
+  if (status === 401 || /unauthorized|invalid.*(?:token|key)|authentication/.test(combined)) return "auth_failed";
+  if (status === 404 || /model.*not found|unknown model/.test(combined)) return "model_not_found";
+  if (status >= 500 || /timeout|temporar|unavailable|gateway/.test(combined)) return "temporary_provider_error";
+  return "probe_failed";
+}
+
 async function buildOpenAIHeaders(provider, key, options = {}) {
   const headers = { ...(provider.headers || {}) };
   if (copilotToken.isCopilotProvider(provider)) {
@@ -484,7 +504,7 @@ async function buildOpenAIHeaders(provider, key, options = {}) {
   return headers;
 }
 
-async function probeSeedProvider(provider, key, options = {}) {
+async function probeSeedProviderDetailed(provider, key, options = {}) {
   const postJSONFn = options.postJSONFn || postJSON;
   const postAnthropicFn = options.postAnthropicFn || anthropicAdapter.postAnthropic;
   const callWindsurfCloudFn = options.callWindsurfCloudFn || windsurfCloud.callWindsurfCloud;
@@ -494,21 +514,40 @@ async function probeSeedProvider(provider, key, options = {}) {
   try {
     if (provider.family === "claude" || provider.protocol === "anthropic") {
       const response = await postAnthropicFn(keyedProvider, anthropicAdapter.toAnthropicRequest(keyedProvider, request));
-      return anthropicChatOk(response);
+      const ok = anthropicChatOk(response);
+      return {
+        ok,
+        status: response?.status,
+        ...(ok ? {} : { reason: probeFailureReason(response?.status, parseResponseBody(response) || response?.body) }),
+      };
     }
 
     if (provider.family === "windsurf" || provider.protocol === "windsurf") {
       const response = await callWindsurfCloudFn(keyedProvider, request);
-      return response?.choices?.length > 0;
+      const ok = response?.choices?.length > 0;
+      return { ok, ...(ok ? {} : { reason: "invalid_response" }) };
     }
 
     const url = resolveUrl(providerConfig.resolveProviderUrl(provider));
     const headers = await buildOpenAIHeaders(provider, key, options);
     const response = await postJSONFn(url, headers, request);
-    return openAIChatOk(response);
-  } catch {
-    return false;
+    const ok = openAIChatOk(response);
+    return {
+      ok,
+      status: response?.status,
+      ...(ok ? {} : { reason: probeFailureReason(response?.status, parseResponseBody(response) || response?.data) }),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: err?.status || err?.statusCode,
+      reason: probeFailureReason(err?.status || err?.statusCode, err?.body || err?.responseBody || err?.message),
+    };
   }
+}
+
+async function probeSeedProvider(provider, key, options = {}) {
+  return (await probeSeedProviderDetailed(provider, key, options)).ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -979,13 +1018,14 @@ async function testSeedProviders(seed) {
       }
     }
 
-    const chatOk = await probeSeedProvider({ ...sp, key_env: keyEnv }, key);
+    const probeResult = await probeSeedProviderDetailed({ ...sp, key_env: keyEnv }, key);
+    const chatOk = probeResult.ok;
 
     results.push({
       ...sp,
       alive: chatOk,
       last_tested: new Date().toISOString(),
-      ...(chatOk ? {} : { reason: "probe_failed" }),
+      ...(chatOk ? {} : { reason: probeResult.reason || "probe_failed" }),
     });
 
     if (chatOk) {
@@ -1162,6 +1202,7 @@ module.exports = {
   refreshDiscoveryFromProviders,
   markMissingDiscoveryModels,
   shouldProbeSeedProvider,
+  probeSeedProviderDetailed,
   probeSeedProvider,
   testSeedProviders,
   mergeProvidersConfig,

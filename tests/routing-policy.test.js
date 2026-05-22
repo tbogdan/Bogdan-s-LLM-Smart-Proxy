@@ -683,6 +683,45 @@ test("providerPolicyBonus does not reward heavy thinking for context-only pressu
   assert.equal(policy.providerPolicyBonus(medium, req) >= policy.providerPolicyBonus(high, req), true);
 });
 
+test("providerPolicyBonus applies thinking latency guard to deterministic security patches", () => {
+  const nonThinkingSonnet = {
+    name: "Windsurf-ClaudeSonnet46",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const thinkingSonnet = {
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "high",
+  };
+  const patchReq = {
+    max_tokens: 340,
+    messages: [{
+      role: "user",
+      content: "Fix this Node.js webhook verifier. Current code accepts replayed tokens and leaks timing info. Required: constant-time semantics, malformed hex handling, and three regression tests.",
+    }],
+    _estimatedTokens: 6000,
+  };
+  const threatModelReq = {
+    max_tokens: 900,
+    messages: [{ role: "user", content: "Threat model an ambiguous auth architecture for privilege bypass and exploit chains before release." }],
+    _estimatedTokens: 12000,
+  };
+
+  assert.equal(policy.providerPolicyBonus(nonThinkingSonnet, patchReq) > policy.providerPolicyBonus(thinkingSonnet, patchReq), true);
+  assert.equal(policy.providerPolicyBonus(thinkingSonnet, threatModelReq) > policy.providerPolicyBonus(nonThinkingSonnet, threatModelReq), true);
+});
+
 test("providerPolicyBonus prefers adequate context over one-million frontier for write-heavy coding", () => {
   const adequate = {
     name: "Windsurf-ClaudeSonnet46Thinking",
@@ -1139,6 +1178,33 @@ test("old completion summaries do not turn later routing log debugging into comp
 
   assert.equal(profile.taskKind, "debugging");
   assert.notEqual(profile.taskKind, "completion_review");
+});
+
+test("Romanian why questions stay explanation even when IDE tools are present", () => {
+  const req = {
+    tools: Array.from({ length: 8 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [
+      { role: "system", content: "You are a software engineering agent with codebase tools." },
+      { role: "assistant", content: "Am actualizat docker compose si memory routing." },
+      { role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" },
+    ],
+    _inputTokens: 11019,
+    _estimatedTokens: 27403,
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+  const effective = policy.effectiveRequestProfile(req, {
+    LLM_COST_TARGET: "3",
+    LLM_THINKING_TARGET: "medium",
+    LLM_SPEED_TARGET: "4",
+    LLM_ROUTING_POLICY: "balanced",
+  });
+
+  assert.equal(profile.taskKind, "explanation");
+  assert.equal(profile.stepShape.gate, "none");
+  assert.equal(profile.taskLevel <= 2, true);
+  assert.equal(effective.costTarget <= 2, true);
+  assert.equal(effective.thinkingLevel <= 2, true);
 });
 
 test("routing log diagnostics that mention security mode stay debugging and avoid Opus fallback", () => {

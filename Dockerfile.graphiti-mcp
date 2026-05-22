@@ -1,0 +1,44 @@
+FROM zepai/knowledge-graph-mcp:standalone
+
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/app/mcp/src/services/factories.py")
+text = path.read_text()
+needle = "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    model=config.model,"
+replacement = "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    base_url=config.providers.openai.api_url,\n                    model=config.model,"
+if "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    base_url=config.providers.openai.api_url," not in text:
+    if needle not in text:
+        raise SystemExit("Graphiti OpenAI LLM factory shape changed; update Dockerfile.graphiti-mcp")
+    text = text.replace(needle, replacement, 1)
+    path.write_text(text)
+
+server_path = Path("/app/mcp/src/graphiti_mcp_server.py")
+server = server_path.read_text()
+import_needle = "from mcp.server.fastmcp import FastMCP\n"
+import_replacement = "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n"
+if "from mcp.server.transport_security import TransportSecuritySettings" not in server:
+    if import_needle not in server:
+        raise SystemExit("Graphiti MCP server import shape changed; update Dockerfile.graphiti-mcp")
+    server = server.replace(import_needle, import_replacement, 1)
+
+mcp_needle = """mcp = FastMCP(
+    'Graphiti Agent Memory',
+    instructions=GRAPHITI_MCP_INSTRUCTIONS,
+)
+"""
+mcp_replacement = """mcp = FastMCP(
+    'Graphiti Agent Memory',
+    instructions=GRAPHITI_MCP_INSTRUCTIONS,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=['graphiti-mcp:*', 'localhost:*', '127.0.0.1:*', '[::1]:*'],
+    ),
+)
+"""
+if "graphiti-mcp:*" not in server:
+    if mcp_needle not in server:
+        raise SystemExit("Graphiti MCP server FastMCP shape changed; update Dockerfile.graphiti-mcp")
+    server = server.replace(mcp_needle, mcp_replacement, 1)
+    server_path.write_text(server)
+PY

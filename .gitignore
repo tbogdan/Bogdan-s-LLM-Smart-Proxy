@@ -1,8 +1,11 @@
 node_modules/
 data/*.json
+data/neo4j/
 .env
 .claude/
-docs/
+docs/*
+!docs/smart-routing-memory-benchmark.md
+!docs/graphiti-mcp-ide.example.json
 .DS_Store
 palace/
 *.log
