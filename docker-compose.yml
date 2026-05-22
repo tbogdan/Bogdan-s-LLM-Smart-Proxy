@@ -8,12 +8,28 @@ services:
         required: false
     environment:
       LLM_PROXY_PORT: "18900"
-      MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
-      MEMORY_BACKEND: ${MEMORY_BACKEND:-local}
-      MEMORY_MAX_INJECT_TOKENS: ${MEMORY_MAX_INJECT_TOKENS:-2000}
+      MEMORY_ENABLED: "true"
+      MEMORY_BACKEND: graphiti
+      MEMORY_MAX_INJECT_TOKENS: "2000"
+      MEMORY_ARCHIVE_MAX_CHARS: "30000"
       GRAPHITI_NEO4J_URI: bolt://graphiti-neo4j:7687
-      GRAPHITI_NEO4J_USER: ${GRAPHITI_NEO4J_USER:-neo4j}
-      GRAPHITI_NEO4J_PASSWORD: ${GRAPHITI_NEO4J_PASSWORD:-graphiti-memory-local}
+      GRAPHITI_NEO4J_USER: neo4j
+      GRAPHITI_NEO4J_PASSWORD: graphiti-memory-local
+      GRAPHITI_NEO4J_DATABASE: neo4j
+      GRAPHITI_MCP_ENABLED: "true"
+      GRAPHITI_MCP_URL: http://graphiti-mcp:8000/mcp/
+      GRAPHITI_MCP_GROUP_ID: llm-proxy
+      GRAPHITI_MCP_TIMEOUT_MS: "1200"
+      GRAPHITI_MCP_WRITE_TIMEOUT_MS: "5000"
+      GRAPHITI_MCP_SEARCH_TIMEOUT_MS: "1200"
+      GRAPHITI_MCP_OUTBOX_BATCH: "5"
+      LLM_PROXY_EMBEDDING_MODEL: llm-proxy-hash-embedding-1536
+      LLM_PROXY_EMBEDDING_DIMENSIONS: "1536"
+      LLM_PROXY_AI_SUMMARY_MODEL: auto-text
+      LLM_PROXY_AI_SUMMARY_TIMEOUT_MS: "12000"
+      LLM_PROXY_AI_SUMMARY_MAX_TOKENS: "500"
+      LLM_PROXY_AI_SUMMARY_MIN_MESSAGES: "1"
+      CODEX_API_KEY: proxy
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -24,6 +40,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      CODEX_API_KEY: proxy
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -40,13 +58,47 @@ services:
     profiles: [codex]
 
   graphiti-neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26.0-community
     environment:
-      NEO4J_AUTH: "${GRAPHITI_NEO4J_USER:-neo4j}/${GRAPHITI_NEO4J_PASSWORD:-graphiti-memory-local}"
+      NEO4J_AUTH: "neo4j/graphiti-memory-local"
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
     volumes:
       - ./data/neo4j:/data
-    ports:
-      - "${GRAPHITI_NEO4J_PORT:-7687}:7687"
-      - "${GRAPHITI_NEO4J_HTTP_PORT:-7474}:7474"
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p graphiti-memory-local 'RETURN 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
-    profiles: [memory]
+
+  graphiti-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.graphiti-mcp
+    image: llm-proxy-graphiti-mcp:local
+    depends_on:
+      graphiti-neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_URI: bolt://graphiti-neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: graphiti-memory-local
+      NEO4J_DATABASE: neo4j
+      GRAPHITI_GROUP_ID: llm-proxy
+      MODEL_NAME: auto-memory
+      OPENAI_API_KEY: llm-proxy
+      OPENAI_API_URL: http://llm-proxy:18900/v1
+      OPENAI_BASE_URL: http://llm-proxy:18900/v1
+      GRAPHITI_MCP_EMBEDDING_MODEL: llm-proxy-hash-embedding-1536
+      GRAPHITI_MCP_EMBEDDING_DIMENSIONS: "1536"
+      SEMAPHORE_LIMIT: "2"
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+      CONFIG_PATH: /app/mcp/config/config.yaml
+      PATH: "/root/.local/bin:${PATH}"
+    volumes:
+      - ./config/graphiti-mcp-neo4j.yaml:/app/mcp/config/config.yaml:ro
+    command: ["uv", "run", "main.py"]
+    restart: unless-stopped

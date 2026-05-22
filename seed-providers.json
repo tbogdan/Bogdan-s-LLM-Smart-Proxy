@@ -4941,6 +4941,7 @@
     "auto-tools": "tools",
     "auto-assess": "assessment",
     "auto-sm": "text-sm",
+    "auto-memory": "memory",
     "auto-coding": "coding",
     "coding-sm": "coding-sm",
     "auto-text": "text",

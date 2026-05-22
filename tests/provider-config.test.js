@@ -33,6 +33,7 @@ test("smart groups keep existing routing names except removed image and video gr
     "auto-tools": "tools",
     "auto-assess": "assessment",
     "auto-sm": "text-sm",
+    "auto-memory": "memory",
     "auto-coding": "coding",
     "coding-sm": "coding-sm",
     "auto-text": "text",
@@ -53,6 +54,7 @@ test("runtime provider files inherit newly added default smart groups", () => {
 
   assert.equal(hydrated.groups["auto-assess"], "assessment");
   assert.equal(hydrated.groups["auto-sm"], "text-sm");
+  assert.equal(hydrated.groups["auto-memory"], "memory");
   assert.equal(hydrated.groups["auto-coding"], "coding");
 });
 

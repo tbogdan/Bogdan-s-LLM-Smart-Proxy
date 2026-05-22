@@ -110,6 +110,36 @@ function messageText(message) {
   return "";
 }
 
+test("structured JSON response requests allow valid JSON arrays through garble guard", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "```json\n[{\"id\":0,\"name\":\"Graphiti\",\"duplicate_name\":\"\"}]\n```",
+        },
+        finish_reason: "stop",
+      },
+    ],
+  });
+
+  assert.equal(
+    routing.isStructuredJsonResponseBody(body, {
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          schema: {
+            type: "object",
+            properties: { duplicates: { type: "array" } },
+          },
+        },
+      },
+    }),
+    true,
+  );
+  assert.equal(routing.isStructuredJsonResponseBody(body, {}), false);
+});
+
 test("routeToProvider exchanges Copilot GitHub token before calling chat completions", async () => {
   await withRoutingState(async () => {
     const previousTokenUrl = process.env.COPILOT_TOKEN_URL;
@@ -1975,7 +2005,7 @@ test("auto-text prefers light providers over Sonnet-class models", () => {
     });
 
     assert.equal(providers[0].name, "Free-Light-Mini");
-    assert.equal(providers.some((p) => /sonnet|opus/i.test(`${p.name} ${p.model}`)), false);
+    assert.equal(providers.at(-1).name, "Windsurf-ClaudeSonnet46Thinking");
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;
@@ -2016,7 +2046,7 @@ test("auto-sm ranks free mini text providers before heavy models", () => {
     });
 
     assert.equal(providers[0].name, "Free-Light-Mini");
-    assert.equal(providers.some((p) => /sonnet|opus/i.test(`${p.name} ${p.model}`)), false);
+    assert.equal(providers.at(-1).name, "Windsurf-ClaudeSonnet46Thinking");
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;
@@ -2057,6 +2087,186 @@ test("auto-sm prefers modern mini classifiers over legacy GPT-3.5", () => {
     });
 
     assert.equal(providers[0].name, "Copilot-gpt4omini");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-memory prefers structured mini extraction models over flash classifiers", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-memory": "memory" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/flash", {
+      name: "Windsurf-Gemini3FlashMedium",
+      family: "windsurf",
+      protocol: "windsurf",
+      model: "windsurf/google-gemini-3-0-flash-medium",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 1,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/mini", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    }),
+    provider("http://127.0.0.1/legacy", {
+      name: "Copilot-gpt35turbo0613",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-3.5-turbo-0613",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-memory", 1000, {
+      model: "auto-memory",
+      messages: [{ role: "user", content: "Extract entities and facts for Graphiti memory." }],
+      response_format: { type: "json_schema" },
+    });
+
+    assert.equal(providers[0].name, "Copilot-gpt5mini");
+    assert.equal(providers.at(-1).name, "Copilot-gpt35turbo0613");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-memory avoids heavy max providers for background memory ingestion", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-memory": "memory" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/opus", {
+      name: "Windsurf-ClaudeOpus46",
+      model: "windsurf/claude-opus-4-6",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 5,
+      cost_multiplier: 8,
+      quality_group: 5,
+      speed_group: 2,
+      thinking_effort: "xhigh",
+    }),
+    provider("http://127.0.0.1/haiku", {
+      name: "Copilot-claudehaiku45",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/claude-haiku-4.5",
+      upstream_model: "claude-haiku-4.5",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-memory", 1000, {
+      model: "auto-memory",
+      messages: [{ role: "user", content: "Summarize this memory episode into entities." }],
+    });
+
+    assert.equal(providers[0].name, "Copilot-claudehaiku45");
+    assert.equal(providers.at(-1).name, "Windsurf-ClaudeOpus46");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("soft-filtered smart groups preserve every configured source as fallback", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = {
+    "auto-assess": "assessment",
+    "auto-sm": "text-sm",
+    "auto-memory": "memory",
+    "auto-text": "text",
+  };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/windsurf", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      protocol: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 3,
+      cost_multiplier: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    }),
+    provider("http://127.0.0.1/claude", {
+      name: "Claude-Opus47",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-opus-4-7",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "xhigh",
+    }),
+    provider("http://127.0.0.1/codex", {
+      name: "Codex-GPT55",
+      family: "codex",
+      protocol: "openai",
+      model: "codex/gpt-5.5",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "high",
+      supports_structured_outputs: true,
+    }),
+    provider("http://127.0.0.1/copilot", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      cost_multiplier: 0,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    }),
+  ];
+
+  try {
+    for (const group of Object.keys(state.GROUPS)) {
+      const providers = routing.getProvidersForGroup(group, 1000, {
+        model: group,
+        messages: [{ role: "user", content: "Classify and extract a compact memory summary." }],
+      });
+      const families = new Set(providers.map((p) => p.family));
+
+      assert.equal(providers[0].name, "Copilot-gpt5mini", `${group} should still prioritize the optimized mini provider`);
+      assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"], `${group} should keep one fallback per source`);
+    }
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;

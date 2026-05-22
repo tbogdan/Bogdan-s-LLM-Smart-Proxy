@@ -17,10 +17,10 @@ Project LLM Smart Proxy reduces AI operating cost by automatically routing each 
 
 | Provider family | Host authentication | Runtime adapter | Models |
 | --- | --- | --- | --- |
-| Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | SWE, GPT, Claude, Gemini, GLM, Minimax, and Grok models from the local catalog or overrides |
+| Windsurf | `node windsurf-auth.js --env-file .env` | Native proxy adapter | SWE, GPT, Claude, Gemini, GLM, Minimax, and Grok models from the local catalog |
 | Claude | `claude auth login --console`, then `node claude-auth.js --env-path .env` to extract `ANTHROPIC_API_KEY` | Anthropic Messages adapter | `claude/...` from discovery/seed |
 | Codex | `npx @openai/codex login`; setup copies `auth.json` into `data/codex-auth.json` | Local Codex proxy container | `codex/gpt-5.5`, `codex/gpt-5.4`, `codex/gpt-5.4-mini`, `codex/gpt-5.3-codex`, `codex/gpt-5.2`, `codex/codex-auto-review` |
-| GitHub Copilot | `node github-copilot-auth.js --env-file .env`, or set `COPILOT_GITHUB_TOKEN` manually | GitHub OAuth token exchange + OpenAI-compatible Copilot LLM endpoint | `copilot/gpt-4.1` by default, or `COPILOT_MODELS` overrides |
+| GitHub Copilot | `node github-copilot-auth.js --env-file .env`, or set `COPILOT_GITHUB_TOKEN` manually | GitHub OAuth token exchange + OpenAI-compatible Copilot LLM endpoint | Copilot GPT models from discovery/seed |
 
 ## Quick Start
 
@@ -44,13 +44,21 @@ Edit `.env` and enable the provider families you want:
 COMPOSE_PROJECT_NAME=llm-proxy
 LLM_PROXY_PORT=18900
 CODEX_PROXY_PORT=10531
-MEMORY_ENABLED=true
-MEMORY_BACKEND=local
-MEMORY_MAX_INJECT_TOKENS=2000
+DATA_DIR=/data
+DEV_MODE=true
 ENABLE_WINDSURF=true
+WINDSURF_API_KEY=
 ENABLE_CLAUDE=true
+CLAUDE_CODE_OAUTH_TOKEN=
+ANTHROPIC_API_KEY=
 ENABLE_CODEX=true
 ENABLE_COPILOT=true
+COPILOT_GITHUB_TOKEN=
+LLM_COST_TARGET=3
+LLM_THINKING_TARGET=medium
+LLM_SPEED_TARGET=4
+LLM_ROUTING_POLICY=balanced
+WINDSURF_ENTERPRISE=false
 ```
 
 Authenticate enabled providers on the host:
@@ -66,7 +74,7 @@ node github-copilot-auth.js --env-file .env
 ```
 
 For Claude, choose the Anthropic Console account in the browser flow. The helper reads the login-managed API key from Claude Code's local credential store and writes it to `ANTHROPIC_API_KEY` in `.env`. As a manual fallback, create a key at `https://platform.claude.com/settings/keys` and put it into `ANTHROPIC_API_KEY`.
-For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. You can override it with `GITHUB_COPILOT_CLIENT_ID` or `--client-id`. The helper uses GitHub's device-flow authorization and writes the resulting GitHub token to `COPILOT_GITHUB_TOKEN`; the proxy exchanges it for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
+For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. You can override it with `--client-id`. The helper uses GitHub's device-flow authorization and writes the resulting GitHub token to `COPILOT_GITHUB_TOKEN`; the proxy exchanges it for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
 
 Start Docker with the Codex profile when Codex is enabled:
 
@@ -80,7 +88,9 @@ Without Codex, the base services are enough:
 docker compose up -d --build
 ```
 
-To run this proxy beside another checkout on the same Docker host, set a different `COMPOSE_PROJECT_NAME` and host ports in `.env`. Container-internal ports stay unchanged.
+The base services include the graph memory backend and the Graphiti MCP sidecar. Their internal settings are fixed in Compose so `.env` stays focused on provider credentials, host ports, and routing policy. Neo4j and Graphiti MCP are kept on the Compose network by default instead of publishing extra host ports.
+
+To run this proxy beside another checkout on the same Docker host, set a different `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, and `CODEX_PROXY_PORT` in `.env`. Container-internal ports stay unchanged.
 
 ## Endpoint
 
@@ -135,7 +145,7 @@ curl http://localhost:18900/v1/messages/count_tokens \
 
 ## Benchmark
 
-The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-assess`, `auto-sm`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
+The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-assess`, `auto-sm`, `auto-memory`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, proxy savings percentage, and ASCII comparison charts.
 
 The command is a dry run unless `--run` is present:
 
@@ -155,26 +165,7 @@ The discovery daemon scans only the Windsurf, Claude, Codex, and Copilot provide
 
 Discovery is intentionally scoped to the supported families so `/v1/models`, smart routing, and Docker setup stay aligned.
 
-Windsurf does not expose a stable public model list API, so the proxy ships a broader local catalog and supports explicit overrides:
-
-```dotenv
-WINDSURF_MODELS=windsurf/custom-model, explicit-model=explicit_model_uid
-WINDSURF_MODELS_JSON=[{"id":"windsurf/custom","windsurf_model_uid":"custom_uid","context":200000}]
-WINDSURF_MODELS_URL=
-WINDSURF_IDE_VERSION=2.3.9
-WINDSURF_USER_AGENT=connect-es/1.5.0
-WINDSURF_ENTERPRISE=false
-WINDSURF_API_ORIGIN=
-WINDSURF_CHAT_ORIGIN=
-WINDSURF_CONNECT_TIMEOUT_MS=120000
-WINDSURF_CONNECT_TIMEOUT_HEADER=true
-WINDSURF_INCLUDE_ACCEPT_HEADER=false
-WINDSURF_CONNECT_RETRIES=1
-```
-
-When overrides are present, discovery uses them instead of the built-in Windsurf catalog.
-The compatibility fields mirror the installed Windsurf app transport defaults and can be overridden after an app update. On current Windsurf desktop builds, the language server process exposes the app API origin in its command line as `--api_server_url`; this proxy calls `ApiServerService/GetChatMessage` directly, so `WINDSURF_CHAT_ORIGIN` should usually stay empty or equal to `WINDSURF_API_ORIGIN`. Do not point `WINDSURF_CHAT_ORIGIN` at `--inference_api_server_url` unless the adapter is changed to call an inference-specific RPC. `WINDSURF_INCLUDE_ACCEPT_HEADER=false` keeps the chat Connect request closer to the app's streaming Connect signature; flip it only for compatibility with older server behavior.
-Set `WINDSURF_ENTERPRISE=true` to use the enterprise app API origin (`https://server.enterprise.windsurf.com`) without hard-coding `WINDSURF_API_ORIGIN` and `WINDSURF_CHAT_ORIGIN`. Explicit origin variables still win when you need to test another endpoint.
+Windsurf does not expose a stable public model list API, so the proxy ships a broader local catalog. Set `WINDSURF_ENTERPRISE=true` when the source should use the enterprise app API origin; the remaining transport compatibility defaults live in code and Compose rather than in the operator `.env`.
 
 ## Smart Groups
 
@@ -183,6 +174,7 @@ Set `WINDSURF_ENTERPRISE=true` to use the enterprise app API origin (`https://se
 | `auto` | General smart routing across enabled providers |
 | `auto-assess` | Internal routing assessment using the cheapest viable classifier models by pricing |
 | `auto-sm` | Small, cheap/free light models for classification and simple text |
+| `auto-memory` | Small reliable extraction models for Graphiti memory ingestion, JSON repair, and entity summaries |
 | `auto-coding` | Coding, editing, and agentic development tasks |
 | `coding-sm` | Small/fast coding and tool-capable background tasks, suitable for Claude Code small fast model routing |
 | `auto-thinking` | Reasoning-heavy tasks |
@@ -207,13 +199,10 @@ LLM_COST_TARGET=3
 LLM_THINKING_TARGET=medium
 LLM_SPEED_TARGET=4
 LLM_ROUTING_POLICY=balanced
-LLM_PROXY_AI_SUMMARY_MODEL=auto-text
-LLM_PROXY_AI_SUMMARY_TIMEOUT_MS=12000
-LLM_PROXY_AI_SUMMARY_MAX_TOKENS=500
 ```
 
 The targets are averages/preferences. Simple prompts are steered toward cheaper/faster models; complex agentic work can exceed the configured cost target when capability is more important.
-When context compaction removes old turns, the proxy also makes an internal self-call to `LLM_PROXY_AI_SUMMARY_MODEL` and embeds the AI summary into the compacted context for the current request.
+When context compaction removes old turns, the proxy also makes an internal self-call with the Compose default summary model and embeds the AI summary into the compacted context for the current request.
 
 | Variable | Values | Executive effect |
 | --- | --- | --- |
@@ -226,7 +215,7 @@ Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficien
 
 ## Memory Layer
 
-The active runtime uses `lib/memory`. The default `MEMORY_BACKEND=local` keeps memory governance in-process while the app is in test, and the `memory` Docker profile provides a local Neo4j graph substrate for the future Graphiti backend.
+The active runtime uses `lib/memory`. Docker Compose enables the local Neo4j graph backend by default and stores memory governance events, corrections, compacted archive refs, and recall hints there. The in-process backend remains available for tests or temporary non-Docker runs, but it is not part of the operator `.env`.
 
 Models can request private memory work with first-line markers that the proxy strips before returning content to the client:
 
@@ -237,19 +226,21 @@ LLM_PROXY_MEMORY v=1 op=user_correction target=routing_policy type=preference co
 
 `LLM_PROXY_RECALL` triggers one internal retry with recalled memory injected into the system prompt. `LLM_PROXY_MEMORY` records memory governance intent, including user corrections that should supersede older facts when the graph backend is enabled. Context compaction archives dropped turns as `memory://...` references and tells the next model to use `LLM_PROXY_RECALL` when it needs details.
 
+Graphiti MCP runs as a semantic sidecar behind the proxy. The canonical memory ledger remains `lib/memory` backed by Neo4j; Graphiti MCP receives memory events and compacted archives asynchronously through a retryable outbox. Recall stays canonical-first: direct Neo4j memory is injected first, semantic Graphiti hints are appended only for explicit `LLM_PROXY_RECALL` requests and only if the sidecar answers within its timeout. Automatic saves, corrections, and compaction archives should continue through the proxy marker flow.
+
+The Graphiti MCP sidecar is wired through this proxy instead of requiring a real `OPENAI_API_KEY`: its OpenAI-compatible URL is `http://llm-proxy:18900/v1`, the LLM model is `auto-memory`, and `/v1/embeddings` is served locally by a deterministic hash embedder. This keeps sidecar ingestion local and cheap.
+
 ## Docker Profiles
 
 | Profile | When to use |
 | --- | --- |
 | `codex` | Required when `ENABLE_CODEX=true`; starts the local Codex proxy container using `data/codex-auth.json`. |
-| `memory` | Optional; starts local Neo4j for the Graphiti-ready memory backend when `MEMORY_BACKEND=graphiti`. |
 
 Examples:
 
 ```bash
 docker compose --profile codex up -d --build
-docker compose --profile memory up -d --build
-docker compose --profile codex --profile memory up -d --build
+docker compose up -d --build
 ```
 
 Port variables:
@@ -259,8 +250,8 @@ Port variables:
 | `COMPOSE_PROJECT_NAME` | `llm-proxy` | Prefix for Docker Compose container names |
 | `LLM_PROXY_PORT` | `18900` | Host port for the OpenAI/Anthropic proxy |
 | `CODEX_PROXY_PORT` | `10531` | Host port for the Codex proxy profile |
-| `GRAPHITI_NEO4J_PORT` | `7687` | Host Bolt port for the local graph memory profile |
-| `GRAPHITI_NEO4J_HTTP_PORT` | `7474` | Host browser/API port for the local graph memory profile |
+| `DATA_DIR` | `/data` | Runtime data path inside the containers |
+| `DEV_MODE` | `true` | Enables local development logging and behavior |
 
 ## Troubleshooting
 

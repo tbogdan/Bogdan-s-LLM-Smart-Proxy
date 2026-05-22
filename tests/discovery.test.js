@@ -81,7 +81,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
   assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "copilot", "windsurf"]);
-  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
+  assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-memory", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
   assert.deepEqual(
     Object.fromEntries(
       ["windsurf", "claude", "codex", "copilot"].map((family) => [

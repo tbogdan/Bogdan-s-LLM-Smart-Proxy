@@ -17,6 +17,7 @@ const responses = require("./lib/responses");
 const anthropicGateway = require("./lib/anthropic-gateway");
 const httpHome = require("./lib/http-home");
 const discoveryTools = require("./llm-discovery");
+const embeddings = require("./lib/embeddings");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -174,7 +175,16 @@ function handleModels(query) {
     description: "Auto-detects use case (coding, thinking, images, tools) and routes to best provider with full fallback",
   });
 
-  return { object: "list", data: [...groups, ...models] };
+  const embeddingModel = {
+    id: process.env.LLM_PROXY_EMBEDDING_MODEL || embeddings.DEFAULT_MODEL,
+    object: "model",
+    created: 0,
+    owned_by: "llm-proxy",
+    capabilities: ["embeddings"],
+    embedding_dimensions: parseInt(process.env.LLM_PROXY_EMBEDDING_DIMENSIONS || String(embeddings.DEFAULT_DIMENSIONS), 10),
+  };
+
+  return { object: "list", data: [...groups, embeddingModel, ...models] };
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +385,16 @@ const server = http.createServer(async (req, res) => {
       return await routing.handleChatCompletion(parsed, res);
     }
 
+    // POST /v1/embeddings
+    if (method === "POST" && pathname === "/v1/embeddings") {
+      const body = await readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch {
+        return sendError(res, 400, "Invalid JSON body");
+      }
+      return sendJSON(res, embeddings.handleEmbeddingsRequest(parsed, process.env));
+    }
+
     // POST /v1/responses (Responses API bridge for Codex-style clients)
     if (method === "POST" && pathname === "/v1/responses") {
       const body = await readBody(req);
@@ -527,7 +547,7 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/embeddings, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
 });
 
 const wss = new WebSocketServer({ noServer: true });

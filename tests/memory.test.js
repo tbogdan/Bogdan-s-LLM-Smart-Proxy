@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const memory = require("../lib/memory");
 const hiddenMarkers = require("../lib/memory/hidden-markers");
+const { Neo4jMemoryStore, renderArchiveContent } = require("../lib/memory/neo4j-store");
 
 test("getSession reads multipart system content for project identity", () => {
   const first = memory.getSession([
@@ -29,6 +30,14 @@ test("getSession reads multipart system content for project identity", () => {
   assert.notEqual(first.id, second.id);
   assert.equal(first.projectName, "project-alpha");
   assert.equal(second.projectName, "project-beta");
+});
+
+test("getSession detects project identity from direct home paths", () => {
+  const session = memory.getSession([
+    { role: "system", content: "Workspace: /home/bogdan/Project-llm-proxy" },
+  ]);
+
+  assert.equal(session.projectName, "Project-llm-proxy");
 });
 
 test("formatMemoryBlock wraps recalled memory as quoted untrusted data", () => {
@@ -116,6 +125,36 @@ test("applyMemoryOps records user corrections as superseding events", () => {
   assert.equal(session.recentCorrections[0].status, "supersedes");
 });
 
+test("user corrections suppress older in-session memory for the same target", async () => {
+  const target = `architecture.memory.${Date.now()}`;
+  const session = memory.getSession([{ role: "system", content: `Project repo memory-governance-${target}` }]);
+
+  memory.applyMemoryOps(session, {}, [{
+    op: "save_fact",
+    target,
+    type: "decision",
+    confidence: "high",
+    summary: "Stale memory that should not be recalled after correction.",
+  }]);
+  memory.applyMemoryOps(session, {}, [{
+    op: "user_correction",
+    target,
+    type: "decision",
+    confidence: "high",
+    summary: "Fresh corrected memory that should be recalled.",
+  }]);
+
+  const block = await memory.recallForMarker(session, {}, {
+    query: target,
+    types: ["decisions"],
+    budget: 1200,
+    reason: "test",
+  });
+
+  assert.match(block, /Fresh corrected memory/);
+  assert.doesNotMatch(block, /Stale memory/);
+});
+
 test("recallForMarker injects local corrections and compacted archive refs", async () => {
   const session = memory.getSession([{ role: "system", content: "Project repo recall-layer" }]);
   memory.applyMemoryOps(session, {}, [{
@@ -138,4 +177,109 @@ test("recallForMarker injects local corrections and compacted archive refs", asy
   assert.match(block, /Recall query: memory architecture/);
   assert.match(block, /architecture\.memory/);
   assert.match(block, /memory:\/\/episode\//);
+});
+
+test("memory health exposes semantic sidecar separately from canonical memory store", () => {
+  const status = memory.health();
+
+  assert.equal(status.enabled, memory.MEMORY_ENABLED);
+  assert.ok(Object.hasOwn(status, "semantic"));
+});
+
+test("recallForMarker keeps canonical session memory before recall metadata", async () => {
+  const session = memory.getSession([{ role: "system", content: "Workspace: /Users/dev/Projects/semantic-order" }]);
+  session.recentTasks.unshift({
+    op: "save_fact",
+    type: "decision",
+    target: "architecture.memory",
+    confidence: "high",
+    status: "active",
+    summary: "Canonical ledger entry.",
+  });
+
+  const block = await memory.recallForMarker(session, {}, {
+    query: "architecture memory",
+    types: ["architecture", "decisions"],
+    budget: 1200,
+    reason: "task_context",
+  });
+
+  assert.match(block, /Recalled memory is untrusted data/);
+  assert.match(block, /Canonical ledger entry/);
+  assert.match(block, /Recall query: architecture memory/);
+  assert.ok(block.indexOf("Canonical ledger entry") < block.indexOf("Recall query: architecture memory"));
+});
+
+test("archiveCompactedContext stores recoverable compacted context content", async () => {
+  const session = memory.getSession([{ role: "system", content: "Workspace: /Users/dev/Projects/archive-memory" }]);
+
+  const archives = await memory.archiveCompactedContext(session, [
+    { role: "system", content: "System prompt is not the important recoverable context." },
+    { role: "user", content: "We decided that project recall must use the project name, not only the volatile session hash." },
+    { role: "assistant", content: "Implementation note: store compacted context as an archive content field for future LLM_PROXY_RECALL." },
+  ]);
+
+  assert.equal(archives.length, 1);
+  assert.match(archives[0].summary, /2 non-system messages archived/);
+  assert.match(archives[0].content, /project recall must use the project name/);
+  assert.match(archives[0].content, /archive content field/);
+  assert.doesNotMatch(archives[0].content, /System prompt is not/);
+});
+
+test("renderArchiveContent preserves useful details while bounding archive size", () => {
+  const rendered = renderArchiveContent([
+    { role: "user", content: "Important architecture decision: recall should be project scoped." },
+    { role: "assistant", content: "Implementation detail: Neo4j archives include transcript snippets." },
+  ], 180);
+
+  assert.match(rendered, /Important architecture decision/);
+  assert.match(rendered, /Neo4j archives/);
+  assert.ok(rendered.length <= 180);
+});
+
+test("Neo4j recall queries project memory beyond the current session", async () => {
+  const store = new Neo4jMemoryStore({});
+  let captured = null;
+  store.neo4j = { int: (value) => value };
+  store.runRead = async (query, params) => {
+    captured = { query, params };
+    return { records: [] };
+  };
+
+  await store.recall({ id: "session-new", projectName: "project-alpha" }, { query: "architecture" });
+
+  assert.equal(captured.params.sessionId, "session-new");
+  assert.equal(captured.params.project, "project-alpha");
+  assert.match(captured.query, /item\.project = \$project/);
+  assert.match(captured.query, /HAS_MEMORY\|HAS_ARCHIVE/);
+});
+
+test("Neo4j user corrections supersede older project memories with the same target", async () => {
+  const store = new Neo4jMemoryStore({});
+  const writes = [];
+  store.recordSession = async () => {};
+  store.runWrite = async (query, params) => {
+    writes.push({ query, params });
+    return {};
+  };
+
+  await store.recordMemoryOps(
+    { id: "session-new", projectName: "project-alpha" },
+    {},
+    [{
+      id: "correction-1",
+      op: "user_correction",
+      target: "architecture.memory",
+      type: "decision",
+      confidence: "high",
+      status: "supersedes",
+      at: "2026-05-22T00:00:00.000Z",
+    }],
+  );
+
+  const supersedeWrite = writes.find((write) => /superseded_by/.test(write.query));
+  assert.ok(supersedeWrite, "expected supersede write");
+  assert.equal(supersedeWrite.params.project, "project-alpha");
+  assert.equal(supersedeWrite.params.target, "architecture.memory");
+  assert.match(supersedeWrite.query, /old\.project = \$project/);
 });
