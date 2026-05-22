@@ -205,7 +205,8 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - `write_heavy`: implementation or output generation, optimize for fast useful work.
    - `read_heavy`: analysis, architecture, root cause, or planning, spend reasoning before output.
    - `review`: adversarial validation against a diff or completed work.
-   - `security` / `destructive`: higher quality and human-signoff posture.
+   - `security`: high-risk review that can require human sign-off.
+   - `destructive`: dry-run-first execution posture; it does not by itself create a human approval state.
    - `benchmark`: preserve fair arms and measurable outputs.
 5. Build an effective request profile:
    - `taskLevel`: difficulty of the current user task.
@@ -216,7 +217,7 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - Low-tier models can be selected directly.
    - Sonnet/Opus/Pro/max/high-thinking candidates require AI assessment when the top candidate is a large model or the context is noisy.
    - The assessor uses `auto-assess`, favoring cheap fast providers, and returns minified JSON used only by the proxy.
-   - Requests classified as `human_signoff` or `dry_run_first` are blocked until the client retries with an explicit approval token.
+   - Only final `human_signoff` assessments create a human approval state; `dry_run_first` remains a routing/execution posture.
 7. Score candidates:
    - Base provider health and compatibility.
    - Capability match for the smart group.
@@ -356,7 +357,7 @@ Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficien
 
 ### Human Sign-Off Gate
 
-Human approval is enabled by default. Large-model access gates first run the hidden AI assessment so a noisy heuristic `dry_run_first` or `human_signoff` signal can be downgraded before it reaches the user. If the assessed task is still high risk, such as `security_review` or truly destructive work, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`.
+Human approval is enabled by default. Large-model access gates first run the hidden AI assessment; access assessment never creates a human approval state. If the assessed task is still high risk and carries the `human_signoff` gate, such as explicit security sign-off work, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`.
 
 The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, reply with the exact `approved_by_user:<challenge>` token shown in the proxy message, or retry the same payload with one of these approval forms:
 

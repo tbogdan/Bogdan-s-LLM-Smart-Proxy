@@ -999,12 +999,14 @@ test("handleChatCompletion gates large automatic selections behind AI assessment
   });
 });
 
-test("handleChatCompletion defers heuristic dry-run gates until AI assessment can downgrade them", async () => {
+test("handleChatCompletion assesses heuristic dry-run gates without human-approval state", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
     const requests = [];
+    const logs = [];
 
     await withServer((req, res) => {
       const chunks = [];
@@ -1050,6 +1052,7 @@ test("handleChatCompletion defers heuristic dry-run gates until AI assessment ca
         }),
       ];
       process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      state.log = (line) => logs.push(String(line));
       try {
         const fake = new FakeClientResponse();
         await routing.handleChatCompletion({
@@ -1065,7 +1068,9 @@ test("handleChatCompletion defers heuristic dry-run gates until AI assessment ca
         assert.match(JSON.stringify(requests[0].messages || []), /LLM proxy routing classifier/);
         assert.equal(requests[1].model, "test/small-assessor");
         assert.doesNotMatch(fake.body, /human_signoff_required|approval_required|approved_by_user/);
+        assert.equal(logs.some((line) => line.includes("HUMAN-APPROVAL")), false);
       } finally {
+        state.log = originalLog;
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
         if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
