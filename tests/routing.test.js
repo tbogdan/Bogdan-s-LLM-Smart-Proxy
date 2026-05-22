@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const routing = require("../lib/routing");
 const state = require("../lib/state");
 const compaction = require("../lib/compaction");
+const humanApproval = require("../lib/human-approval");
 
 async function withServer(handler, fn) {
   const server = http.createServer(handler);
@@ -40,6 +41,64 @@ class FakeClientResponse {
     this.body += chunk;
   }
 }
+
+test("stripApprovalArtifacts cleans approval blocks embedded in tool output with mismatched token", () => {
+  const reqBody = {
+    messages: [
+      { role: "user", content: "Deep dive chaos dashboard." },
+      {
+        role: "assistant",
+        content: [
+          "Cached IDE diagnostic:",
+          "llm-proxy-1 | [2026-05-22T15:00:25.446Z] HUMAN-APPROVAL-BLOCK: gate=human_signoff task=security_review challenge=old request=old",
+          "Continue after user approval.",
+        ].join("\n"),
+      },
+      {
+        role: "tool",
+        tool_call_id: "toolu_old",
+        content: [
+          "Bash Show current directory",
+          "OUT",
+          "/Users/Bogdan.Torcescu/Projects/chaos_engineering",
+          "llm-proxy-1 | [2026-05-22T15:00:25.446Z] HUMAN-APPROVAL-BLOCK: gate=human_signoff task=security_review challenge=45452c67d1c2a822391468ee15b6643e request=a3eab2de856c",
+          "LLM_PROXY_HUMAN_APPROVAL_REQUIRED",
+          "approval_id=approval_1779462025443_63f57f74",
+          "gate=human_signoff",
+          "task=security_review",
+          "reason=security_review",
+          "request_hash=a3eab2de856cfdf03bedb0fcf826a13d227f46d507e0de019cc88ce98a6e4e7d",
+          "To continue, reply with: approved_by_user:45452c67d1c2a822391468ee15b6643e",
+          "approved_by_user:45452c67d1c2a822391468ee15b6643e",
+        ].join("\n"),
+      },
+      { role: "user", content: "approved_by_user:33df70dfc2e8b345d42ac93bd36e652d" },
+      { role: "user", content: "continua" },
+    ],
+  };
+
+  const removed = humanApproval.stripApprovalArtifacts(reqBody, "33df70dfc2e8b345d42ac93bd36e652d");
+  const serialized = JSON.stringify(reqBody.messages);
+
+  assert.equal(removed >= 2, true);
+  assert.match(serialized, /chaos_engineering/);
+  assert.match(serialized, /Cached IDE diagnostic/);
+  assert.doesNotMatch(serialized, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|HUMAN-APPROVAL-BLOCK|approval_id=approval_|approved_by_user:|request_hash=a3eab2/i);
+});
+
+test("human approval ignores assessed security signoff without current security intent", async () => {
+  await withRoutingState(async () => {
+    const reqBody = { messages: [{ role: "user", content: "continua" }] };
+    const result = humanApproval.enforce(reqBody, {
+      taskKind: "security_review",
+      reason: "security_review",
+      stepShape: { shape: "security", gate: "human_signoff", summary: "assessed high risk" },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, undefined);
+  });
+});
 
 async function withRoutingState(fn) {
   const originalScores = state.scores;
@@ -1552,6 +1611,112 @@ test("handleChatCompletion strips stale human approval prompts before assessment
         assert.equal(requests.length, 2);
         assert.doesNotMatch(JSON.stringify(requests), /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|approved_by_user/);
         assert.doesNotMatch(JSON.stringify(requests[1].messages || []), /security_review/);
+        assert.doesNotMatch(fake.body, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|approved_by_user:/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion strips stale human approval prompts from tool outputs before assessment", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serializedMessages = JSON.stringify(body.messages || []);
+        const isAssessment = serializedMessages.includes("LLM proxy routing classifier");
+        const sawStaleApproval = /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|approval_id=approval_|approved_by_user:|request_hash=808134/i.test(serializedMessages);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: isAssessment
+                ? (sawStaleApproval
+                  ? "{\"level\":4,\"taskLevel\":4,\"contextLevel\":2,\"effort\":\"high\",\"speed\":3,\"reason\":\"security_review\"}"
+                  : "{\"level\":4,\"taskLevel\":4,\"contextLevel\":2,\"effort\":\"high\",\"speed\":4,\"reason\":\"debugging\"}")
+                : "I inspected the replayed transcript and will continue the chaos dashboard deep dive. The next useful steps are reading startup.sh, chaosctl entry points, Docker configuration, and existing report outputs before proposing a dashboard architecture.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Assessment-Test",
+          model: "test/assessment-tool-artifacts",
+          caps: ["text", "coding", "tools"],
+          cost_group: 1,
+          speed_group: 5,
+        }),
+        provider(url, {
+          name: "Coding-Test",
+          model: "test/coding-tool-artifacts",
+          caps: ["text", "coding", "tools"],
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      try {
+        const staleToolOutput = [
+          "Bash Show current directory",
+          "OUT",
+          "/Users/Bogdan.Torcescu/Projects/chaos_engineering",
+          "LLM_PROXY_HUMAN_APPROVAL_REQUIRED",
+          "approval_id=approval_1779462011458_e1108cb6",
+          "gate=human_signoff",
+          "task=security_review",
+          "reason=security_review",
+          "request_hash=808134d273afbaaa2bd373617505f5fc9505c4bc25625467c1a7382b229fb6ea",
+          "",
+          "The proxy stopped before provider execution because this task requires human sign-off.",
+          "To continue, reply with: approved_by_user:97bc504566d69ebb9f17d2c8c001371a",
+          "The proxy will strip this approval exchange before routing the original request upstream.",
+          "",
+          "approved_by_user:97bc504566d69ebb9f17d2c8c001371a",
+        ].join("\n");
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Deep dive into the chaos_engineering codebase first. Read files and report architecture." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "toolu_approval",
+                type: "function",
+                function: { name: "Bash", arguments: "{\"command\":\"pwd\"}" },
+              }],
+            },
+            { role: "tool", tool_call_id: "toolu_approval", content: staleToolOutput },
+            { role: "user", content: "approved_by_user:33df70dfc2e8b345d42ac93bd36e652d" },
+            { role: "user", content: "continua" },
+          ],
+          tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.match(JSON.parse(fake.body).choices[0].message.content, /continue the chaos dashboard deep dive/);
+        assert.equal(requests.length, 2);
+        assert.doesNotMatch(JSON.stringify(requests), /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|approval_id=approval_|approved_by_user:|request_hash=808134/i);
         assert.doesNotMatch(fake.body, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|approved_by_user:/);
       } finally {
         state.PROVIDERS = originalProviders;
