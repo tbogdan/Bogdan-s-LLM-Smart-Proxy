@@ -1141,6 +1141,33 @@ test("old completion summaries do not turn later routing log debugging into comp
   assert.notEqual(profile.taskKind, "completion_review");
 });
 
+test("Romanian why questions stay explanation even when IDE tools are present", () => {
+  const req = {
+    tools: Array.from({ length: 8 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [
+      { role: "system", content: "You are a software engineering agent with codebase tools." },
+      { role: "assistant", content: "Am actualizat docker compose si memory routing." },
+      { role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" },
+    ],
+    _inputTokens: 11019,
+    _estimatedTokens: 27403,
+  };
+
+  const profile = policy.assessRequestDifficulty(req.messages, req);
+  const effective = policy.effectiveRequestProfile(req, {
+    LLM_COST_TARGET: "3",
+    LLM_THINKING_TARGET: "medium",
+    LLM_SPEED_TARGET: "4",
+    LLM_ROUTING_POLICY: "balanced",
+  });
+
+  assert.equal(profile.taskKind, "explanation");
+  assert.equal(profile.stepShape.gate, "none");
+  assert.equal(profile.taskLevel <= 2, true);
+  assert.equal(effective.costTarget <= 2, true);
+  assert.equal(effective.thinkingLevel <= 2, true);
+});
+
 test("routing log diagnostics that mention security mode stay debugging and avoid Opus fallback", () => {
   const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
   const req = {

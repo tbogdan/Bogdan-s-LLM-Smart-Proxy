@@ -799,6 +799,164 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
   });
 });
 
+test("handleChatCompletion routes passive tool-bearing questions to low providers without assessment", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "Nu are nevoie pentru hot path." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Cheap-Haiku",
+          model: "claude/claude-haiku-4-5",
+          family: "claude",
+          caps: ["text", "tools", "max", "thinking", "coding"],
+          cost_group: 2,
+          quality_group: 3,
+          speed_group: 5,
+          thinking_effort: "low",
+        }),
+        provider(url, {
+          name: "Big-Sonnet",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          family: "windsurf",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "auto";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "system", content: "You are a software engineering agent with codebase tools." },
+            { role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" },
+          ],
+          tools: Array.from({ length: 8 }, (_, i) => ({
+            type: "function",
+            function: { name: `tool_${i}`, parameters: { type: "object" } },
+          })),
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].model, "claude/claude-haiku-4-5");
+        assert.equal(requests[0].tools, undefined);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /LLM proxy routing classifier/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion gates large automatic selections behind AI assessment", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"taskLevel\":3,\"contextLevel\":2,\"effort\":\"medium\",\"speed\":4,\"reason\":\"agentic_coding\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: { role: "assistant", content: null, tool_calls: [{ id: "call_edit", type: "function", function: { name: "Edit", arguments: "{}" } }] },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Free-Classifier",
+          model: "free/classifier-minimal",
+          caps: ["text"],
+          tier: 3,
+          cost_group: 1,
+          quality_group: 1,
+          speed_group: 5,
+          thinking_effort: "minimal",
+        }),
+        provider(url, {
+          name: "Big-Sonnet",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          family: "windsurf",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+          tc: true,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "auto";
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "system", content: "You are a software engineering agent with codebase tools." },
+            { role: "user", content: "Implement the route fix and run the focused test." },
+          ],
+          tools: [{ type: "function", function: { name: "Edit", parameters: { type: "object" } } }],
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(JSON.stringify(requests[0]), /LLM proxy routing classifier/);
+        assert.equal(requests[0].model, "free/classifier-minimal");
+        assert.equal(requests[1].model, "windsurf/claude-sonnet-4-6-thinking");
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
 test("handleChatCompletion defaults hidden AI assessment to cheapest small provider", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;

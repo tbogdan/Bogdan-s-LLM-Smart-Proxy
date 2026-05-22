@@ -42,6 +42,60 @@ test("SemanticMemorySidecar maps compacted archives into Graphiti episodes", () 
   assert.equal(episode.sourceDescription, "llm-proxy compacted context archive");
 });
 
+test("SemanticMemorySidecar can warm up the Graphiti client", async () => {
+  let initialized = false;
+  const client = {
+    ensureInitialized: async () => { initialized = true; },
+    health: () => ({ available: initialized, initialized }),
+  };
+  const sidecar = new SemanticMemorySidecar({ GRAPHITI_MCP_ENABLED: "true" }, { client });
+
+  await sidecar.initialize();
+
+  assert.equal(initialized, true);
+  assert.equal(sidecar.health().client.available, true);
+});
+
+test("SemanticMemorySidecar retries warmup while Graphiti is starting", async () => {
+  let attempts = 0;
+  let initialized = false;
+  const client = {
+    ensureInitialized: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("booting");
+      initialized = true;
+    },
+    health: () => ({ available: initialized, initialized }),
+  };
+  const sidecar = new SemanticMemorySidecar({
+    GRAPHITI_MCP_ENABLED: "true",
+    GRAPHITI_MCP_WARMUP_RETRIES: "1",
+    GRAPHITI_MCP_WARMUP_RETRY_MS: "1",
+  }, { client });
+
+  await sidecar.initialize();
+
+  assert.equal(attempts, 2);
+  assert.equal(initialized, true);
+});
+
+test("SemanticMemorySidecar health retries a previously unavailable Graphiti client", async () => {
+  let initialized = false;
+  const client = {
+    ensureInitialized: async () => { initialized = true; },
+    health: () => ({ available: initialized, initialized }),
+  };
+  const sidecar = new SemanticMemorySidecar({
+    GRAPHITI_MCP_ENABLED: "true",
+    GRAPHITI_MCP_WARMUP_RETRIES: "0",
+  }, { client });
+
+  assert.equal(sidecar.health().client.available, false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sidecar.health().client.available, true);
+});
+
 test("SemanticMemorySidecar drains outbox without throwing on Graphiti failure", async () => {
   const marked = [];
   const ledger = {
@@ -55,6 +109,61 @@ test("SemanticMemorySidecar drains outbox without throwing on Graphiti failure",
   await sidecar.drainOnce();
 
   assert.deepEqual(marked, [["failed", "o1"]]);
+});
+
+test("SemanticMemorySidecar drains items enqueued while a drain is active", async () => {
+  const queue = [{
+    id: "memory-event:e1",
+    project: "llm-proxy",
+    name: "first",
+    body: "first",
+    source_description: "test",
+    status: "pending",
+  }];
+  const marked = [];
+  let sidecar;
+  const ledger = {
+    enqueueGraphitiOutbox: async (_session, episode) => {
+      queue.push({
+        id: episode.id,
+        project: "llm-proxy",
+        name: episode.name,
+        body: episode.body,
+        source_description: episode.sourceDescription,
+        status: "pending",
+      });
+    },
+    claimGraphitiOutbox: async () => {
+      const claimed = queue.filter((item) => item.status === "pending");
+      for (const item of claimed) item.status = "processing";
+      return claimed;
+    },
+    markGraphitiOutboxDone: async (id) => {
+      marked.push(id);
+      const item = queue.find((entry) => entry.id === id);
+      if (item) item.status = "done";
+    },
+    markGraphitiOutboxFailed: async () => {},
+  };
+  const client = {
+    addEpisode: async (episode) => {
+      if (episode.id === "memory-event:e1") {
+        await sidecar.enqueueMemoryEvents({ id: "s1", projectName: "llm-proxy" }, [{
+          id: "e2",
+          op: "save_fact",
+          target: "memory.outbox",
+          summary: "second",
+        }]);
+      }
+    },
+    health: () => ({ available: true }),
+  };
+  sidecar = new SemanticMemorySidecar({ GRAPHITI_MCP_ENABLED: "true" }, { ledger, client });
+
+  await sidecar.drainOnce();
+
+  assert.deepEqual(marked, ["memory-event:e1", "memory-event:e2"]);
+  assert.equal(queue.every((item) => item.status === "done"), true);
 });
 
 test("SemanticMemorySidecar formats semantic search as memory hints", async () => {

@@ -505,6 +505,30 @@ test("provider adapters prepare OpenAI-compatible requests with upstream model f
   assert.deepEqual(body.stream_options, { include_usage: true });
 });
 
+test("provider adapters use max_completion_tokens for Copilot GPT-5.4 chat completions", () => {
+  const adapters = require("../lib/provider-adapters");
+  const provider = {
+    name: "Copilot-gpt54",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-5.4",
+    upstream_model: "gpt-5.4",
+  };
+  const body = adapters.prepareOpenAICompatibleRequest(
+    provider,
+    {
+      model: "copilot/gpt-5.4",
+      max_tokens: 123,
+      messages: [{ role: "user", content: "Hello" }],
+    },
+    false,
+  );
+
+  assert.equal(body.model, "gpt-5.4");
+  assert.equal(body.max_tokens, undefined);
+  assert.equal(body.max_completion_tokens, 123);
+});
+
 test("provider adapters convert Windsurf status errors to route responses", () => {
   const adapters = require("../lib/provider-adapters");
   const body = JSON.stringify({ error: "quota exceeded" });
