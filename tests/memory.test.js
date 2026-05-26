@@ -109,6 +109,30 @@ test("stripHiddenMemoryMarkers removes private markers and preserves visible con
   assert.equal(result.memory, null);
 });
 
+test("hidden memory markers support bracketed private lines and preserve fenced examples", () => {
+  const recall = hiddenMarkers.parseRecallMarker(
+    '[LLM_PROXY_RECALL v=1 q="routing architecture" types=architecture budget=900 reason=lookup]',
+  );
+  assert.equal(recall?.query, "routing architecture");
+  assert.equal(recall?.reason, "lookup");
+
+  const result = hiddenMarkers.stripHiddenMemoryMarkers([
+    "Done.",
+    "[LLM_PROXY_MEMORY v=1 op=user_correction target=routing_policy type=preference confidence=high]",
+    "```text",
+    "LLM_PROXY_MEMORY v=1 op=save_fact target=docs type=example confidence=low",
+    "```",
+    "Next.",
+  ].join("\n"));
+
+  assert.equal(result.memory?.op, "user_correction");
+  assert.equal(result.memory?.target, "routing_policy");
+  assert.doesNotMatch(result.content, /user_correction target=routing_policy/);
+  assert.match(result.content, /LLM_PROXY_MEMORY v=1 op=save_fact target=docs/);
+  assert.match(result.content, /Done\./);
+  assert.match(result.content, /Next\./);
+});
+
 test("applyMemoryOps records user corrections as superseding events", () => {
   const session = memory.getSession([{ role: "system", content: "Project repo memory-governance" }]);
   const before = session.recentCorrections.length;

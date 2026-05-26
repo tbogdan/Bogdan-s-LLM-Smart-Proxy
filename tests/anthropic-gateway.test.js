@@ -129,6 +129,104 @@ test("toAnthropicResponse preserves OpenAI text content parts", () => {
   ]);
 });
 
+test("toAnthropicResponse strips private assessment metadata from text", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "Done.\n\n[LLM_PROXY_TASK_DIFFICULTY level=4 effort=medium speed=4 reason=coding]\n\neffort=low speed=4 reason=repo_check",
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "Done." },
+  ]);
+});
+
+test("toAnthropicResponse strips private memory metadata from text", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "Done.\n\n[LLM_PROXY_MEMORY v=1 op=save_fact target=markers type=decision confidence=high]",
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "Done." },
+  ]);
+});
+
+test("streaming Anthropic bridge strips private memory metadata", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Done.\n\n" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "LLM_PROXY_MEMORY v=1 op=save_fact target=markers type=decision confidence=high" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say done" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Done/);
+  assert.doesNotMatch(body, /LLM_PROXY_MEMORY|target=markers/);
+});
+
+test("streaming Anthropic bridge strips private assessment metadata", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Done.\n\n" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "effort=medium speed=4 reason=typescript-fixes" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say done" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Done/);
+  assert.doesNotMatch(body, /effort=medium|typescript-fixes|LLM_PROXY_TASK_DIFFICULTY/);
+});
+
 test("toAnthropicResponse returns clear help for generated tool_use missing required input", () => {
   const response = gateway.toAnthropicResponse({
     model: "auto-coding",

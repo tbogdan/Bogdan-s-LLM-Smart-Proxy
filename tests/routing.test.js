@@ -87,6 +87,30 @@ test("stripApprovalArtifacts cleans approval blocks embedded in tool output with
   assert.doesNotMatch(serialized, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED|HUMAN-APPROVAL-BLOCK|approval_id=approval_|approved_by_user:|request_hash=a3eab2/i);
 });
 
+test("stripCachedProxyArtifacts removes private routing and memory marker lines", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          "Done.",
+          "[LLM_PROXY_TASK_DIFFICULTY level=4 effort=medium speed=4 reason=coding]",
+          "effort=low speed=4 reason=repo_check",
+          "[LLM_PROXY_MEMORY v=1 op=save_fact target=markers type=decision confidence=high]",
+          'LLM_PROXY_RECALL v=1 q="routing" types=architecture budget=800 reason=lookup',
+        ].join("\n"),
+      },
+    ],
+  };
+
+  const removed = routing.stripCachedProxyArtifacts(reqBody);
+  const serialized = JSON.stringify(reqBody.messages);
+
+  assert.equal(removed, 1);
+  assert.match(serialized, /Done\./);
+  assert.doesNotMatch(serialized, /LLM_PROXY_TASK_DIFFICULTY|LLM_PROXY_MEMORY|LLM_PROXY_RECALL|effort=low/);
+});
+
 test("human approval ignores assessed security signoff without current security intent", async () => {
   await withRoutingState(async () => {
     const reqBody = { messages: [{ role: "user", content: "continua" }] };

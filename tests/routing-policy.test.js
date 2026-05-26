@@ -691,6 +691,45 @@ test("difficulty marker stripping supports OpenAI content parts", () => {
   ]);
 });
 
+test("difficulty marker stripping hides bracketed private marker lines", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "[LLM_PROXY_TASK_DIFFICULTY level=4 effort=medium speed=4 reason=coding]",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+  const parsed = JSON.parse(result.body);
+
+  assert.equal(result.marker.level, 4);
+  assert.equal(result.marker.reason, "coding");
+  assert.equal(parsed.choices[0].message.content, "");
+});
+
+test("difficulty marker stripping removes trailing bare assessment metadata", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "I've cleared the TypeScript errors.\n\neffort=medium speed=4 reason=typescript-fixes",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+  const parsed = JSON.parse(result.body);
+
+  assert.equal(result.marker, null);
+  assert.equal(parsed.choices[0].message.content, "I've cleared the TypeScript errors.");
+});
+
 test("providerPolicyBonus favors right-sized models by task complexity", () => {
   const cheap = { name: "Codex-GPT54Mini", family: "codex", model: "codex/gpt-5.4-mini", caps: ["text", "coding", "tools", "thinking"], tc: true };
   const intermediate = { name: "Claude-Sonnet46", family: "claude", model: "claude/claude-sonnet-4-6", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };

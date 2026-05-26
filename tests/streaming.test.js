@@ -210,6 +210,30 @@ test("routeStreamToProvider preserves attached uppercase content after stream ma
   });
 });
 
+test("routeStreamToProvider strips trailing private assessment metadata", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "I've cleared the TypeScript errors.\n\n",
+        "effort=medium speed=4 reason=typescript-fixes",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("I've cleared the TypeScript errors."), true);
+      assert.equal(output.includes("effort=medium"), false);
+      assert.equal(output.includes("typescript-fixes"), false);
+    });
+  });
+});
+
 test("routeStreamToProvider logs and tracks cached input tokens from streaming usage", async () => {
   await withNoScoreWrites(async () => {
     const originalLog = state.log;
@@ -263,6 +287,30 @@ test("routeStreamToProvider strips hidden memory markers from streamed content",
       assert.equal(output.includes("LLM_PROXY_MEMORY"), false);
       assert.equal(output.includes("Project "), true);
       assert.equal(output.includes("Proxy."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips trailing hidden memory markers after visible content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "I saved the routing fix.\n\n",
+        "[LLM_PROXY_MEMORY v=1 op=save_fact target=routing_markers type=decision confidence=high]",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("I saved the routing fix."), true);
+      assert.equal(output.includes("LLM_PROXY_MEMORY"), false);
+      assert.equal(output.includes("routing_markers"), false);
     });
   });
 });
