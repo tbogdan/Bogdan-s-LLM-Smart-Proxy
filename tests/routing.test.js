@@ -9,6 +9,7 @@ const routing = require("../lib/routing");
 const state = require("../lib/state");
 const compaction = require("../lib/compaction");
 const humanApproval = require("../lib/human-approval");
+const memory = require("../lib/memory");
 
 async function withServer(handler, fn) {
   const server = http.createServer(handler);
@@ -100,9 +101,28 @@ test("human approval ignores assessed security signoff without current security 
   });
 });
 
+test("human approval never blocks auto-memory background tasks", async () => {
+  await withRoutingState(async () => {
+    const reqBody = {
+      model: "auto-memory",
+      messages: [{ role: "user", content: "store security review memory: auth token handling needs follow-up" }],
+    };
+    const result = humanApproval.enforce(reqBody, {
+      taskKind: "security_review",
+      reason: "security_review",
+      stepShape: { shape: "security", gate: "human_signoff", summary: "cached security profile" },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, undefined);
+  });
+});
+
 async function withRoutingState(fn) {
   const originalScores = state.scores;
   const originalAssessmentCache = { ...state.sessionAssessmentCache };
+  const originalAssessmentCacheStats = { ...(state.sessionAssessmentCacheStats || {}) };
+  const originalSessionStats = { ...state.sessionStats };
   const originalHumanApprovals = {
     pending: { ...state.humanApprovals.pending },
     byRequestHash: { ...state.humanApprovals.byRequestHash },
@@ -112,6 +132,10 @@ async function withRoutingState(fn) {
   const originalAppendFileSync = fs.appendFileSync;
   state.scores = {};
   for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
+  if (state.sessionAssessmentCacheStats) {
+    for (const key of Object.keys(state.sessionAssessmentCacheStats)) delete state.sessionAssessmentCacheStats[key];
+  }
+  for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
   fs.writeFileSync = () => {};
   fs.appendFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
@@ -123,6 +147,12 @@ async function withRoutingState(fn) {
     state.scores = originalScores;
     for (const key of Object.keys(state.sessionAssessmentCache)) delete state.sessionAssessmentCache[key];
     Object.assign(state.sessionAssessmentCache, originalAssessmentCache);
+    if (state.sessionAssessmentCacheStats) {
+      for (const key of Object.keys(state.sessionAssessmentCacheStats)) delete state.sessionAssessmentCacheStats[key];
+      Object.assign(state.sessionAssessmentCacheStats, originalAssessmentCacheStats);
+    }
+    for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
+    Object.assign(state.sessionStats, originalSessionStats);
     for (const key of Object.keys(state.humanApprovals.pending)) delete state.humanApprovals.pending[key];
     for (const key of Object.keys(state.humanApprovals.byRequestHash)) delete state.humanApprovals.byRequestHash[key];
     state.humanApprovals.audit.length = 0;
@@ -131,6 +161,197 @@ async function withRoutingState(fn) {
     state.humanApprovals.audit.push(...originalHumanApprovals.audit);
   }
 }
+
+test("routing diversity rotates close candidates after repeated same-provider use", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const alternative = provider("http://example.invalid", {
+      name: "Windsurf-GPT51CodexMiniLow",
+      family: "windsurf",
+      model: "windsurf/gpt-5-1-codex-mini-low",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 400000,
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "low",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 5.20, configurable: true });
+    Object.defineProperty(alternative, "_lastRoutingScore", { value: 5.06, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, alternative],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue implementing the routing patch with tools." },
+        ],
+        tools: [{ type: "function", function: { name: "Edit" } }],
+        _inputTokens: 170000,
+        _estimatedTokens: 186000,
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 3,
+          contextLevel: 5,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 3,
+          stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 8 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Windsurf-GPT51CodexMiniLow");
+    assert.equal(ranked[1].name, "Windsurf-ClaudeSonnet46Thinking");
+    assert.equal(ranked[1]._routingDiversityPenalty > 0, true);
+  });
+});
+
+test("routing diversity does not rotate real high-risk security routes", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const alternative = provider("http://example.invalid", {
+      name: "Windsurf-GPT51CodexMiniLow",
+      family: "windsurf",
+      model: "windsurf/gpt-5-1-codex-mini-low",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "low",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 5.20, configurable: true });
+    Object.defineProperty(alternative, "_lastRoutingScore", { value: 5.06, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, alternative],
+      {
+        messages: [{ role: "user", content: "Threat model this auth architecture before release." }],
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 5,
+          contextLevel: 3,
+          taskKind: "security_review",
+          costTarget: 4,
+          speedTarget: 3,
+          thinkingLevel: 4,
+          stepShape: { shape: "security", posture: "think_expensive", gate: "human_signoff" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 8 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46Thinking");
+    assert.equal(ranked[1]._routingDiversityPenalty || 0, 0);
+  });
+});
+
+test("routing diversity rotates read-heavy debugging continuations", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const alternative = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 5.20, configurable: true });
+    Object.defineProperty(alternative, "_lastRoutingScore", { value: 5.05, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, alternative],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue debugging the routing logs and inspect the next failure." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 150000,
+        _estimatedTokens: 182000,
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 4,
+          contextLevel: 5,
+          taskKind: "debugging",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 9 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
+    assert.equal(ranked[1]._routingDiversityPenalty > 0, true);
+  });
+});
 
 function trackSessionTokensForTest(sessionId, inputTokens, outputTokens, providerName) {
   if (!state.sessionStats[sessionId]) {
@@ -211,6 +432,45 @@ test("structured JSON response requests allow valid JSON arrays through garble g
     true,
   );
   assert.equal(routing.isStructuredJsonResponseBody(body, {}), false);
+});
+
+test("routeToProvider accepts coherent long reports that contain repeated diagnostic terms", async () => {
+  await withRoutingState(async () => {
+    const originalScores = state.scores;
+    const report = [
+      "Now let me compile the raw findings with proper source context:",
+      "",
+      "## Findings",
+      "",
+      "- lib/routing.js has task=security_review stale logs.",
+      "- tests/routing.test.js covers the regression.",
+      "",
+      "Recommendation: add guard logic and run npm test.",
+      "",
+      ...Array(40).fill("Evidence from docker logs shows ROUTING-PROFILE and ASSESS lines repeated."),
+    ].join("\n");
+
+    await withServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: report }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 40, completion_tokens: 400, total_tokens: 440 },
+      }));
+    }, async (url) => {
+      const fake = new FakeClientResponse();
+      const routed = await routing.routeToProvider(
+        provider(url, { name: "Report-Test", model: "test/report" }),
+        { messages: [{ role: "user", content: "Summarize the routing findings." }], max_tokens: 800 },
+        fake,
+      );
+
+      assert.match(routed.body, /raw findings/);
+      assert.equal(state.scores["Report-Test"]?.failures || 0, 0);
+    });
+
+    state.scores = originalScores;
+  });
 });
 
 test("routeToProvider exchanges Copilot GitHub token before calling chat completions", async () => {
@@ -2268,6 +2528,129 @@ test("handleChatCompletion reuses fallback assessment after assistant/tool trans
   });
 });
 
+test("handleChatCompletion refreshes non-risk assessment cache after repeated hits", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalMaxHits = process.env.LLM_PROXY_ASSESSMENT_CACHE_MAX_HITS;
+    const originalLog = state.log;
+    const requests = [];
+    const logs = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        const serialized = JSON.stringify(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (/LLM proxy routing classifier/.test(serialized)) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "{\"level\":3,\"effort\":\"medium\",\"speed\":4,\"reason\":\"routing_debugging\"}" },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 25, completion_tokens: 8, total_tokens: 33 },
+          }));
+          return;
+        }
+        const mainCalls = requests.filter((item) => !/LLM proxy routing classifier/.test(JSON.stringify(item))).length;
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `call_read_${mainCalls}`,
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tiny-Assessor",
+          model: "free/tiny-assessor",
+          caps: ["text"],
+          cost_group: 1,
+          speed_group: 5,
+          thinking_level: 1,
+          thinking_effort: "minimal",
+        }),
+        provider(url, {
+          name: "Main-Sonnet",
+          model: "windsurf/claude-sonnet-4.6",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "always";
+      process.env.LLM_PROXY_ASSESSMENT_CACHE_MAX_HITS = "1";
+      state.log = (msg) => logs.push(msg);
+      try {
+        const baseMessages = [
+          { role: "system", content: "Project /Users/test/routing-cache-refresh" },
+          { role: "user", content: "Fix the routing classifier bug." },
+        ];
+        const tools = [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+          },
+        }];
+
+        for (let i = 0; i < 3; i += 1) {
+          const res = new FakeClientResponse();
+          await routing.handleChatCompletion({
+            model: "auto-coding",
+            messages: [
+              ...baseMessages,
+              ...(i === 0 ? [] : [
+                {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [{
+                    id: `call_read_prev_${i}`,
+                    type: "function",
+                    function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+                  }],
+                },
+                { role: "tool", tool_call_id: `call_read_prev_${i}`, content: `routing source ${i}` },
+              ]),
+            ],
+            tools,
+            max_tokens: 64,
+          }, res);
+          assert.equal(res.status, 200);
+        }
+
+        const classifierCalls = requests.filter((body) => /LLM proxy routing classifier/.test(JSON.stringify(body)));
+        assert.equal(classifierCalls.length, 2);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE-HIT/);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE-DROP: repeat limit/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+        if (originalMaxHits === undefined) delete process.env.LLM_PROXY_ASSESSMENT_CACHE_MAX_HITS;
+        else process.env.LLM_PROXY_ASSESSMENT_CACHE_MAX_HITS = originalMaxHits;
+      }
+    });
+  });
+});
+
 test("handleChatCompletion reuses fallback cache when long tool output changes after preview", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -2497,6 +2880,114 @@ test("handleChatCompletion does not call hidden assessment for normal same-user 
         state.log = originalLog;
         if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
         else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion drops stale high-risk assessment cache for non-security continuation", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_next",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Main-Sonnet",
+          model: "windsurf/claude-sonnet-4.6",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+        }),
+      ];
+      state.log = (msg) => logs.push(String(msg));
+      try {
+        const messages = [
+          { role: "system", content: "Project /Users/test/high-risk-cache" },
+          { role: "user", content: "Continue debugging the routing logs and inspect the next failure." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_logs",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"tmp/routing.log\"}" },
+            }],
+          },
+          {
+            role: "tool",
+            tool_call_id: "call_logs",
+            content: "llm-proxy | ROUTING-PROFILE: auto-coding level=4/complex task=security_review shape=security gate=human_signoff",
+          },
+        ];
+        const session = memory.getSession(messages);
+        state.sessionAssessmentCache[session.id] = {
+          profile: {
+            level: 5,
+            taskKind: "security_review",
+            taskLevel: 4,
+            contextLevel: 5,
+            costTarget: 4,
+            speedTarget: 3,
+            thinkingLevel: 4,
+            stepShape: { shape: "security", posture: "think_expensive", gate: "human_signoff" },
+          },
+          timestamp: Date.now(),
+          lastUserText: "Continue debugging the routing logs and inspect the next failure.",
+          provider: "Windsurf-ClaudeSonnet46Thinking",
+        };
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages,
+          tools: [{
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+            },
+          }],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        assert.match(logs.join("\n"), /AI-ASSESS-CACHE-DROP: stale high-risk post-route assessment/);
+        assert.doesNotMatch(logs.join("\n"), /AI-ASSESS-CACHE-HIT/);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /Route profile: task=security_review/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
       }
     });
   });

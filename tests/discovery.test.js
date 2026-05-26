@@ -1063,6 +1063,64 @@ server.listen(0, "127.0.0.1", async () => {
   assert.equal(parsed.result.reason, "temporary_provider_error");
 });
 
+test("testSeedProviders quickly retries temporary provider errors", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-discovery-temp-retry-"));
+  const script = `
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const discovery = require("./llm-discovery");
+
+let hits = 0;
+const old = new Date(Date.now() - 20 * 60_000).toISOString();
+const dataDir = process.env.DATA_DIR;
+
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/chat/completions") {
+    hits += 1;
+    req.resume();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "hello" } }] }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(0, "127.0.0.1", async () => {
+  const url = "http://127.0.0.1:" + server.address().port + "/chat/completions";
+  const provider = {
+    name: "Copilot-GPT41",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-4.1",
+    upstream_model: "gpt-4.1",
+    url,
+    key_env: "COPILOT_CAPI_TOKEN",
+    authHeader: "copilot-runtime",
+  };
+  fs.writeFileSync(path.join(dataDir, "providers.json"), JSON.stringify({
+    providers: [{ ...provider, alive: false, last_tested: old, reason: "temporary_provider_error" }],
+  }));
+  const result = await discovery.testSeedProviders({ providers: [provider] });
+  console.log("RESULT " + JSON.stringify({ result: result[0], hits }));
+  server.close(() => process.exit(0));
+});
+`;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: path.join(__dirname, ".."),
+    env: { ...process.env, DATA_DIR: dataDir, COPILOT_CAPI_TOKEN: "runtime-token" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const line = result.stdout.split("\n").find((entry) => entry.startsWith("RESULT "));
+  assert.ok(line, result.stdout);
+  const parsed = JSON.parse(line.slice("RESULT ".length));
+  assert.equal(parsed.hits, 1);
+  assert.equal(parsed.result.alive, true);
+});
+
 test("mergeProvidersConfig drops unsupported existing providers but keeps supported entries", () => {
   const seed = {
     providers: [

@@ -962,10 +962,21 @@ function shouldProbeSeedProvider(provider, env = process.env) {
   return true;
 }
 
+function retestFailedProviderAfterMs(reason = "") {
+  const normalized = String(reason || "").toLowerCase();
+  if (normalized === "temporary_provider_error") return 15 * 60_000;
+  if (normalized === "rate_limited") return 30 * 60_000;
+  if (normalized === "probe_failed") return 2 * 60 * 60_000;
+  if (normalized === "permission_denied") return 6 * 60 * 60_000;
+  if (normalized === "unsupported_api_for_model" || normalized === "model_not_found" || normalized === "auth_failed") {
+    return 24 * 60 * 60_000;
+  }
+  return 2 * 60 * 60_000;
+}
+
 async function testSeedProviders(seed) {
   const results = [];
   const RETEST_OK_MS = 3.5 * 24 * 60 * 60_000; // retest alive providers every 3.5 days
-  const RETEST_FAIL_MS = 2 * 60 * 60_000; // retest dead providers every 2h
 
   // Load existing test results from providers.json
   const existingConfig = loadProvidersFromFile();
@@ -1011,7 +1022,8 @@ async function testSeedProviders(seed) {
         continue;
       }
       const staleNoKeyNowKeyed = existing.reason === "no_key" && !!key;
-      if (!existing.alive && age < RETEST_FAIL_MS && !staleNoKeyNowKeyed) {
+      const failRetestMs = retestFailedProviderAfterMs(existing.reason || "probe_failed");
+      if (!existing.alive && age < failRetestMs && !staleNoKeyNowKeyed) {
         results.push({ ...sp, alive: false, last_tested: existing.last_tested, reason: existing.reason || "probe_failed" });
         log(`  SKIP:  ${sp.name} (dead, tested ${Math.round(age / 3600000)}h ago)`);
         continue;
@@ -1202,6 +1214,7 @@ module.exports = {
   refreshDiscoveryFromProviders,
   markMissingDiscoveryModels,
   shouldProbeSeedProvider,
+  retestFailedProviderAfterMs,
   probeSeedProviderDetailed,
   probeSeedProvider,
   testSeedProviders,

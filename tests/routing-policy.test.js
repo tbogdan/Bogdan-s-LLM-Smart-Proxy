@@ -734,6 +734,48 @@ test("providerPolicyBonus does not reward heavy thinking for context-only pressu
   assert.equal(policy.providerPolicyBonus(medium, req) >= policy.providerPolicyBonus(high, req), true);
 });
 
+test("providerPolicyBonus prefers larger low-thinking context for context-only tool pressure", () => {
+  const sonnetThinking = {
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 200000,
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "high",
+  };
+  const codexMiniLow = {
+    name: "Windsurf-GPT51CodexMiniLow",
+    family: "windsurf",
+    model: "windsurf/gpt-5-1-codex-mini-low",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 400000,
+    cost_group: 2,
+    quality_group: 4,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    messages: [
+      { role: "system", content: "You are Claude Code running as a software engineering agent." },
+      { role: "user", content: "Continue implementing the routing patch with tests." },
+    ],
+    tools: Array.from({ length: 75 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _inputTokens: 170000,
+    _estimatedTokens: 186000,
+  };
+
+  assert.equal(policy.effectiveRequestProfile(req, env).taskLevel, 3);
+  assert.equal(policy.effectiveRequestProfile(req, env).contextLevel, 5);
+  assert.equal(
+    policy.providerPolicyBonus(codexMiniLow, req, { env }) > policy.providerPolicyBonus(sonnetThinking, req, { env }),
+    true,
+  );
+});
+
 test("providerPolicyBonus applies thinking latency guard to deterministic security patches", () => {
   const nonThinkingSonnet = {
     name: "Windsurf-ClaudeSonnet46",
@@ -771,6 +813,48 @@ test("providerPolicyBonus applies thinking latency guard to deterministic securi
 
   assert.equal(policy.providerPolicyBonus(nonThinkingSonnet, patchReq) > policy.providerPolicyBonus(thinkingSonnet, patchReq), true);
   assert.equal(policy.providerPolicyBonus(thinkingSonnet, threatModelReq) > policy.providerPolicyBonus(nonThinkingSonnet, threatModelReq), true);
+});
+
+test("providerPolicyBonus applies thinking latency guard to small non-risk patch continuations", () => {
+  const nonThinkingSonnet = {
+    name: "Windsurf-ClaudeSonnet46",
+    family: "windsurf",
+    model: "windsurf/claude-sonnet-4.6",
+    caps: ["text", "coding", "tools", "thinking"],
+    context: 200000,
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const thinkingSonnet = {
+    ...nonThinkingSonnet,
+    name: "Windsurf-ClaudeSonnet46Thinking",
+    model: "windsurf/claude-sonnet-4-6-thinking",
+    thinking_effort: "high",
+  };
+  const req = {
+    max_tokens: 256,
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    messages: [{ role: "user", content: "Continue the small routing patch and update the focused regression test." }],
+    _inputTokens: 20000,
+    _estimatedTokens: 20256,
+    _llmProxyDifficulty: {
+      level: 3,
+      taskKind: "agentic_coding",
+      taskLevel: 3,
+      contextLevel: 3,
+      costTarget: 3,
+      speedTarget: 4,
+      thinkingLevel: 3,
+      stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+    },
+  };
+
+  assert.equal(
+    policy.providerPolicyBonus(nonThinkingSonnet, req) - policy.providerPolicyBonus(thinkingSonnet, req) > 0.25,
+    true,
+  );
 });
 
 test("providerPolicyBonus prefers adequate context over one-million frontier for write-heavy coding", () => {
