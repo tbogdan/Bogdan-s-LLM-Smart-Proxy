@@ -600,6 +600,8 @@ test("handleChatCompletion adds hidden continue user message after native inert 
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
     const calls = [];
     routing.init({
       sendError: (res, status, message, extra = {}) => {
@@ -674,6 +676,8 @@ test("handleChatCompletion adds hidden continue user message after native inert 
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });
@@ -808,6 +812,138 @@ test("handleChatCompletion cools native Windsurf invalid_argument streams", asyn
       providerAdapters.routeNativeStream = originalRouteNativeStream;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
+  });
+});
+
+test("handleChatCompletion skips remaining Windsurf providers after tool-history invalid_argument", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-fallback",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "gpt-4.1",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "ok",
+            tool_calls: [{
+              id: "call_next",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"package.json\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }));
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        {
+          name: "Windsurf-ClaudeSonnet46Thinking",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          protocol: "windsurf",
+          family: "windsurf",
+          key: "test",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 200000,
+          tier: 1,
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "high",
+        },
+        {
+          name: "Windsurf-ClaudeSonnet46",
+          model: "windsurf/claude-sonnet-4.6",
+          protocol: "windsurf",
+          family: "windsurf",
+          key: "test",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 200000,
+          tier: 1,
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+        },
+        {
+          name: "OpenAI-gpt41",
+          model: "gpt-4.1",
+          url,
+          protocol: "openai",
+          family: "openai",
+          key: "test",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 128000,
+          tier: 1,
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+        },
+      ];
+      const nativeCalls = [];
+      providerAdapters.routeNativeStream = async (provider) => {
+        nativeCalls.push(provider.name);
+        const error = new Error("an internal error occurred");
+        error.status = 502;
+        error.body = '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}';
+        throw error;
+      };
+
+      try {
+        const clientRes = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            stepShape: { gate: "run_behavior" },
+          },
+          messages: [
+            { role: "user", content: "Read the file." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_read", content: "README contents" },
+            { role: "user", content: "continue" },
+          ],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+        }, clientRes, { internal: true });
+
+        assert.deepEqual(nativeCalls, ["Windsurf-ClaudeSonnet46Thinking"]);
+        assert.equal(clientRes.status, 200);
+        assert.match(clientRes.chunks.join(""), /ok/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        providerAdapters.routeNativeStream = originalRouteNativeStream;
+        if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+        routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+      }
+    });
   });
 });
 

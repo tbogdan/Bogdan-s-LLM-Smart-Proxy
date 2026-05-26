@@ -176,6 +176,20 @@ test("detectIncompatibility cools Windsurf invalid_argument internal errors", ()
   });
 });
 
+test("detectIncompatibility learns Windsurf invalid_argument on tool history", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Windsurf-ClaudeSonnet46Thinking",
+      502,
+      '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}',
+      { hasToolHistory: true, hasTools: true },
+    );
+
+    const compat = scoring.getCompat("Windsurf-ClaudeSonnet46Thinking");
+    assert.equal(compat.no_tool_history, true);
+  });
+});
+
 test("detectIncompatibility cools Windsurf permission_denied internal errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
