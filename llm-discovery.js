@@ -747,7 +747,7 @@ function refreshDiscoveryFromProviders(discovery, providerList, options = {}) {
 }
 
 function markMissingDiscoveryModels(discovery, ep, currentProviders, options = {}) {
-  if (!discovery || typeof discovery !== "object") return { marked: 0 };
+  if (!discovery || typeof discovery !== "object") return { marked: 0, missing: [] };
   if (!Array.isArray(discovery.models)) discovery.models = [];
 
   const providerName = ep?.name || ep?.family || "Unknown";
@@ -758,20 +758,44 @@ function markMissingDiscoveryModels(discovery, ep, currentProviders, options = {
       .filter(Boolean),
   );
   let marked = 0;
+  const missing = [];
 
   for (const model of discovery.models) {
     if (!model || model.provider !== providerName) continue;
     if (currentModels.has(model.model)) continue;
-    if (model.stale === true && model.alive === false) continue;
+    if (model.stale === true && model.alive === false) {
+      missing.push(missingProviderFromDiscoveryModel(model, providerName, now));
+      continue;
+    }
 
     model.stale = true;
     model.alive = false;
     model.stale_since = model.stale_since || now;
     model.disabled_reason = model.disabled_reason || `missing from ${providerName} discovery scan`;
+    missing.push(missingProviderFromDiscoveryModel(model, providerName, now));
     marked++;
   }
 
-  return { marked };
+  return { marked, missing };
+}
+
+function missingProviderFromDiscoveryModel(model, providerName, now) {
+  return {
+    name: model.name,
+    family: inferFamilyFromModel(model.model, providerName),
+    model: model.model,
+    alive: false,
+    last_tested: now,
+    reason: "missing_from_catalog",
+  };
+}
+
+function inferFamilyFromModel(modelId, providerName = "") {
+  const family = String(modelId || "").split("/")[0].toLowerCase();
+  if (["windsurf", "claude", "codex", "copilot"].includes(family)) return family;
+  const fromProvider = String(providerName || "").toLowerCase();
+  if (["windsurf", "claude", "codex", "copilot"].includes(fromProvider)) return fromProvider;
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +890,7 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
       seed: true,
       alive: existing?.alive ?? true,
       last_tested: existing?.last_tested ?? sp.last_tested ?? null,
-      reason: existing?.reason ?? sp.reason,
+      ...((existing?.alive === false || sp.alive === false) ? { reason: existing?.reason ?? sp.reason } : {}),
     });
   }
 
@@ -889,16 +913,22 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
       if (!dp.metadata_only) {
         next.alive = dp.alive ?? existing.alive;
         next.last_tested = dp.last_tested ?? existing.last_tested ?? null;
-        next.reason = dp.reason ?? existing.reason;
+        if (next.alive === false) {
+          next.reason = dp.reason ?? existing.reason ?? next.reason;
+        } else {
+          delete next.reason;
+          delete next.disabled_reason;
+        }
       }
       providerMap.set(key, next);
     } else if (isSupportedProvider(dp)) {
+      const alive = dp.alive ?? previous?.alive ?? true;
       providerMap.set(key, {
         ...dp,
         seed: false,
-        alive: dp.alive ?? previous?.alive ?? true,
+        alive,
         last_tested: dp.last_tested ?? previous?.last_tested ?? null,
-        reason: dp.reason ?? previous?.reason,
+        ...(alive === false ? { reason: dp.reason ?? previous?.reason } : {}),
       });
     }
   }
@@ -1059,6 +1089,7 @@ async function runDiscoveryScan() {
   const endpoints = getEndpoints();
   const discovery = loadDiscovery();
   const seedKeys = new Set((seed.providers || []).map(providerKey));
+  const seedByKey = new Map((seed.providers || []).map((provider) => [providerKey(provider), provider]));
   let newCount = 0;
   let prevNewCount = 0;
 
@@ -1111,6 +1142,16 @@ async function runDiscoveryScan() {
       }
 
       const staleResult = markMissingDiscoveryModels(discovery, ep, endpointProviders);
+      for (const missing of staleResult.missing || []) {
+        const seededProvider = seedByKey.get(providerKey(missing));
+        if (!seededProvider) continue;
+        discoveredProviders.push({
+          ...seededProvider,
+          alive: false,
+          last_tested: missing.last_tested,
+          reason: missing.reason,
+        });
+      }
       if (staleResult.marked > 0) {
         log(`  ${ep.name}: marked ${staleResult.marked} stale discovery models absent from current catalog`);
       }

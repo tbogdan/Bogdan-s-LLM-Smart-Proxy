@@ -706,6 +706,7 @@ test("createOpenAIStreamFrameParser emits Connect frames incrementally", () => {
 test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completion", async () => {
   const server = http2.createServer();
   const seen = [];
+  const completionDelayMs = 120;
   server.on("stream", (stream, headers) => {
     seen.push(headers);
     stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
@@ -715,7 +716,7 @@ test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completi
         cloud.connectEnvelope(cloud.encodeString(3, "done")),
         cloud.connectEnvelope(Buffer.alloc(0), 2),
       ]));
-    }, 20);
+    }, completionDelayMs);
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -745,7 +746,7 @@ test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completi
     assert.equal(seen[0]["content-type"], "application/connect+proto");
     assert.equal(chunks.join("").includes("early "), true);
     assert.equal(chunks.join("").includes("done"), true);
-    assert.equal(firstChunkAt[0] < 20, true);
+    assert.equal(firstChunkAt[0] < completionDelayMs, true);
   } finally {
     await closeServer(server);
   }

@@ -67,9 +67,9 @@ services:
     volumes:
       - ./data/neo4j:/data
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p graphiti-memory-local 'RETURN 1' >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/var/lib/neo4j/bin/cypher-shell -u neo4j -p graphiti-memory-local 'RETURN 1' >/dev/null 2>&1"]
       interval: 10s
-      timeout: 5s
+      timeout: 15s
       retries: 12
       start_period: 30s
     restart: unless-stopped

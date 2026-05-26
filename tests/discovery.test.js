@@ -478,6 +478,16 @@ test("markMissingDiscoveryModels marks endpoint models absent from a successful 
         refreshed_at: "2026-05-20T06:55:00.000Z",
       },
       {
+        provider: "Copilot",
+        name: "Copilot-already-stale",
+        model: "copilot/already-stale",
+        refreshed_at: "2026-05-19T06:55:00.000Z",
+        stale: true,
+        alive: false,
+        stale_since: "2026-05-20T09:00:00.000Z",
+        disabled_reason: "missing from Copilot discovery scan",
+      },
+      {
         provider: "Codex",
         name: "Codex-gpt54",
         model: "codex/gpt-5.4",
@@ -493,11 +503,42 @@ test("markMissingDiscoveryModels marks endpoint models absent from a successful 
   });
 
   assert.equal(result.marked, 1);
+  assert.equal(result.missing.length, 2);
+  assert.equal(result.missing[0].family, "copilot");
+  assert.equal(result.missing[0].alive, false);
+  assert.equal(result.missing[0].reason, "missing_from_catalog");
+  assert.equal(result.missing[1].model, "copilot/already-stale");
   assert.equal(discoveryState.models[0].stale, undefined);
   assert.equal(discoveryState.models[1].stale, true);
   assert.equal(discoveryState.models[1].alive, false);
   assert.equal(discoveryState.models[1].stale_since, "2026-05-21T09:00:00.000Z");
-  assert.equal(discoveryState.models[2].stale, undefined);
+  assert.equal(discoveryState.models[3].stale, undefined);
+});
+
+test("markMissingDiscoveryModels returns already-stale models for provider merge propagation", () => {
+  const discoveryState = {
+    models: [
+      {
+        provider: "Windsurf",
+        name: "Windsurf-GLM5",
+        model: "windsurf/glm-5",
+        stale: true,
+        alive: false,
+        stale_since: "2026-05-20T09:00:00.000Z",
+        disabled_reason: "missing from Windsurf discovery scan",
+      },
+    ],
+  };
+
+  const result = discovery.markMissingDiscoveryModels(discoveryState, { name: "Windsurf" }, [], {
+    now: "2026-05-21T09:00:00.000Z",
+  });
+
+  assert.equal(result.marked, 0);
+  assert.equal(result.missing.length, 1);
+  assert.equal(result.missing[0].name, "Windsurf-GLM5");
+  assert.equal(result.missing[0].family, "windsurf");
+  assert.equal(result.missing[0].reason, "missing_from_catalog");
 });
 
 test("mergeProvidersConfig refreshes seed provider metadata from model endpoints without changing probe status", () => {
@@ -542,6 +583,123 @@ test("mergeProvidersConfig refreshes seed provider metadata from model endpoints
   assert.equal(provider.tc, true);
   assert.equal(provider.alive, false);
   assert.equal(provider.last_tested, "2026-05-20T00:00:00.000Z");
+});
+
+test("mergeProvidersConfig clears stale failure reasons when a provider is alive", () => {
+  const seed = {
+    groups: {},
+    providers: [
+      {
+        name: "Codex-GPT55",
+        family: "codex",
+        protocol: "openai",
+        model: "codex/gpt-5.5",
+        url: "http://codex-proxy:10531/v1/chat/completions",
+        key_env: "CODEX_API_KEY",
+        headers: {},
+      },
+    ],
+  };
+
+  const existingConfig = {
+    providers: [
+      {
+        ...seed.providers[0],
+        alive: true,
+        last_tested: "2026-05-20T00:00:00.000Z",
+        reason: "temporary_provider_error",
+        disabled_reason: "old disabled reason",
+      },
+    ],
+  };
+
+  const merged = discovery.mergeProvidersConfig(seed, [], existingConfig);
+  const provider = merged.providers[0];
+
+  assert.equal(provider.alive, true);
+  assert.equal(provider.reason, undefined);
+  assert.equal(provider.disabled_reason, undefined);
+});
+
+test("mergeProvidersConfig clears stale failure reasons after a fresh alive probe", () => {
+  const seed = {
+    groups: {},
+    providers: [
+      {
+        name: "Codex-GPT54",
+        family: "codex",
+        protocol: "openai",
+        model: "codex/gpt-5.4",
+        url: "http://codex-proxy:10531/v1/chat/completions",
+        key_env: "CODEX_API_KEY",
+        headers: {},
+      },
+    ],
+  };
+  const existingConfig = {
+    providers: [
+      {
+        ...seed.providers[0],
+        alive: false,
+        last_tested: "2026-05-20T00:00:00.000Z",
+        reason: "temporary_provider_error",
+      },
+    ],
+  };
+
+  const merged = discovery.mergeProvidersConfig(seed, [
+    {
+      ...seed.providers[0],
+      alive: true,
+      last_tested: "2026-05-21T00:00:00.000Z",
+    },
+  ], existingConfig);
+  const provider = merged.providers[0];
+
+  assert.equal(provider.alive, true);
+  assert.equal(provider.reason, undefined);
+  assert.equal(provider.disabled_reason, undefined);
+  assert.equal(provider.last_tested, "2026-05-21T00:00:00.000Z");
+});
+
+test("mergeProvidersConfig lets current catalog misses override cached alive status", () => {
+  const seed = {
+    groups: {},
+    providers: [
+      {
+        name: "Windsurf-GLM5",
+        family: "windsurf",
+        protocol: "windsurf",
+        model: "windsurf/glm-5",
+        url: "windsurf",
+        key_env: "WINDSURF_API_KEY",
+        headers: {},
+      },
+    ],
+  };
+  const existingConfig = {
+    providers: [
+      {
+        ...seed.providers[0],
+        alive: true,
+        last_tested: "2026-05-20T00:00:00.000Z",
+      },
+    ],
+  };
+
+  const merged = discovery.mergeProvidersConfig(seed, [
+    {
+      ...seed.providers[0],
+      alive: false,
+      reason: "missing_from_catalog",
+      last_tested: "2026-05-21T00:00:00.000Z",
+    },
+  ], existingConfig);
+  const provider = merged.providers[0];
+
+  assert.equal(provider.alive, false);
+  assert.equal(provider.reason, "missing_from_catalog");
+  assert.equal(provider.last_tested, "2026-05-21T00:00:00.000Z");
 });
 
 test("providersFromEndpointModels skips malformed model entries", () => {
