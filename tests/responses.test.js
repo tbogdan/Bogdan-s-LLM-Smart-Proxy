@@ -113,6 +113,30 @@ test("MockResponse converts chat completion SSE text stream into Responses API e
   assert.deepEqual(completed.response.usage, { input_tokens: 2, output_tokens: 1, total_tokens: 3 });
 });
 
+test("MockResponse strips split private assessment metadata from Responses API deltas", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"Updated docs.\\n\\n"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"content":"effort=low speed=4"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"content":" reason=monitoring"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+
+  const deltas = events.filter((event) => event.type === "response.output_text.delta").map((event) => event.delta).join("");
+  assert.equal(deltas.includes("Updated docs."), true);
+  assert.equal(deltas.includes("effort=low"), false);
+  assert.equal(deltas.includes("speed=4"), false);
+  assert.equal(deltas.includes("reason=monitoring"), false);
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(completed.response.output[0].content[0].text.includes("effort=low"), false);
+});
+
 test("MockResponse converts streaming tool call deltas into Responses function_call events", () => {
   const events = [];
   const res = new responses.MockResponse(

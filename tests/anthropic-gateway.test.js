@@ -227,6 +227,38 @@ test("streaming Anthropic bridge strips private assessment metadata", async () =
   assert.doesNotMatch(body, /effort=medium|typescript-fixes|LLM_PROXY_TASK_DIFFICULTY/);
 });
 
+test("streaming Anthropic bridge strips split private assessment metadata", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const content of [
+        "effort=low speed=4",
+        " reason=monitoring\n\nUpdated docs.",
+      ]) {
+        res.write(`data: ${JSON.stringify({
+          choices: [{ delta: { content }, finish_reason: null }],
+        })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say updated" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Updated docs\./);
+  assert.doesNotMatch(body, /effort=low|speed=4|reason=monitoring/);
+});
+
 test("toAnthropicResponse returns clear help for generated tool_use missing required input", () => {
   const response = gateway.toAnthropicResponse({
     model: "auto-coding",
