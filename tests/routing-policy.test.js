@@ -1134,6 +1134,71 @@ test("assessment marker generic routing implementation reason stays coding, not 
   assert.equal(profile.costTarget <= 3, true);
 });
 
+test("generic none assessment marker cannot escalate debugging above deterministic profile", () => {
+  const req = {
+    messages: [{ role: "user", content: "monitorizeaza logs si fixeaza daca gasesti ceva off" }],
+    tools: [{ type: "function", function: { name: "Bash" } }],
+    _inputTokens: 120000,
+    _estimatedTokens: 152000,
+  };
+  const base = policy.assessRequestDifficulty(req.messages, req);
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_TASK_DIFFICULTY level=5 effort=xhigh speed=2 reason=none");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(base.taskKind, "debugging");
+  assert.equal(base.level, 4);
+  assert.equal(profile.reason, "");
+  assert.equal(profile.taskKind, "debugging");
+  assert.equal(profile.level, base.level);
+  assert.equal(profile.thinkingLevel, base.thinkingLevel);
+  assert.equal(profile.speedTarget, base.speedTarget);
+  assert.equal(profile.costTarget, base.costTarget);
+});
+
+test("generic followup assessment marker can lower thinking without changing task", () => {
+  const req = {
+    messages: [{ role: "user", content: "monitorizeaza logs si fixeaza daca gasesti ceva off" }],
+    tools: [{ type: "function", function: { name: "Bash" } }],
+    _inputTokens: 120000,
+    _estimatedTokens: 152000,
+  };
+  const base = policy.assessRequestDifficulty(req.messages, req);
+  const marker = policy.parseDifficultyMarker("effort=low speed=3 reason=followup");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(base.taskKind, "debugging");
+  assert.equal(profile.taskKind, base.taskKind);
+  assert.equal(profile.level, base.level);
+  assert.equal(profile.thinkingEffort, "low");
+  assert.equal(profile.thinkingLevel, 2);
+  assert.equal(profile.speedTarget, 3);
+  assert.equal(profile.costTarget, base.costTarget);
+});
+
+test("trusted AI assessment without reason cannot escalate debugging above deterministic profile", () => {
+  const req = {
+    messages: [{ role: "user", content: "monitorizeaza logs si fixeaza daca gasesti ceva off" }],
+    tools: [{ type: "function", function: { name: "Bash" } }],
+    _inputTokens: 120000,
+    _estimatedTokens: 152000,
+  };
+  const base = policy.assessRequestDifficulty(req.messages, req);
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 5,
+    effort: "xhigh",
+    speed: 2,
+  });
+
+  assert.equal(base.taskKind, "debugging");
+  assert.equal(base.level, 4);
+  assert.equal(profile.reason || "", "");
+  assert.equal(profile.taskKind, "debugging");
+  assert.equal(profile.level, base.level);
+  assert.equal(profile.thinkingLevel, base.thinkingLevel);
+  assert.equal(profile.speedTarget, base.speedTarget);
+  assert.equal(profile.costTarget, base.costTarget);
+});
+
 test("stale architecture context does not make Opus preferred for a normal implementation step", () => {
   const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };
   const opus = { name: "Claude-Opus47", family: "claude", model: "claude/claude-opus-4-7", caps: ["text", "coding", "tools", "thinking", "max"], tc: true };

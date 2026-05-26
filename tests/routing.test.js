@@ -3533,7 +3533,7 @@ test("post-route assessment is stripped from responses and reused for next route
   });
 });
 
-test("handleChatCompletion reports full input tokens including schemas when no provider fits context", async () => {
+test("handleChatCompletion returns controlled IDE guidance when no provider can fit context", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -3569,17 +3569,192 @@ test("handleChatCompletion reports full input tokens including schemas when no p
     })];
     try {
       const fake = new FakeClientResponse();
-      await routing.handleChatCompletion(reqBody, fake);
+      await routing.handleChatCompletion(reqBody, fake, {
+        headers: { "user-agent": "Claude-Code/2.1.89" },
+      });
       const body = JSON.parse(fake.body);
 
-      assert.equal(fake.status, 400);
-      assert.equal(body.error.code, "context_length_exceeded");
+      assert.equal(fake.status, 200);
       assert.equal(expectedInputTokens > 512, true);
-      assert.match(body.error.message, new RegExp(`${expectedInputTokens} in the messages`));
+      assert.match(body.choices[0].message.content, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+      assert.match(body.choices[0].message.content, /client=claude_code/);
+      assert.match(body.choices[0].message.content, new RegExp(`input_tokens=${expectedInputTokens}`));
+      assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
     }
+  });
+});
+
+test("handleChatCompletion emits IDE-specific context guidance for known clients", async () => {
+  for (const [userAgent, clientId] of [
+    ["Claude-Code/2.1.89", "claude_code"],
+    ["Codex/0.9", "codex"],
+    ["Windsurf Cascade", "windsurf"],
+    ["GitHubCopilotChat/1.0 VSCode", "copilot"],
+  ]) {
+    await withRoutingState(async () => {
+      const originalProviders = state.PROVIDERS;
+      const originalGroups = state.GROUPS;
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [provider("http://127.0.0.1/unused", {
+        name: "Tiny-Context",
+        caps: ["text", "coding", "tools"],
+        context: 512,
+      })];
+
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "Use the tool only if needed." }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "large_contract_tool",
+              description: "Large schema contract. ".repeat(900),
+              parameters: {
+                type: "object",
+                required: ["payload"],
+                properties: { payload: { type: "string", description: "Payload description. ".repeat(900) } },
+              },
+            },
+          }],
+        }, fake, { headers: { "user-agent": userAgent } });
+
+        const body = JSON.parse(fake.body);
+        assert.equal(fake.status, 200);
+        assert.match(body.choices[0].message.content, new RegExp(`client=${clientId}`));
+        assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  }
+});
+
+test("handleChatCompletion suppresses direct provider context overflow errors", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          message: "This model's maximum context length is 200000 tokens. However, you requested 337246 tokens (305246 in the messages, 32000 in the completion). Please reduce the length of the messages or completion.",
+          type: "invalid_request_error",
+          param: "messages",
+          code: "context_length_exceeded",
+        },
+      }));
+    }, async (url) => {
+      const originalProviders = state.PROVIDERS;
+      state.PROVIDERS = [provider(url, {
+        name: "Direct-Context",
+        model: "test/direct-context",
+        caps: ["text"],
+        context: 200000,
+      })];
+
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "test/direct-context",
+          max_tokens: 32000,
+          messages: [{ role: "user", content: "Continue." }],
+        }, fake, { headers: { "user-agent": "Windsurf Cascade" } });
+
+        const body = JSON.parse(fake.body);
+        assert.equal(fake.status, 200);
+        assert.match(body.choices[0].message.content, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+        assert.match(body.choices[0].message.content, /client=windsurf/);
+        assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
+      } finally {
+        state.PROVIDERS = originalProviders;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion auto-compacts oversized group requests before surfacing IDE context guidance", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const previousSummary = compaction.configureAISummary({
+      requester: async () => "Older routing context summarized before retry.",
+      minDroppedMessages: 1,
+    });
+    const captured = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        captured.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 2000, completion_tokens: 10, total_tokens: 2010 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [provider(url, {
+        name: "Compactable-8k-Coder",
+        model: "test/compactable-coder-8k",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 8192,
+        cost_group: 2,
+        quality_group: 4,
+        speed_group: 5,
+        thinking_effort: "medium",
+      })];
+
+      try {
+        const messages = [
+          { role: "system", content: "You are a software engineering agent." },
+          ...Array.from({ length: 32 }, (_, i) => ({
+            role: i % 2 === 0 ? "assistant" : "user",
+            content: `Historical implementation turn ${i}: ${"read files, inspected logs, prepared fixes ".repeat(32)}`,
+          })),
+          { role: "user", content: "Continue the routing fix and use tools if needed." },
+        ];
+        const originalInput = compaction.estimateTokens(messages);
+        assert.equal(originalInput > 8192 * 0.9, true);
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          max_tokens: 256,
+          messages,
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+        }, fake, {
+          headers: { "user-agent": "Codex/0.9" },
+        });
+
+        assert.equal(fake.status, 200);
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0].model, "test/compactable-coder-8k");
+        assert.equal(compaction.estimateTokens(captured[0].messages) + 256 <= 8192, true);
+        assert.doesNotMatch(fake.body, /context_length_exceeded|maximum context length|Please reduce the length/i);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        compaction.configureAISummary(previousSummary);
+      }
+    });
   });
 });
 
