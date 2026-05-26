@@ -590,6 +590,36 @@ test("difficulty markers are parsed and stripped from OpenAI responses", () => {
   assert.equal(JSON.parse(result.body).choices[0].message.content, "I will inspect the repo.");
 });
 
+test("compact private effort markers are parsed, stripped, and kept as route hints", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripDifficultyMarkerFromResponseBody(body);
+
+  assert.equal(result.marker.level, 2);
+  assert.equal(result.marker.effort, "low");
+  assert.equal(result.marker.speed, 3);
+  assert.equal(result.marker.reason, "followup");
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "Local test-vm yes; run bash scripts/startup.sh");
+});
+
+test("compact private effort markers can request higher rerouting levels", () => {
+  const marker = policy.parseDifficultyMarker("effort=xhigh speed=2 reason=edit_recovery");
+
+  assert.equal(marker.level, 5);
+  assert.equal(marker.thinkingLevel, 5);
+  assert.equal(marker.costTarget, 5);
+  assert.equal(marker.reason, "edit_recovery");
+});
+
 test("difficulty marker stripping preserves same-line assistant content", () => {
   const body = JSON.stringify({
     choices: [

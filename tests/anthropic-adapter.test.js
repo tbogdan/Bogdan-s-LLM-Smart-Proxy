@@ -32,6 +32,37 @@ test("converts OpenAI chat request to Anthropic Messages request", () => {
   assert.equal(output.tools[0].name, "read_file");
 });
 
+test("converts OpenAI image_url content to Anthropic image blocks", () => {
+  const provider = { upstream_model: "claude-sonnet-4-5" };
+  const output = anthropic.toAnthropicRequest(provider, {
+    model: "claude/claude-sonnet-4-5",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Review this screenshot." },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQSkZJRg==" } },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(output.messages[0], {
+    role: "user",
+    content: [
+      { type: "text", text: "Review this screenshot." },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/jpeg",
+          data: "/9j/4AAQSkZJRg==",
+        },
+      },
+    ],
+  });
+});
+
 test("defaults max_tokens when OpenAI request omits it", () => {
   const output = anthropic.toAnthropicRequest(
     { upstream_model: "claude-sonnet-4-5" },

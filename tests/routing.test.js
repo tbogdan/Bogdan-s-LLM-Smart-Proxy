@@ -974,6 +974,72 @@ test("routeToProvider rejects marker-only replies because the proxy strips the m
   });
 });
 
+test("routeToProvider strips compact effort markers from assistant content", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 12, total_tokens: 13 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "continua" }],
+      });
+
+      const content = JSON.parse(resp.body).choices[0].message.content;
+      assert.equal(content, "Local test-vm yes; run bash scripts/startup.sh");
+      assert.doesNotMatch(content, /effort=low|reason=followup/);
+    });
+  });
+});
+
+test("routeToProvider reroutes when compact effort marker asks for a stronger model without useful content", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "effort=xhigh speed=2 reason=edit_recovery\nI need a deeper pass.",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1000, completion_tokens: 8, total_tokens: 1008 },
+      }));
+    }, async (url) => {
+      await assert.rejects(
+        () => routing.routeToProvider(
+          provider(url, {
+            name: "Cheap-Recovery",
+            cost_group: 2,
+            thinking_effort: "low",
+            caps: ["text", "coding", "tools", "thinking"],
+          }),
+          {
+            model: "auto-coding",
+            messages: [
+              { role: "user", content: "Recover the failed edit flow across routing.js, scoring.js, and tests after stale patch errors." },
+            ],
+            tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+            _inputTokens: 80000,
+            _estimatedTokens: 90000,
+          },
+        ),
+        (error) => error.status === 409 && error.rerouteAssessment?.level === 5,
+      );
+    });
+  });
+});
+
 test("dedupeConsecutiveIdempotentToolCalls removes only exact consecutive read duplicates", () => {
   const longPrefix = "x".repeat(120);
   const reqBody = {
@@ -3797,6 +3863,43 @@ test("routeToProvider accepts short completed-work reports when tools are availa
   });
 });
 
+test("routeToProvider accepts concise done-and-pushed reports when tools are available", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: [
+              "Done. Added subtle hero motion and pushed.",
+              "",
+              "If you want, next I can do one of:",
+              "- tighter luxury feel",
+              "- more responsive polish",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url, { name: "Codex-GPT54Mini" }), {
+        model: "auto-coding",
+        messages: [
+          { role: "user", content: "adauga subtle hero motion si fa push" },
+          { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "Bash", arguments: "{\"command\":\"git push\"}" } }] },
+          { role: "tool", tool_call_id: "call_1", content: "pushed" },
+        ],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /Added subtle hero motion/);
+    });
+  });
+});
+
 test("routeToProvider accepts diagnostic recovery reports from tool-heavy sessions", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
@@ -4105,6 +4208,130 @@ test("auto-coding ranking applies routing policy cost and speed targets", () => 
       if (value == null) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("auto-coding avoids native Windsurf providers for image-bearing requests when compatible providers exist", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-coding": "coding" };
+  state.PROVIDERS = [
+    {
+      name: "Windsurf-Native-Vision",
+      model: "windsurf/gpt-5-5-low",
+      upstream_model: "gpt-5-5-low",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 272000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 5,
+      thinking_effort: "medium",
+    },
+    {
+      name: "Copilot-Vision",
+      model: "copilot/gpt-5-mini",
+      upstream_model: "gpt-5-mini",
+      protocol: "openai",
+      family: "copilot",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 264000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    },
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-coding", 2000, {
+      model: "auto-coding",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect this screenshot before editing." },
+            { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+          ],
+        },
+      ],
+      tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      _estimatedTokens: 2000,
+    });
+
+    assert.equal(providers[0].name, "Copilot-Vision");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-coding avoids providers with learned data-image incompatibility for data URL screenshots", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  const originalCompat = state.providerCompat;
+  state.GROUPS = { "auto-coding": "coding" };
+  state.providerCompat = {
+    "Codex-Data-Image-Broken": { no_data_images: true },
+  };
+  state.PROVIDERS = [
+    {
+      name: "Codex-Data-Image-Broken",
+      model: "codex/gpt-5.4-mini",
+      upstream_model: "gpt-5.4-mini",
+      protocol: "codex",
+      family: "codex",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 272000,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+    },
+    {
+      name: "Claude-Data-Image-Ok",
+      model: "claude/claude-haiku-4-5-20251001",
+      upstream_model: "claude-haiku-4-5-20251001",
+      protocol: "anthropic",
+      family: "claude",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 200000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    },
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-coding", 2000, {
+      model: "auto-coding",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect this screenshot." },
+            { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+          ],
+        },
+      ],
+      _estimatedTokens: 2000,
+    });
+
+    assert.equal(providers[0].name, "Claude-Data-Image-Ok");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+    state.providerCompat = originalCompat;
   }
 });
 

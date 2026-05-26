@@ -85,6 +85,32 @@ test("translateInput maps OpenAI SDK chat-style Responses input and JSON schema 
   });
 });
 
+test("translateInput preserves Responses input_image parts as OpenAI image_url parts", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4",
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "What changed visually?" },
+          { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(chat.messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "What changed visually?" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+      ],
+    },
+  ]);
+});
+
 test("MockResponse converts chat completion SSE text stream into Responses API events", () => {
   const events = [];
   let done = false;

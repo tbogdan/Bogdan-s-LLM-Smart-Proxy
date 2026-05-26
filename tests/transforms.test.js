@@ -128,6 +128,73 @@ test("detectStalling catches permission-seeking continuation stalls", () => {
   assert.equal(transforms.detectStalling(body), true);
 });
 
+test("detectStalling catches file-check prelude ending with Go", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            "Local screenshot 131KB, prod 179KB. Still different size. Prod might have extra banner or different theme.",
+            "",
+            "Check global CSS and tailwind config for environment-specific flags. Then check layout for any dynamic blocks.",
+            "",
+            "apps/web/tailwind.config.ts",
+            "apps/web/src/app/globals.css",
+            "apps/web/src/app/layout.tsx (re-read to see if anything missed)",
+            "Go.",
+          ].join("\n"),
+        },
+      },
+    ],
+  });
+
+  assert.equal(transforms.detectStalling(body), true);
+});
+
+test("detectUseCase recognizes Responses input_image content as image capability", () => {
+  const result = transforms.detectUseCase([
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "Compare the screenshot." },
+        { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+      ],
+    },
+  ], {});
+
+  assert.equal(result.caps.has("images"), true);
+});
+
+test("transformRequest normalizes direct chat input_image content to OpenAI image_url", async () => {
+  const transformed = await transforms.transformRequest(
+    { ...provider, caps: ["text", "coding", "tools", "images"] },
+    {
+      model: "auto-coding",
+      _llmProxyBypassOptimizations: true,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "Compare this screenshot." },
+            { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+          ],
+        },
+      ],
+    },
+  );
+
+  assert.deepEqual(transformed.messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Compare this screenshot." },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+      ],
+    },
+  ]);
+});
+
 test("detectUseCase requests stronger routing after recent complexity stalls", () => {
   const result = transforms.detectUseCase([
     { role: "system", content: "You are a software engineering agent." },

@@ -255,6 +255,35 @@ test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as 
   });
 });
 
+test("detectIncompatibility learns no_images from vision unsupported errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-gpt5mini",
+      400,
+      '{"error":{"message":"model \\"gpt-5-mini\\" not supported for vision"}}',
+      { hasImages: true },
+    );
+
+    const compat = scoring.getCompat("Copilot-gpt5mini");
+    assert.equal(compat.no_images, true);
+  });
+});
+
+test("detectIncompatibility learns no_data_images from data-url-only failures", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Codex-GPT54Mini",
+      500,
+      '{"error":{"message":"URL scheme must be http or https, got data:"}}',
+      { hasImages: true, hasDataImages: true },
+    );
+
+    const compat = scoring.getCompat("Codex-GPT54Mini");
+    assert.equal(compat.no_data_images, true);
+    assert.equal(compat.no_images, undefined);
+  });
+});
+
 test("getEffectiveContext applies learned real context across provider context field shapes", () => {
   withIsolatedScoring(() => {
     state.providerCompat["Context-Length-Test"] = { real_context: 24000 };

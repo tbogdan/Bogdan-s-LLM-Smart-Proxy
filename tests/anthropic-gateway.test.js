@@ -75,6 +75,38 @@ test("translateRequest maps Anthropic Messages requests to OpenAI chat requests"
   assert.equal(translated.tools[0].function.name, "Read");
 });
 
+test("translateRequest preserves Anthropic image blocks as OpenAI image_url parts", () => {
+  const translated = gateway.translateRequest({
+    model: "claude-sonnet-4-5-20250929",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Compare these screenshots." },
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "iVBORw0KGgo=",
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(translated.messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Compare these screenshots." },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+      ],
+    },
+  ]);
+});
+
 test("toAnthropicResponse maps OpenAI chat response to Anthropic message", () => {
   const response = gateway.toAnthropicResponse({
     model: "auto-coding",

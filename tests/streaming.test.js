@@ -162,6 +162,31 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
   });
 });
 
+test("routeStreamToProvider strips split compact effort markers from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "eff",
+        "ort=low speed=3 reason=followup\n",
+        "Local test-vm yes; run bash scripts/startup.sh",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("effort=low"), false);
+      assert.equal(output.includes("reason=followup"), false);
+      assert.equal(output.includes("Local test-vm yes"), true);
+    });
+  });
+});
+
 test("routeStreamToProvider reports inert continuation text before IDE-visible success", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -176,6 +201,36 @@ test("routeStreamToProvider reports inert continuation text before IDE-visible s
       const req = {
         ...requestBody(),
         messages: [{ role: "user", content: "Continue implementing the change." }],
+      };
+
+      await assert.rejects(
+        routing.routeStreamToProvider(streamProvider(url), req, clientRes),
+        (err) => err.statusCode === 422 && err.headersSent === false && err.hiddenContinuation === true,
+      );
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.ended, false);
+    });
+  });
+});
+
+test("routeStreamToProvider treats file-check Go prelude as hidden continuation", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "Local screenshot 131KB, prod 179KB. Still different size. ",
+        "Check global CSS and tailwind config for environment-specific flags.\n\n",
+        "apps/web/tailwind.config.ts\napps/web/src/app/globals.css\napps/web/src/app/layout.tsx\nGo.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        messages: [{ role: "user", content: "continue implementing the visual comparison fix" }],
       };
 
       await assert.rejects(
@@ -614,6 +669,90 @@ test("handleChatCompletion adds hidden continue user message after native inert 
       ]);
       assert.equal(clientRes.status, 200);
       assert.equal(output.includes("Continuing."), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion adds hidden continue after native file-check Go prelude", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const calls = [];
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Native-Prelude-Continuation",
+        model: "windsurf/native-prelude",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+    ];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: [
+          "Local screenshot 131KB, prod 179KB. Still different size.",
+          "",
+          "Check global CSS and tailwind config for environment-specific flags. Then check layout for any dynamic blocks.",
+          "",
+          "apps/web/tailwind.config.ts",
+          "apps/web/src/app/globals.css",
+          "apps/web/src/app/layout.tsx",
+          "Go.",
+        ].join("\n") }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"apps/web/src/app/globals.css\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        messages: [{ role: "user", content: "continue implementing the visual comparison fix" }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Prelude-Continuation", userCount: 1, lastUser: "continue implementing the visual comparison fix" },
+        { provider: "Native-Prelude-Continuation", userCount: 2, lastUser: "continue" },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("Local screenshot"), false);
       assert.equal(output.includes("\"tool_calls\""), true);
     } finally {
       state.PROVIDERS = originalProviders;
