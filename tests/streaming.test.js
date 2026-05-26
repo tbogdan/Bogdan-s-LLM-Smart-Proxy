@@ -815,7 +815,7 @@ test("handleChatCompletion cools native Windsurf invalid_argument streams", asyn
   });
 });
 
-test("handleChatCompletion skips remaining Windsurf providers after tool-history invalid_argument", async () => {
+test("handleChatCompletion flattens compacted tool history before Windsurf native request", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -829,19 +829,31 @@ test("handleChatCompletion skips remaining Windsurf providers after tool-history
       },
       trackSessionTokens,
     });
-    await withServer((_req, res) => {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        id: "chatcmpl-fallback",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: "gpt-4.1",
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    }];
+    const nativeCalls = [];
+    let nativeBody = null;
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      nativeCalls.push(provider.name);
+      nativeBody = body;
+      handlers.onChunk(`data: ${JSON.stringify({
         choices: [{
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "ok",
+          delta: {
             tool_calls: [{
+              index: 0,
               id: "call_next",
               type: "function",
               function: { name: "Read", arguments: "{\"file_path\":\"package.json\"}" },
@@ -849,101 +861,52 @@ test("handleChatCompletion skips remaining Windsurf providers after tool-history
           },
           finish_reason: "tool_calls",
         }],
-      }));
-    }, async (url) => {
-      state.GROUPS = { "auto-coding": "coding" };
-      state.PROVIDERS = [
-        {
-          name: "Windsurf-ClaudeSonnet46Thinking",
-          model: "windsurf/claude-sonnet-4-6-thinking",
-          protocol: "windsurf",
-          family: "windsurf",
-          key: "test",
-          caps: ["text", "coding", "tools", "thinking"],
-          context: 200000,
-          tier: 1,
-          cost_group: 3,
-          quality_group: 4,
-          speed_group: 4,
-          thinking_effort: "high",
-        },
-        {
-          name: "Windsurf-ClaudeSonnet46",
-          model: "windsurf/claude-sonnet-4.6",
-          protocol: "windsurf",
-          family: "windsurf",
-          key: "test",
-          caps: ["text", "coding", "tools", "thinking"],
-          context: 200000,
-          tier: 1,
-          cost_group: 3,
-          quality_group: 4,
-          speed_group: 4,
-          thinking_effort: "medium",
-        },
-        {
-          name: "OpenAI-gpt41",
-          model: "gpt-4.1",
-          url,
-          protocol: "openai",
-          family: "openai",
-          key: "test",
-          caps: ["text", "coding", "tools", "thinking"],
-          context: 128000,
-          tier: 1,
-          cost_group: 3,
-          quality_group: 4,
-          speed_group: 4,
-          thinking_effort: "medium",
-        },
-      ];
-      const nativeCalls = [];
-      providerAdapters.routeNativeStream = async (provider) => {
-        nativeCalls.push(provider.name);
-        const error = new Error("an internal error occurred");
-        error.status = 502;
-        error.body = '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}';
-        throw error;
-      };
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
 
-      try {
-        const clientRes = new FakeClientResponse();
-        await routing.handleChatCompletion({
-          model: "auto-coding",
-          stream: true,
-          _llmProxyDifficulty: {
-            level: 4,
-            taskLevel: 4,
-            contextLevel: 4,
-            costTarget: 3,
-            thinkingLevel: 4,
-            stepShape: { gate: "run_behavior" },
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyCompactedContext: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          costTarget: 3,
+          thinkingLevel: 4,
+          stepShape: { gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Read the file." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
           },
-          messages: [
-            { role: "user", content: "Read the file." },
-            {
-              role: "assistant",
-              content: null,
-              tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
-            },
-            { role: "tool", tool_call_id: "call_read", content: "README contents" },
-            { role: "user", content: "continue" },
-          ],
-          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
-        }, clientRes, { internal: true });
+          { role: "tool", tool_call_id: "call_read", content: "README contents" },
+          { role: "user", content: "continue" },
+        ],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes, { internal: true });
 
-        assert.deepEqual(nativeCalls, ["Windsurf-ClaudeSonnet46Thinking"]);
-        assert.equal(clientRes.status, 200);
-        assert.match(clientRes.chunks.join(""), /ok/);
-      } finally {
-        state.PROVIDERS = originalProviders;
-        state.GROUPS = originalGroups;
-        providerAdapters.routeNativeStream = originalRouteNativeStream;
-        if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
-        else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
-        routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
-      }
-    });
+      const serialized = JSON.stringify(nativeBody.messages);
+      assert.deepEqual(nativeCalls, ["Windsurf-ClaudeSonnet46Thinking"]);
+      assert.equal(nativeBody.messages.some((msg) => msg.role === "tool"), false);
+      assert.equal(nativeBody.messages.some((msg) => msg.tool_calls?.length > 0), false);
+      assert.match(serialized, /Tool call: Read/);
+      assert.match(serialized, /Tool result for Read/);
+      assert.match(clientRes.chunks.join(""), /tool_calls/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
   });
 });
 

@@ -176,7 +176,7 @@ test("detectIncompatibility cools Windsurf invalid_argument internal errors", ()
   });
 });
 
-test("detectIncompatibility learns Windsurf invalid_argument on tool history", () => {
+test("detectIncompatibility does not ban Windsurf tool history on generic invalid_argument", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
       "Windsurf-ClaudeSonnet46Thinking",
@@ -186,7 +186,7 @@ test("detectIncompatibility learns Windsurf invalid_argument on tool history", (
     );
 
     const compat = scoring.getCompat("Windsurf-ClaudeSonnet46Thinking");
-    assert.equal(compat.no_tool_history, true);
+    assert.notEqual(compat.no_tool_history, true);
   });
 });
 

@@ -920,6 +920,43 @@ test("transformRequest removes empty assistant messages after tool synchronizati
   assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.content && !msg.tool_calls?.length), false);
 });
 
+test("transformRequest flattens compacted Windsurf tool history into text", async () => {
+  const windsurfProvider = {
+    name: "Windsurf-ClaudeSonnet46",
+    model: "windsurf/claude-sonnet-4.6",
+    protocol: "windsurf",
+    family: "windsurf",
+    key: "test",
+    caps: ["tools", "coding"],
+    context: 200000,
+    tier: 1,
+  };
+  const transformed = await transforms.transformRequest(windsurfProvider, {
+    model: "auto-coding",
+    _llmProxyCompactedContext: true,
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Read README." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_read_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_read_1", content: "README contents after compaction." },
+      { role: "user", content: "Continue with the fix." },
+    ],
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", properties: { file_path: { type: "string" } } } } }],
+  });
+
+  const serialized = JSON.stringify(transformed.messages);
+  assert.equal(transformed.messages.some((msg) => msg.role === "tool"), false);
+  assert.equal(transformed.messages.some((msg) => msg.tool_calls?.length > 0), false);
+  assert.match(serialized, /Tool call: Read/);
+  assert.match(serialized, /Tool result for Read/);
+  assert.match(serialized, /README contents after compaction/);
+  assert.equal(transformed.tools.length, 1);
+});
+
 test("transformRequest leaves internal AI summary self-calls unwrapped by proxy prompt", async () => {
   const transformed = await transforms.transformRequest(provider, {
     _llmProxyInternalSummary: true,

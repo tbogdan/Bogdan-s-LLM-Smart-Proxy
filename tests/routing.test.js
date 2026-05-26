@@ -5853,6 +5853,176 @@ test("medium assessment keeps Codex max-capable medium models while filtering Op
   });
 });
 
+test("level 4 assessment filters legacy GPT-4.x candidates when modern coding models exist", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      {
+        name: "Copilot-gpt41",
+        model: "copilot/gpt-4.1",
+        upstream_model: "gpt-4.1",
+        family: "copilot",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 128000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Copilot-gpt4omini",
+        model: "copilot/gpt-4o-mini",
+        upstream_model: "gpt-4o-mini",
+        family: "copilot",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 128000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Codex-GPT54",
+        model: "codex/gpt-5.4",
+        upstream_model: "gpt-5.4",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Windsurf-ClaudeSonnet46",
+        model: "windsurf/claude-sonnet-4.6",
+        upstream_model: "claude-sonnet-4.6",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+    ];
+
+    try {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Continue the complex agentic coding task with tests." }],
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 2,
+          costTarget: 3,
+          thinkingLevel: 4,
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+      };
+
+      const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
+
+      assert.ok(!kept.includes("Copilot-gpt41"));
+      assert.ok(!kept.includes("Copilot-gpt4omini"));
+      assert.ok(kept.includes("Codex-GPT54"));
+      assert.ok(kept.includes("Windsurf-ClaudeSonnet46"));
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
+test("level 3 assessment still allows GPT-4.x as standard fallback", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      {
+        name: "Copilot-gpt41",
+        model: "copilot/gpt-4.1",
+        upstream_model: "gpt-4.1",
+        family: "copilot",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 128000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Copilot-gpt4o",
+        model: "copilot/gpt-4o",
+        upstream_model: "gpt-4o",
+        family: "copilot",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 128000,
+        tier: 1,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+    ];
+
+    try {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Review the failing test output and suggest the next command." }],
+        _llmProxyDifficulty: {
+          level: 3,
+          taskLevel: 3,
+          contextLevel: 2,
+          costTarget: 3,
+          thinkingLevel: 3,
+          stepShape: { shape: "review", gate: "read_diff" },
+        },
+      };
+
+      const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
+
+      assert.ok(kept.includes("Copilot-gpt41"));
+      assert.ok(kept.includes("Copilot-gpt4o"));
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
+test("provider routing level map caps legacy and small models below complex routes", () => {
+  const cases = [
+    [{ name: "Copilot-gpt35turbo", model: "copilot/gpt-3.5-turbo", quality_group: 4, cost_group: 3 }, 2],
+    [{ name: "Copilot-gpt41", model: "copilot/gpt-4.1", quality_group: 4, cost_group: 3 }, 3],
+    [{ name: "Copilot-gpt4o", model: "copilot/gpt-4o", quality_group: 4, cost_group: 3 }, 3],
+    [{ name: "Copilot-gpt4omini", model: "copilot/gpt-4o-mini", quality_group: 4, cost_group: 3 }, 3],
+    [{ name: "Claude-Haiku45", model: "claude/claude-haiku-4-5-20251001", quality_group: 3, cost_group: 2 }, 3],
+    [{ name: "Windsurf-Gemini3FlashMedium", model: "windsurf/google-gemini-3-0-flash-medium", quality_group: 4, cost_group: 1 }, 3],
+    [{ name: "Copilot-gpt5mini", model: "copilot/gpt-5-mini", quality_group: 4, cost_group: 3 }, 4],
+    [{ name: "Codex-GPT52", model: "codex/gpt-5.2", quality_group: 4, cost_group: 3 }, 4],
+    [{ name: "Windsurf-ClaudeSonnet46", model: "windsurf/claude-sonnet-4.6", quality_group: 4, cost_group: 3 }, 4],
+    [{ name: "Codex-GPT54", model: "codex/gpt-5.4", quality_group: 5, cost_group: 3 }, 5],
+    [{ name: "Claude-Opus46", model: "claude/claude-opus-4-6", quality_group: 5, cost_group: 4 }, 5],
+  ];
+
+  for (const [providerConfig, expected] of cases) {
+    assert.equal(
+      routingPolicy.providerMaxRoutingLevel(providerConfig),
+      expected,
+      providerConfig.name,
+    );
+  }
+});
+
 test("auto-coding promotes Opus-class provider for failed edit recovery on huge Claude Code history", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
