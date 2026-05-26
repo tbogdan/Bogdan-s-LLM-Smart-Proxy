@@ -448,6 +448,53 @@ test("routeStreamToProvider strips split trailing hidden memory markers after vi
   });
 });
 
+test("routeStreamToProvider converts streamed imitated tool-call text before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "Tool call: Read {\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}",
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: {
+              type: "object",
+              required: ["file_path"],
+              properties: {
+                file_path: { type: "string" },
+                offset: { type: "number" },
+                limit: { type: "number" },
+              },
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"Read"/);
+      assert.doesNotMatch(output, /Tool call:/);
+    });
+  });
+});
+
 test("routeStreamToProvider rejects invalid streamed tool calls before sending client headers", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -542,6 +589,74 @@ test("handleChatCompletion estimates output tokens for native streaming provider
       assert.equal(clientRes.status, 200);
       assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
       assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion converts native imitated tool-call text before IDE-visible success", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Native-Tool-Text-Test",
+      model: "native-tool-text-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "Tool call: Read {\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}",
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-tool-text-model",
+        stream: true,
+        messages: [{ role: "user", content: "Read README." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: {
+              type: "object",
+              required: ["file_path"],
+              properties: {
+                file_path: { type: "string" },
+                offset: { type: "number" },
+                limit: { type: "number" },
+              },
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"Read"/);
+      assert.doesNotMatch(output, /Tool call:/);
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
@@ -896,8 +1011,9 @@ test("handleChatCompletion flattens compacted tool history before Windsurf nativ
       assert.deepEqual(nativeCalls, ["Windsurf-ClaudeSonnet46Thinking"]);
       assert.equal(nativeBody.messages.some((msg) => msg.role === "tool"), false);
       assert.equal(nativeBody.messages.some((msg) => msg.tool_calls?.length > 0), false);
-      assert.match(serialized, /Tool call: Read/);
-      assert.match(serialized, /Tool result for Read/);
+      assert.doesNotMatch(serialized, /Tool call:/);
+      assert.match(serialized, /Historical tool invocation \(already executed\): Read/);
+      assert.match(serialized, /Historical tool result \(already observed\) for Read/);
       assert.match(clientRes.chunks.join(""), /tool_calls/);
     } finally {
       state.PROVIDERS = originalProviders;

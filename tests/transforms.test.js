@@ -951,8 +951,9 @@ test("transformRequest flattens compacted Windsurf tool history into text", asyn
   const serialized = JSON.stringify(transformed.messages);
   assert.equal(transformed.messages.some((msg) => msg.role === "tool"), false);
   assert.equal(transformed.messages.some((msg) => msg.tool_calls?.length > 0), false);
-  assert.match(serialized, /Tool call: Read/);
-  assert.match(serialized, /Tool result for Read/);
+  assert.doesNotMatch(serialized, /Tool call:/);
+  assert.match(serialized, /Historical tool invocation \(already executed\): Read/);
+  assert.match(serialized, /Historical tool result \(already observed\) for Read/);
   assert.match(serialized, /README contents after compaction/);
   assert.equal(transformed.tools.length, 1);
 });

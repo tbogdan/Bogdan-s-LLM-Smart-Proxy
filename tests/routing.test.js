@@ -162,6 +162,78 @@ test("human approval never blocks auto-memory background tasks", async () => {
   });
 });
 
+test("routeToProvider converts imitated tool-call text into real tool calls", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-tool-text",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: [
+              "Tool call: Bash {\"command\":\"ssh -o StrictHostKeyChecking=no oameni-family@158.180.20.174 'curl -s -o /dev/null -w \\\"%{http_code}\\\" http://127.0.0.1:3000/images/hero-illustration.svg'\",\"description\":\"Check if Node itself serves /images/hero-illustration.svg\",\"timeout\":120000,\"run_in_background\":false,\"dangerouslyDisableSandbox\":false}",
+              "Tool call: Read {\"file_path\":\"/Users/bogdan/Documents/Falimia App/deploy/nginx-vhost.conf\",\"offset\":1,\"limit\":120}",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Check the remote image and nginx vhost." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "Bash",
+              parameters: {
+                type: "object",
+                required: ["command"],
+                properties: {
+                  command: { type: "string" },
+                  description: { type: "string" },
+                  timeout: { type: "number" },
+                  run_in_background: { type: "boolean" },
+                  dangerouslyDisableSandbox: { type: "boolean" },
+                },
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: {
+                type: "object",
+                required: ["file_path"],
+                properties: {
+                  file_path: { type: "string" },
+                  offset: { type: "number" },
+                  limit: { type: "number" },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+
+      assert.equal(message.content, null);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.deepEqual(message.tool_calls.map((call) => call.function.name), ["Bash", "Read"]);
+      assert.equal(JSON.parse(message.tool_calls[0].function.arguments).command.includes("%{http_code}"), true);
+      assert.equal(JSON.parse(message.tool_calls[1].function.arguments).file_path.endsWith("nginx-vhost.conf"), true);
+      assert.doesNotMatch(resp.body, /Tool call:/);
+    });
+  });
+});
+
 test("internal AI summary self-calls stay cheap even when dropped context mentions edit recovery", () => {
   const profile = routingPolicy.assessRequestDifficulty([
     {
