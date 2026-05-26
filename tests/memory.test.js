@@ -40,6 +40,33 @@ test("getSession detects project identity from direct home paths", () => {
   assert.equal(session.projectName, "Project-llm-proxy");
 });
 
+test("getSession keeps the same project session when volatile prompt preamble changes", () => {
+  const first = memory.getSession([
+    {
+      role: "system",
+      content: [
+        "Conversation summary v1: user asked for routing analysis and logs.",
+        "A".repeat(700),
+        "Workspace: /Users/dev/Projects/project-stable",
+      ].join("\n"),
+    },
+  ]);
+  const second = memory.getSession([
+    {
+      role: "system",
+      content: [
+        "Conversation summary v2: IDE compacted context differently.",
+        "B".repeat(700),
+        "Workspace: /Users/dev/Projects/project-stable",
+      ].join("\n"),
+    },
+  ]);
+
+  assert.equal(first.id, second.id);
+  assert.equal(first.projectName, "project-stable");
+  assert.equal(second.projectName, "project-stable");
+});
+
 test("formatMemoryBlock wraps recalled memory as quoted untrusted data", () => {
   const block = memory.formatMemoryBlock("project-alpha", [
     "Useful note.",

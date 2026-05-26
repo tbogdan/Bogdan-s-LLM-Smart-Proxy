@@ -6,6 +6,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 
 const routing = require("../lib/routing");
+const routingPolicy = require("../lib/routing-policy");
 const state = require("../lib/state");
 const compaction = require("../lib/compaction");
 const humanApproval = require("../lib/human-approval");
@@ -125,6 +126,25 @@ test("human approval ignores assessed security signoff without current security 
   });
 });
 
+test("human approval ignores completion-review profiles even when stale shape is security", async () => {
+  await withRoutingState(async () => {
+    const reqBody = {
+      messages: [{
+        role: "user",
+        content: "check the rest of the logs: missing token environment variable",
+      }],
+    };
+    const result = humanApproval.enforce(reqBody, {
+      taskKind: "completion_review",
+      reason: "completion_review",
+      stepShape: { shape: "security", gate: "human_signoff", summary: "stale corrupted gate" },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, undefined);
+  });
+});
+
 test("human approval never blocks auto-memory background tasks", async () => {
   await withRoutingState(async () => {
     const reqBody = {
@@ -140,6 +160,33 @@ test("human approval never blocks auto-memory background tasks", async () => {
     assert.equal(result.ok, true);
     assert.equal(result.status, undefined);
   });
+});
+
+test("internal AI summary self-calls stay cheap even when dropped context mentions edit recovery", () => {
+  const profile = routingPolicy.assessRequestDifficulty([
+    {
+      role: "system",
+      content: "Summarize this compacted conversation excerpt. Return only the summary. Do not call tools.",
+    },
+    {
+      role: "user",
+      content: [
+        "assistant: patch failed because old_string not found while editing routing.js",
+        "tool: Read /repo/lib/routing.js and captured failed edit recovery logs",
+        "user: continue the proxy fix",
+      ].join("\n"),
+    },
+  ], {
+    _llmProxyInternalSummary: true,
+    model: "auto-text",
+    max_tokens: 500,
+  });
+
+  assert.equal(profile.taskKind, "list_summary");
+  assert.equal(profile.stepShape.shape, "write_heavy");
+  assert.equal(profile.stepShape.gate, "none");
+  assert.equal(profile.taskLevel <= 2, true);
+  assert.equal(profile.thinkingLevel <= 2, true);
 });
 
 async function withRoutingState(fn) {
@@ -374,6 +421,72 @@ test("routing diversity rotates read-heavy debugging continuations", async () =>
 
     assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
     assert.equal(ranked[1]._routingDiversityPenalty > 0, true);
+  });
+});
+
+test("routing diversity can dislodge a sticky thinking provider after many repeats", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const alternative = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.78, configurable: true });
+    Object.defineProperty(alternative, "_lastRoutingScore", { value: 5.96, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, alternative],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue recovering the edit flow from stale tool context." },
+        ],
+        tools: [{ type: "function", function: { name: "Edit" } }],
+        _inputTokens: 115000,
+        _estimatedTokens: 148000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          taskKind: "edit_recovery",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 9 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
+    assert.equal(ranked[1]._routingDiversityPenalty > 0.8, true);
   });
 });
 
@@ -1800,6 +1913,66 @@ test("handleChatCompletion ignores corrupted completion-review human-signoff pro
             reason: "completion_review",
             taskKind: "completion_review",
             stepShape: { shape: "destructive", gate: "human_signoff", summary: "stale corrupted gate" },
+          },
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(JSON.parse(fake.body).choices[0].message.content, "review route");
+        assert.equal(requests.length, 1);
+        assert.doesNotMatch(fake.body, /LLM_PROXY_HUMAN_APPROVAL_REQUIRED/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion ignores corrupted completion-review security signoff profiles", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "review route" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Approval-Test-Security-Shape",
+          model: "test/completion-review-security-signoff",
+          caps: ["text", "coding"],
+          cost_group: 1,
+          speed_group: 5,
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Review completed work and summarize remaining risks." },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 2,
+            effort: "high",
+            speed: 3,
+            reason: "completion_review",
+            taskKind: "completion_review",
+            stepShape: { shape: "security", gate: "human_signoff", summary: "stale corrupted gate" },
           },
         }, fake);
 
@@ -5216,6 +5389,64 @@ test("balanced benchmark-style recovery routes to intermediate models before Opu
         if (value == null) delete process.env[key];
         else process.env[key] = value;
       }
+    }
+  });
+});
+
+test("medium assessment keeps Codex max-capable medium models while filtering Opus-class providers", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      {
+        name: "Codex-GPT54",
+        model: "codex/gpt-5.4",
+        family: "codex",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 272000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Continue the medium-risk coding task." }],
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 3,
+          contextLevel: 4,
+          costTarget: 3,
+          thinkingLevel: 3,
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+      };
+
+      const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
+
+      assert.ok(kept.includes("Codex-GPT54"));
+      assert.ok(!kept.includes("Windsurf-ClaudeOpus461M"));
+    } finally {
+      state.PROVIDERS = originalProviders;
     }
   });
 });

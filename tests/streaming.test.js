@@ -25,7 +25,8 @@ class FakeClientResponse {
     this.chunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
   }
 
-  end() {
+  end(chunk) {
+    if (chunk) this.write(chunk);
     this.ended = true;
   }
 }
@@ -157,6 +158,32 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
       assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
       assert.equal(output.includes("Project LLM "), true);
       assert.equal(output.includes("Smart Proxy."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider reports inert continuation text before IDE-visible success", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of ["Con", "tinu", "ing."]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        messages: [{ role: "user", content: "Continue implementing the change." }],
+      };
+
+      await assert.rejects(
+        routing.routeStreamToProvider(streamProvider(url), req, clientRes),
+        (err) => err.statusCode === 422 && err.headersSent === false && err.hiddenContinuation === true,
+      );
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.ended, false);
     });
   });
 });
@@ -460,6 +487,183 @@ test("handleChatCompletion estimates output tokens for native streaming provider
       assert.equal(clientRes.status, 200);
       assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
       assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion rejects empty native streams before IDE-visible success", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Native-Empty-Test",
+      model: "native-empty-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-empty-model",
+        stream: true,
+        messages: [{ role: "user", content: "continue" }],
+      }, clientRes);
+
+      assert.equal(clientRes.status, 502);
+      assert.equal(clientRes.ended, true);
+      assert.doesNotMatch(clientRes.chunks.join(""), /chat\.completion\.chunk/);
+      assert.match(clientRes.chunks.join(""), /empty native stream|Provider error/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion adds hidden continue user message after native inert continuation", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const calls = [];
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Native-Stall-Continuation",
+        model: "windsurf/native-stall",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+      {
+        name: "Native-Action-Fallback",
+        model: "windsurf/native-action",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+    ];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (provider.name === "Native-Stall-Continuation" && calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "Continuing." }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        messages: [{ role: "user", content: "continue" }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Stall-Continuation", userCount: 1, lastUser: "continue" },
+        { provider: "Native-Stall-Continuation", userCount: 2, lastUser: "continue" },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("Continuing."), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion cools native Windsurf invalid_argument streams", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Windsurf-Native-InvalidArgument",
+      model: "native-invalid-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async () => {
+      const error = new Error("an internal error occurred");
+      error.status = 502;
+      error.body = '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}';
+      throw error;
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-invalid-model",
+        stream: true,
+        messages: [{ role: "user", content: "continue" }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const score = state.scores["Windsurf-Native-InvalidArgument"];
+      assert.equal(clientRes.status, 502);
+      assert.equal(score.failures, 1);
+      assert.equal(score.cooldown_reason, "windsurf invalid_argument");
+      assert.equal(score.cooldown_until > Date.now() + 50 * 60_000, true);
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;

@@ -240,7 +240,8 @@ This matches the research direction behind model cascades and learned routing: s
 The active runtime uses `lib/memory` with Neo4j as the canonical ledger and Graphiti MCP as a semantic sidecar that is enabled by default in Compose but optional for successful hot-path routing.
 
 1. Session identity:
-   - The proxy derives a session hash from the system prompt and detects the project name from local paths or project metadata.
+   - The proxy derives the session key from the stable project root/path when present, falling back to project metadata or the system prompt only when no path is available.
+   - This keeps assessment cache, compaction cache, memory, and routing diversity stable when IDEs rewrite or compact the volatile prompt preamble.
    - Each request increments a session counter and tracks the last successful provider for affinity.
 2. Canonical recall:
    - `recallMemories()` queries Neo4j by project/session and injects active memory events, project context, and compacted archive references.
