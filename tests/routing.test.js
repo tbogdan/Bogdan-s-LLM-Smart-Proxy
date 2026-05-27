@@ -145,6 +145,32 @@ test("human approval ignores completion-review profiles even when stale shape is
   });
 });
 
+test("human approval ignores edit-recovery profiles even when stale shape is security", async () => {
+  await withRoutingState(async () => {
+    const reqBody = {
+      messages: [{
+        role: "user",
+        content: [
+          "LLM_PROXY_HUMAN_APPROVAL_REQUIRED",
+          "gate=human_signoff",
+          "task=edit_recovery",
+          "reason=edit_recovery",
+          "",
+          "review security auth token logs: esti sigur ca ar trebui sa primesc asta?",
+        ].join("\n"),
+      }],
+    };
+    const result = humanApproval.enforce(reqBody, {
+      taskKind: "edit_recovery",
+      reason: "edit_recovery",
+      stepShape: { shape: "security", gate: "human_signoff", summary: "stale corrupted gate" },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, undefined);
+  });
+});
+
 test("human approval never blocks auto-memory background tasks", async () => {
   await withRoutingState(async () => {
     const reqBody = {
@@ -609,6 +635,86 @@ test("routing diversity can dislodge a sticky thinking provider after many repea
 
     assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
     assert.equal(ranked[1]._routingDiversityPenalty > 0.8, true);
+  });
+});
+
+test("routing diversity promotes a same-class peer when the sticky provider stays ahead after the normal penalty", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const alternative = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    const crossSourcePeer = provider("http://example.invalid", {
+      name: "Copilot-claudesonnet46",
+      family: "copilot",
+      model: "copilot/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.70, configurable: true });
+    Object.defineProperty(alternative, "_lastRoutingScore", { value: 5.55, configurable: true });
+    Object.defineProperty(crossSourcePeer, "_lastRoutingScore", { value: 5.48, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, alternative, crossSourcePeer],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue implementing the routing patch with tools." },
+        ],
+        tools: [{ type: "function", function: { name: "Edit" } }],
+        _inputTokens: 94000,
+        _estimatedTokens: 126000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 2,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 18 },
+            "Windsurf-ClaudeSonnet46": { requests: 1 },
+            "Copilot-claudesonnet46": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
+    assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.0, true);
   });
 });
 
@@ -1129,18 +1235,22 @@ test("routeToProvider rejects marker-only replies because the proxy strips the m
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }));
     }, async (url) => {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "who are you?" }],
+      };
+      const sessionId = memory.getSession(reqBody.messages).id;
       await assert.rejects(
-        () => routing.routeToProvider(provider(url), {
-          model: "auto-coding",
-          messages: [{ role: "user", content: "who are you?" }],
-        }),
+        () => routing.routeToProvider(provider(url), reqBody),
         (error) => error.status === 422 && error.stalling === true,
       );
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.reason, "identity");
+      assert.equal(state.sessionAssessmentCache[sessionId].origin, "post_route_marker_only");
     });
   });
 });
 
-test("routeToProvider strips compact effort markers from assistant content", async () => {
+test("routeToProvider caches sentinel speed-only marker-only replies for the next route", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1148,7 +1258,70 @@ test("routeToProvider strips compact effort markers from assistant content", asy
         choices: [{
           message: {
             role: "assistant",
-            content: "effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
+            content: "LLM_PROXY_INTERNAL_ROUTING speed=3 reason=playwright_smoke_checks",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "run the browser smoke checks" }],
+      };
+      const sessionId = memory.getSession(reqBody.messages).id;
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), reqBody),
+        (error) => error.status === 422 && error.stalling === true,
+      );
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.reason, "playwright_smoke_checks");
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.speedTarget, 4);
+      assert.equal(state.sessionAssessmentCache[sessionId].origin, "post_route_marker_only");
+    });
+  });
+});
+
+test("routeToProvider caches legacy bare marker-only replies as route hints", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "effort=low speed=4 reason=playwright_smoke",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "run playwright smoke" }],
+      };
+      const sessionId = memory.getSession(reqBody.messages).id;
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), reqBody),
+        (error) => error.status === 422 && error.stalling === true,
+      );
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.reason, "playwright_smoke");
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.speedTarget, 4);
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.thinkingEffort, "low");
+      assert.equal(state.sessionAssessmentCache[sessionId].origin, "post_route_marker_only");
+    });
+  });
+});
+
+test("routeToProvider strips sentinel effort markers from assistant content", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "LLM_PROXY_INTERNAL_ROUTING effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
           },
           finish_reason: "stop",
         }],
@@ -1167,7 +1340,7 @@ test("routeToProvider strips compact effort markers from assistant content", asy
   });
 });
 
-test("routeToProvider reroutes when compact effort marker asks for a stronger model without useful content", async () => {
+test("routeToProvider reroutes when sentinel effort marker asks for a stronger model without useful content", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1175,7 +1348,7 @@ test("routeToProvider reroutes when compact effort marker asks for a stronger mo
         choices: [{
           message: {
             role: "assistant",
-            content: "effort=xhigh speed=2 reason=edit_recovery\nI need a deeper pass.",
+            content: "LLM_PROXY_INTERNAL_ROUTING effort=xhigh speed=2 reason=edit_recovery\nI need a deeper pass.",
           },
           finish_reason: "stop",
         }],
@@ -1516,8 +1689,8 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
         const mainSerialized = JSON.stringify(mainRequest);
         assert.match(mainSerialized, /Route profile: task=debugging/);
         assert.doesNotMatch(mainSerialized, /Route profile: task=security_review/);
-        assert.match(mainSerialized, /ROUTING ASSESSMENT|LLM_PROXY_TASK_DIFFICULTY/);
-        assert.doesNotMatch(fake.body, /routing_debugging|LLM proxy routing classifier|LLM_PROXY_TASK_DIFFICULTY/);
+        assert.match(mainSerialized, /ROUTING ASSESSMENT|LLM_PROXY_INTERNAL_ROUTING/);
+        assert.doesNotMatch(fake.body, /routing_debugging|LLM proxy routing classifier|LLM_PROXY_(?:INTERNAL_ROUTING|TASK_DIFFICULTY)/);
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;

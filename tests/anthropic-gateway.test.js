@@ -168,7 +168,7 @@ test("toAnthropicResponse strips private assessment metadata from text", () => {
       {
         message: {
           role: "assistant",
-          content: "Done.\n\n[LLM_PROXY_TASK_DIFFICULTY level=4 effort=medium speed=4 reason=coding]\n\neffort=low speed=4 reason=repo_check",
+          content: "Done.\n\n[LLM_PROXY_INTERNAL_ROUTING level=4 effort=medium speed=4 reason=coding]",
         },
         finish_reason: "stop",
       },
@@ -237,7 +237,7 @@ test("streaming Anthropic bridge strips private assessment metadata", async () =
         choices: [{ delta: { content: "Done.\n\n" }, finish_reason: null }],
       })}\n\n`);
       res.write(`data: ${JSON.stringify({
-        choices: [{ delta: { content: "effort=medium speed=4 reason=typescript-fixes" }, finish_reason: null }],
+        choices: [{ delta: { content: "LLM_PROXY_INTERNAL_ROUTING effort=medium speed=4 reason=typescript-fixes" }, finish_reason: null }],
       })}\n\n`);
       res.write(`data: ${JSON.stringify({
         choices: [{ delta: {}, finish_reason: "stop" }],
@@ -264,7 +264,7 @@ test("streaming Anthropic bridge strips split private assessment metadata", asyn
     handleChatCompletion: async (_chatReq, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const content of [
-        "effort=low speed=4",
+        "LLM_PROXY_INTERNAL_ROUTING effort=low speed=4",
         " reason=monitoring\n\nUpdated docs.",
       ]) {
         res.write(`data: ${JSON.stringify({
@@ -289,6 +289,70 @@ test("streaming Anthropic bridge strips split private assessment metadata", asyn
   assert.equal(res.status, 200);
   assert.match(body, /Updated docs\./);
   assert.doesNotMatch(body, /effort=low|speed=4|reason=monitoring/);
+});
+
+test("streaming Anthropic bridge strips split speed-only private assessment metadata", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const content of [
+        "LLM_PROXY_INTERNAL_ROUTING spe",
+        "ed=4 reason=commit_changes\n\nCommitted changes.",
+      ]) {
+        res.write(`data: ${JSON.stringify({
+          choices: [{ delta: { content }, finish_reason: null }],
+        })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say committed" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Committed changes\./);
+  assert.doesNotMatch(body, /speed=4|reason=commit_changes/);
+});
+
+test("streaming Anthropic bridge strips split legacy bare assessment metadata", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const content of [
+        "eff",
+        "ort=low speed=4 reason=playwright_smoke\n\nSmoke passed.",
+      ]) {
+        res.write(`data: ${JSON.stringify({
+          choices: [{ delta: { content }, finish_reason: null }],
+        })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "say smoke passed" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Smoke passed\./);
+  assert.doesNotMatch(body, /effort=low|reason=playwright_smoke/);
 });
 
 test("toAnthropicResponse returns clear help for generated tool_use missing required input", () => {

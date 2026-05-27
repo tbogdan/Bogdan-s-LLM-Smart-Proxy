@@ -162,12 +162,12 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
   });
 });
 
-test("routeStreamToProvider strips split compact effort markers from streamed content", async () => {
+test("routeStreamToProvider strips split sentinel effort markers from streamed content", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
-        "eff",
+        "LLM_PROXY_INTERNAL_ROUTING eff",
         "ort=low speed=3 reason=followup\n",
         "Local test-vm yes; run bash scripts/startup.sh",
       ]) {
@@ -183,6 +183,81 @@ test("routeStreamToProvider strips split compact effort markers from streamed co
       assert.equal(output.includes("effort=low"), false);
       assert.equal(output.includes("reason=followup"), false);
       assert.equal(output.includes("Local test-vm yes"), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips split legacy bare effort markers from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "eff",
+        "ort=low speed=4 reason=playwright_smoke\n",
+        "Playwright smoke passed.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("effort=low"), false);
+      assert.equal(output.includes("reason=playwright_smoke"), false);
+      assert.equal(output.includes("Playwright smoke passed."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips split sentinel speed-only private markers from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_INTERNAL_ROUTING spe",
+        "ed=4 reason=commit_changes\n",
+        "Production is restarted and verified.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("speed=4"), false);
+      assert.equal(output.includes("reason=commit_changes"), false);
+      assert.equal(output.includes("Production is restarted"), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips split legacy bare speed-only markers from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "spe",
+        "ed=4 reason=commit_changes\n",
+        "Committed changes.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("speed=4"), false);
+      assert.equal(output.includes("reason=commit_changes"), false);
+      assert.equal(output.includes("Committed changes."), true);
     });
   });
 });
@@ -298,7 +373,7 @@ test("routeStreamToProvider strips trailing private assessment metadata", async 
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
         "I've cleared the TypeScript errors.\n\n",
-        "effort=medium speed=4 reason=typescript-fixes",
+        "LLM_PROXY_INTERNAL_ROUTING effort=medium speed=4 reason=typescript-fixes",
       ]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
       }
@@ -322,7 +397,7 @@ test("routeStreamToProvider strips split trailing private assessment metadata", 
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
         "Updated docs/chaos-features.md.\n\n",
-        "effort=low speed=4",
+        "LLM_PROXY_INTERNAL_ROUTING effort=low speed=4",
         " reason=monitoring",
       ]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);

@@ -334,10 +334,10 @@ The strategy section above is the source of truth for routing behavior. This sec
 For agentic requests, the proxy injects a private first-line task assessment contract:
 
 ```text
-LLM_PROXY_TASK_DIFFICULTY level=<1-5> effort=<none|minimal|low|medium|high|xhigh> speed=<1-5> reason=<slug>
+LLM_PROXY_INTERNAL_ROUTING level=<1-5> effort=<none|minimal|low|medium|high|xhigh> speed=<1-5> reason=<slug>
 ```
 
-The proxy strips that marker before returning the response. If the selected model says the task needs a materially different level, the proxy reroutes inside the same request.
+The `LLM_PROXY_INTERNAL_ROUTING` sentinel is mandatory in the injected prompt contract. The proxy strips that sentinel line before returning the response and uses it only as internal routing metadata. For compatibility with models that learned the previous compact form, standalone legacy lines such as `effort=low speed=4 reason=playwright_smoke` or `speed=4 reason=commit_changes` are also consumed as private routing hints instead of being shown to users. If the selected model says the task needs a materially different level, the proxy reroutes inside the same request.
 
 ```dotenv
 LLM_COST_TARGET=3

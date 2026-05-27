@@ -590,13 +590,13 @@ test("difficulty markers are parsed and stripped from OpenAI responses", () => {
   assert.equal(JSON.parse(result.body).choices[0].message.content, "I will inspect the repo.");
 });
 
-test("compact private effort markers are parsed, stripped, and kept as route hints", () => {
+test("sentinel private effort markers are parsed, stripped, and kept as route hints", () => {
   const body = JSON.stringify({
     choices: [
       {
         message: {
           role: "assistant",
-          content: "effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
+          content: "LLM_PROXY_INTERNAL_ROUTING effort=low speed=3 reason=followup\nLocal test-vm yes; run bash scripts/startup.sh",
         },
       },
     ],
@@ -611,8 +611,8 @@ test("compact private effort markers are parsed, stripped, and kept as route hin
   assert.equal(JSON.parse(result.body).choices[0].message.content, "Local test-vm yes; run bash scripts/startup.sh");
 });
 
-test("compact private effort markers can request higher rerouting levels", () => {
-  const marker = policy.parseDifficultyMarker("effort=xhigh speed=2 reason=edit_recovery");
+test("sentinel private effort markers can request higher rerouting levels", () => {
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_INTERNAL_ROUTING effort=xhigh speed=2 reason=edit_recovery");
 
   assert.equal(marker.level, 5);
   assert.equal(marker.thinkingLevel, 5);
@@ -751,7 +751,7 @@ test("difficulty marker stripping hides bracketed private marker lines", () => {
   assert.equal(parsed.choices[0].message.content, "");
 });
 
-test("difficulty marker stripping removes trailing bare assessment metadata", () => {
+test("difficulty marker stripping consumes standalone legacy bare trailing metadata as route hints", () => {
   const body = JSON.stringify({
     choices: [
       {
@@ -766,18 +766,62 @@ test("difficulty marker stripping removes trailing bare assessment metadata", ()
   const result = policy.stripDifficultyMarkerFromResponseBody(body);
   const parsed = JSON.parse(result.body);
 
-  assert.equal(result.marker, null);
+  assert.equal(result.marker.reason, "typescript-fixes");
+  assert.equal(result.marker.effort, "medium");
+  assert.equal(result.marker.speed, 4);
+  assert.equal(result.changed, true);
   assert.equal(parsed.choices[0].message.content, "I've cleared the TypeScript errors.");
 });
 
-test("difficulty marker stripping removes inline trailing bare assessment metadata", () => {
+test("difficulty marker stripping leaves inline bare metadata in prose visible", () => {
   const stripped = policy.stripDifficultyMarkerFromText(
     "Am verificat endpoint-ul local. effort=low speed=3 reason=retry_live_probe",
   );
 
   assert.equal(stripped.marker, null);
-  assert.equal(stripped.content, "Am verificat endpoint-ul local.");
-  assert.equal(stripped.changed, true);
+  assert.equal(stripped.content, "Am verificat endpoint-ul local. effort=low speed=3 reason=retry_live_probe");
+  assert.equal(stripped.changed, false);
+});
+
+test("difficulty marker stripping consumes standalone legacy bare assessment metadata as route hints", () => {
+  const markerOnly = policy.stripDifficultyMarkerFromText("effort=low speed=4 reason=playwright_smoke");
+  const leading = policy.stripDifficultyMarkerFromText("effort=low speed=4 reason=playwright_smoke\nPlaywright smoke passed.");
+  const trailing = policy.stripDifficultyMarkerFromText("Restarted production.\neffort=medium speed=4 reason=prod_restart");
+  const marker = policy.parseDifficultyMarker("effort=low speed=4 reason=playwright_smoke");
+
+  assert.equal(marker.reason, "playwright_smoke");
+  assert.equal(marker.effort, "low");
+  assert.equal(marker.speed, 4);
+  assert.equal(markerOnly.marker.reason, "playwright_smoke");
+  assert.equal(markerOnly.content, "");
+  assert.equal(markerOnly.changed, true);
+  assert.equal(leading.content, "Playwright smoke passed.");
+  assert.equal(leading.marker.reason, "playwright_smoke");
+  assert.equal(trailing.content, "Restarted production.");
+  assert.equal(trailing.marker.reason, "prod_restart");
+});
+
+test("difficulty marker stripping consumes standalone legacy speed-only assessment metadata as route hints", () => {
+  const markerOnly = policy.stripDifficultyMarkerFromText("speed=4 reason=commit_changes");
+  const trailing = policy.stripDifficultyMarkerFromText("Restarted production.\nspeed=4 reason=commit_changes");
+  const marker = policy.parseDifficultyMarker("speed=4 reason=commit_changes");
+  const sentinel = policy.stripDifficultyMarkerFromText("LLM_PROXY_INTERNAL_ROUTING speed=4 reason=commit_changes");
+  const sentinelMarker = policy.parseDifficultyMarker("LLM_PROXY_INTERNAL_ROUTING speed=4 reason=commit_changes");
+
+  assert.equal(marker.reason, "commit_changes");
+  assert.equal(marker.speed, 4);
+  assert.equal(marker.effort, "medium");
+  assert.equal(markerOnly.marker.reason, "commit_changes");
+  assert.equal(markerOnly.content, "");
+  assert.equal(markerOnly.changed, true);
+  assert.equal(trailing.marker.reason, "commit_changes");
+  assert.equal(trailing.content, "Restarted production.");
+  assert.equal(trailing.changed, true);
+  assert.equal(sentinelMarker.reason, "commit_changes");
+  assert.equal(sentinelMarker.speed, 4);
+  assert.equal(sentinelMarker.effort, "medium");
+  assert.equal(sentinel.content, "");
+  assert.equal(sentinel.changed, true);
 });
 
 test("providerPolicyBonus favors right-sized models by task complexity", () => {
@@ -1183,7 +1227,7 @@ test("generic followup assessment marker can lower thinking without changing tas
     _estimatedTokens: 152000,
   };
   const base = policy.assessRequestDifficulty(req.messages, req);
-  const marker = policy.parseDifficultyMarker("effort=low speed=3 reason=followup");
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_INTERNAL_ROUTING effort=low speed=3 reason=followup");
   const profile = policy.profileFromAssessmentMarker(req, marker);
 
   assert.equal(base.taskKind, "debugging");
@@ -1202,7 +1246,7 @@ test("retry live probe assessment marker stays private and keeps deterministic t
     _estimatedTokens: 120000,
   };
   const base = policy.assessRequestDifficulty(req.messages, req);
-  const marker = policy.parseDifficultyMarker("effort=low speed=3 reason=retry_live_probe");
+  const marker = policy.parseDifficultyMarker("LLM_PROXY_INTERNAL_ROUTING effort=low speed=3 reason=retry_live_probe");
   const profile = policy.profileFromAssessmentMarker(req, marker);
 
   assert.equal(marker.reason, "retry_live_probe");

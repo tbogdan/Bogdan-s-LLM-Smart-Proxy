@@ -334,7 +334,10 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
   assert.match(system, /ROUTING ASSESSMENT.*next route/i);
   assert.match(system, /likely next route after the current response or tool call/i);
-  assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
+  assert.match(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
+  assert.match(system, /sentinel mandatory/i);
+  assert.match(system, /never bare effort=\.\.\., speed=\.\.\., or reason=\.\.\./i);
+  assert.match(system, /never marker-only/i);
   assert.match(system, /EFFICIENT FILE READING:/);
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
   assert.match(system, /Compacted tool outputs use \[READ/);
@@ -357,7 +360,7 @@ test("transformRequest skips difficulty marker contract for direct exact replies
   assert.match(system, /DIRECT ANSWER MODE/);
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.equal(system.length < 1600, true);
-  assert.doesNotMatch(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
+  assert.doesNotMatch(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
   assert.doesNotMatch(system, /EVERY response MUST include at least one tool call/);
   assert.doesNotMatch(system, /FLOW: UNDERSTAND/);
 });
@@ -408,8 +411,11 @@ test("transformRequest uses compact assessment prompt for complex no-tool smart 
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /ARCHITECTURE RECOVERY MODE/);
   assert.match(system, /Route profile: task=architecture_recovery/);
-  assert.match(system, /private routing metadata for the next route/i);
-  assert.match(system, /LLM_PROXY_TASK_DIFFICULTY level=<1-5>/);
+  assert.match(system, /private routing metadata for next route/i);
+  assert.match(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
+  assert.match(system, /Sentinel mandatory/i);
+  assert.match(system, /never bare effort=\.\.\., speed=\.\.\., or reason=\.\.\./i);
+  assert.match(system, /never marker-only/i);
   assert.equal(system.length < 1800, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
   assert.doesNotMatch(system, /TASK DECOMPOSITION/);
@@ -511,7 +517,7 @@ test("transformRequest can bypass proxy optimizations for benchmark direct calls
   assert.equal(readCalls.length, 2);
   assert.equal(transformed._llmProxyBypassOptimizations, undefined);
   assert.doesNotMatch(JSON.stringify(transformed), /Project LLM Smart Proxy/);
-  assert.doesNotMatch(JSON.stringify(transformed), /LLM_PROXY_TASK_DIFFICULTY/);
+  assert.doesNotMatch(JSON.stringify(transformed), /LLM_PROXY_(?:INTERNAL_ROUTING|TASK_DIFFICULTY)/);
 });
 
 test("transformRequest tells models to wait when user explicitly gates implementation", async () => {

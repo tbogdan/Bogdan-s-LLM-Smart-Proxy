@@ -149,7 +149,7 @@ test("MockResponse strips split private assessment metadata from Responses API d
 
   res.writeHead(200);
   res.write('data: {"choices":[{"delta":{"content":"Updated docs.\\n\\n"},"finish_reason":null}]}\n\n');
-  res.write('data: {"choices":[{"delta":{"content":"effort=low speed=4"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"content":"LLM_PROXY_INTERNAL_ROUTING effort=low speed=4"},"finish_reason":null}]}\n\n');
   res.write('data: {"choices":[{"delta":{"content":" reason=monitoring"},"finish_reason":null}]}\n\n');
   res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
   res.end();
@@ -161,6 +161,50 @@ test("MockResponse strips split private assessment metadata from Responses API d
   assert.equal(deltas.includes("reason=monitoring"), false);
   const completed = events.find((event) => event.type === "response.completed");
   assert.equal(completed.response.output[0].content[0].text.includes("effort=low"), false);
+});
+
+test("MockResponse strips split speed-only private assessment metadata from Responses API deltas", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"LLM_PROXY_INTERNAL_ROUTING spe"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"content":"ed=4 reason=commit_changes\\n\\nCommitted changes."},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+
+  const deltas = events.filter((event) => event.type === "response.output_text.delta").map((event) => event.delta).join("");
+  assert.equal(deltas.includes("Committed changes."), true);
+  assert.equal(deltas.includes("speed=4"), false);
+  assert.equal(deltas.includes("reason=commit_changes"), false);
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(completed.response.output[0].content[0].text.includes("commit_changes"), false);
+});
+
+test("MockResponse strips split legacy bare assessment metadata from Responses API deltas", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"eff"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"content":"ort=low speed=4 reason=playwright_smoke\\n\\nSmoke passed."},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+
+  const deltas = events.filter((event) => event.type === "response.output_text.delta").map((event) => event.delta).join("");
+  assert.equal(deltas.includes("Smoke passed."), true);
+  assert.equal(deltas.includes("effort=low"), false);
+  assert.equal(deltas.includes("reason=playwright_smoke"), false);
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(completed.response.output[0].content[0].text.includes("playwright_smoke"), false);
 });
 
 test("MockResponse converts streaming tool call deltas into Responses function_call events", () => {
