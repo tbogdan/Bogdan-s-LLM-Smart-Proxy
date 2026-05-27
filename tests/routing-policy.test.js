@@ -659,6 +659,16 @@ test("difficulty marker stripping hides compact slash-level markers", () => {
   assert.doesNotMatch(content, /\/5 reason=major_architecture_pivot|LLM_PROXY_TASK_DIFFICULTY/);
 });
 
+test("difficulty marker stripping removes orphan slash-level assessment tails", () => {
+  const stripped = policy.stripDifficultyMarkerFromText(
+    "/5 reason=asset_path_investigation\n\nI'll investigate the static asset handling in this Next.js repo.",
+  );
+
+  assert.equal(stripped.marker, null);
+  assert.equal(stripped.content, "I'll investigate the static asset handling in this Next.js repo.");
+  assert.equal(stripped.changed, true);
+});
+
 test("difficulty marker stripping removes leading blank lines before marker", () => {
   const body = JSON.stringify({
     choices: [
@@ -758,6 +768,16 @@ test("difficulty marker stripping removes trailing bare assessment metadata", ()
 
   assert.equal(result.marker, null);
   assert.equal(parsed.choices[0].message.content, "I've cleared the TypeScript errors.");
+});
+
+test("difficulty marker stripping removes inline trailing bare assessment metadata", () => {
+  const stripped = policy.stripDifficultyMarkerFromText(
+    "Am verificat endpoint-ul local. effort=low speed=3 reason=retry_live_probe",
+  );
+
+  assert.equal(stripped.marker, null);
+  assert.equal(stripped.content, "Am verificat endpoint-ul local.");
+  assert.equal(stripped.changed, true);
 });
 
 test("providerPolicyBonus favors right-sized models by task complexity", () => {
@@ -1173,6 +1193,24 @@ test("generic followup assessment marker can lower thinking without changing tas
   assert.equal(profile.thinkingLevel, 2);
   assert.equal(profile.speedTarget, 3);
   assert.equal(profile.costTarget, base.costTarget);
+});
+
+test("retry live probe assessment marker stays private and keeps deterministic task", () => {
+  const req = {
+    messages: [{ role: "user", content: "debug this local docker request issue and inspect logs" }],
+    tools: [{ type: "function", function: { name: "Bash" } }],
+    _estimatedTokens: 120000,
+  };
+  const base = policy.assessRequestDifficulty(req.messages, req);
+  const marker = policy.parseDifficultyMarker("effort=low speed=3 reason=retry_live_probe");
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(marker.reason, "retry_live_probe");
+  assert.equal(base.taskKind, "debugging");
+  assert.equal(profile.taskKind, base.taskKind);
+  assert.equal(profile.level, base.level);
+  assert.equal(profile.thinkingEffort, "low");
+  assert.equal(profile.speedTarget, 3);
 });
 
 test("trusted AI assessment without reason cannot escalate debugging above deterministic profile", () => {

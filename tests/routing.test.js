@@ -234,6 +234,56 @@ test("routeToProvider converts imitated tool-call text into real tool calls", as
   });
 });
 
+test("routeToProvider rejects echoed historical tool transcripts when tools are available", async () => {
+  await withRoutingState(async () => {
+    const replayedTranscript = [
+      "Bash Check update.sh line endings",
+      "IN",
+      "cd \"/Users/bogdan/Documents/Falimia App\" && file deploy/update.sh",
+      "",
+      "OUT",
+      "deploy/update.sh: Bourne-Again shell script text executable, Unicode text, UTF-8 text",
+      "Historical tool invocation (already executed): Bash {\"command\":\"xxd \\\"/Users/bogdan/Documents/Falimia App/deploy/update.sh\\\" | head -20\",\"description\":\"Check raw bytes for line endings\"}",
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-history-echo",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: replayedTranscript },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), {
+          model: "auto-coding",
+          messages: [{ role: "user", content: "Run the line-ending check again." }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "Bash",
+              parameters: {
+                type: "object",
+                required: ["command"],
+                properties: { command: { type: "string" } },
+              },
+            },
+          }],
+        }),
+        (err) => {
+          assert.equal(err.status, 422);
+          assert.equal(err.stalling, true);
+          return true;
+        },
+      );
+    });
+  });
+});
+
 test("internal AI summary self-calls stay cheap even when dropped context mentions edit recovery", () => {
   const profile = routingPolicy.assessRequestDifficulty([
     {
@@ -676,6 +726,50 @@ test("routeToProvider accepts coherent long reports that contain repeated diagno
 
       assert.match(routed.body, /raw findings/);
       assert.equal(state.scores["Report-Test"]?.failures || 0, 0);
+    });
+
+    state.scores = originalScores;
+  });
+});
+
+test("routeToProvider accepts coherent investigation plans that trip garble heuristics", async () => {
+  await withRoutingState(async () => {
+    const originalScores = state.scores;
+    const plan = [
+      "/5 reason=asset_path_investigation",
+      "",
+      "I'll investigate the asset reference paths in the Next.js web app, focusing on HeroVisual.tsx, public assets, and CSS chunk references.",
+      "",
+      "Plan:",
+      "1. Inspect apps/web/components/HeroVisual.tsx and public/images/hero-illustration.svg.",
+      "2. Check next.config.js and app/page.tsx for assetPrefix or basePath.",
+      "3. Compare docker logs and curl headers for the CSS chunk.",
+      "",
+      ...Array(40).fill("Asset target: HeroVisual.tsx references /images/hero-illustration.svg and the CSS chunk 86abf21f698475f7.css loads from _next/static/css."),
+    ].join("\n");
+
+    await withServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: plan }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 40, completion_tokens: 900, total_tokens: 940 },
+      }));
+    }, async (url) => {
+      const routed = await routing.routeToProvider(
+        provider(url, { name: "Investigation-Plan-Test", model: "test/investigation-plan" }),
+        {
+          model: "auto-coding",
+          messages: [{ role: "user", content: "Summarize the asset-path investigation plan from context." }],
+          tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+        },
+      );
+
+      const content = JSON.parse(routed.body).choices[0].message.content;
+      assert.equal(routed.status, 200);
+      assert.match(content, /HeroVisual\.tsx/);
+      assert.doesNotMatch(content, /\/5 reason=asset_path_investigation/);
+      assert.equal(state.scores["Investigation-Plan-Test"]?.failures || 0, 0);
     });
 
     state.scores = originalScores;
@@ -1152,13 +1246,14 @@ test("stripCachedProxyArtifacts removes proxy assistant diagnostics from IDE rep
     messages: [
       { role: "user", content: "run pwd" },
       { role: "assistant", content: "Proxy suppressed invalid tool call \"Bash\": missing required field \"command\"." },
+      { role: "assistant", content: "Historical tool invocation (already executed): Bash {\"command\":\"pwd\"}" },
       { role: "user", content: "continue" },
     ],
   };
 
   const removed = routing.stripCachedProxyArtifacts(reqBody);
 
-  assert.equal(removed, 1);
+  assert.equal(removed, 2);
   assert.deepEqual(reqBody.messages, [
     { role: "user", content: "run pwd" },
     { role: "user", content: "continue" },
