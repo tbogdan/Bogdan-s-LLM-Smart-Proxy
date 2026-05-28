@@ -228,6 +228,34 @@ test("detectIncompatibility learns conservative context from overflow without nu
   });
 });
 
+test("detectIncompatibility learns context from Copilot max input length errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-gpt4omini",
+      400,
+      '{"error":{"message":"prompt token count of 137630 exceeds max input length of 128000"}}',
+      { inputTokens: 137630, providerContext: 128000 },
+    );
+
+    const compat = scoring.getCompat("Copilot-gpt4omini");
+    assert.equal(compat.real_context, 128000);
+  });
+});
+
+test("detectIncompatibility learns conservative context from prompt-too-long errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Windsurf-SWE16",
+      500,
+      '{"error":{"code":"invalid_argument","message":"The prompt is too long for this model"}}',
+      { inputTokens: 137630, providerContext: 200000 },
+    );
+
+    const compat = scoring.getCompat("Windsurf-SWE16");
+    assert.equal(compat.real_context, 116985);
+  });
+});
+
 test("detectIncompatibility does not learn real context from max_tokens cap errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(

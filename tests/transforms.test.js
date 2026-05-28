@@ -195,6 +195,82 @@ test("transformRequest normalizes direct chat input_image content to OpenAI imag
   ]);
 });
 
+test("transformRequest flattens image parts for providers with learned no_images", async () => {
+  const originalCompat = state.providerCompat;
+  state.providerCompat = { "Copilot-NoVision": { no_images: true } };
+
+  try {
+    const transformed = await transforms.transformRequest(
+      { ...provider, name: "Copilot-NoVision", protocol: "openai", caps: ["text", "coding", "tools", "images"] },
+      {
+        model: "auto-coding",
+        _llmProxyBypassOptimizations: true,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Compare this screenshot." },
+              { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+            ],
+          },
+        ],
+      },
+    );
+
+    assert.equal(typeof transformed.messages[0].content, "string");
+    assert.match(transformed.messages[0].content, /Compare this screenshot/);
+    assert.match(transformed.messages[0].content, /image omitted/);
+    assert.doesNotMatch(JSON.stringify(transformed.messages), /image_url|data:image/);
+  } finally {
+    state.providerCompat = originalCompat;
+  }
+});
+
+test("transformRequest flattens only data images for providers with learned no_data_images", async () => {
+  const originalCompat = state.providerCompat;
+  state.providerCompat = { "Codex-NoDataImages": { no_data_images: true } };
+  const dataRequest = {
+    model: "auto-coding",
+    _llmProxyBypassOptimizations: true,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Inspect this screenshot." },
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+        ],
+      },
+    ],
+  };
+  const remoteRequest = {
+    model: "auto-coding",
+    _llmProxyBypassOptimizations: true,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Inspect this image." },
+          { type: "image_url", image_url: { url: "https://example.test/image.png" } },
+        ],
+      },
+    ],
+  };
+
+  try {
+    const providerWithImages = { ...provider, name: "Codex-NoDataImages", protocol: "codex", caps: ["text", "coding", "tools", "images"] };
+    const dataTransformed = await transforms.transformRequest(providerWithImages, dataRequest);
+    const remoteTransformed = await transforms.transformRequest(providerWithImages, remoteRequest);
+
+    assert.equal(typeof dataTransformed.messages[0].content, "string");
+    assert.match(dataTransformed.messages[0].content, /image omitted/);
+    assert.doesNotMatch(JSON.stringify(dataTransformed.messages), /data:image/);
+    assert.equal(Array.isArray(remoteTransformed.messages[0].content), true);
+    assert.equal(remoteTransformed.messages[0].content[1].image_url.url, "https://example.test/image.png");
+  } finally {
+    state.providerCompat = originalCompat;
+  }
+});
+
 test("detectUseCase requests stronger routing after recent complexity stalls", () => {
   const result = transforms.detectUseCase([
     { role: "system", content: "You are a software engineering agent." },

@@ -7,6 +7,7 @@ const fs = require("node:fs");
 
 const routing = require("../lib/routing");
 const routingPolicy = require("../lib/routing-policy");
+const scoring = require("../lib/scoring");
 const state = require("../lib/state");
 const compaction = require("../lib/compaction");
 const humanApproval = require("../lib/human-approval");
@@ -337,11 +338,59 @@ test("internal AI summary self-calls stay cheap even when dropped context mentio
   assert.equal(profile.thinkingLevel <= 2, true);
 });
 
+test("auto-memory routing profile ignores inherited high-risk request assessments", () => {
+  const profile = routingPolicy.effectiveRequestProfile({
+    model: "auto-memory",
+    messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+    _llmProxyDifficulty: {
+      level: 5,
+      taskLevel: 5,
+      contextLevel: 4,
+      taskKind: "security_review",
+      costTarget: 5,
+      speedTarget: 2,
+      thinkingLevel: 5,
+      stepShape: { shape: "security", gate: "human_signoff", posture: "think_expensive" },
+    },
+  });
+
+  assert.equal(profile.taskKind, "list_summary");
+  assert.equal(profile.stepShape.shape, "write_heavy");
+  assert.equal(profile.stepShape.gate, "none");
+  assert.equal(profile.costTarget <= 2, true);
+  assert.equal(profile.thinkingLevel <= 2, true);
+  assert.equal(profile.speedTarget >= 4, true);
+});
+
+test("auto-memory routing profile log reports the internal memory source", () => {
+  const reqBody = {
+    model: "auto-memory",
+    messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+    _llmProxyDifficulty: {
+      level: 5,
+      taskKind: "security_review",
+      stepShape: { shape: "security", gate: "human_signoff" },
+    },
+  };
+  const line = routing.formatRoutingProfileForLog("auto-memory", reqBody, 512);
+
+  assert.match(line, /ROUTING-PROFILE: auto-memory/);
+  assert.match(line, /source=memory_route/);
+  assert.match(line, /task=list_summary/);
+  assert.match(line, /gate=none/);
+
+  const assessLine = routing.formatRoutingAssessmentForLog({ name: "Memory-Test" }, reqBody);
+  assert.match(assessLine, /ASSESS: Memory-Test/);
+  assert.match(assessLine, /source=memory_route/);
+  assert.match(assessLine, /reason=memory_ingestion/);
+});
+
 async function withRoutingState(fn) {
   const originalScores = state.scores;
   const originalAssessmentCache = { ...state.sessionAssessmentCache };
   const originalAssessmentCacheStats = { ...(state.sessionAssessmentCacheStats || {}) };
   const originalSessionStats = { ...state.sessionStats };
+  const originalRouteDiversityStats = { ...state.routeDiversityStats };
   const originalHumanApprovals = {
     pending: { ...state.humanApprovals.pending },
     byRequestHash: { ...state.humanApprovals.byRequestHash },
@@ -355,6 +404,7 @@ async function withRoutingState(fn) {
     for (const key of Object.keys(state.sessionAssessmentCacheStats)) delete state.sessionAssessmentCacheStats[key];
   }
   for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
+  for (const key of Object.keys(state.routeDiversityStats)) delete state.routeDiversityStats[key];
   fs.writeFileSync = () => {};
   fs.appendFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
@@ -372,6 +422,8 @@ async function withRoutingState(fn) {
     }
     for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
     Object.assign(state.sessionStats, originalSessionStats);
+    for (const key of Object.keys(state.routeDiversityStats)) delete state.routeDiversityStats[key];
+    Object.assign(state.routeDiversityStats, originalRouteDiversityStats);
     for (const key of Object.keys(state.humanApprovals.pending)) delete state.humanApprovals.pending[key];
     for (const key of Object.keys(state.humanApprovals.byRequestHash)) delete state.humanApprovals.byRequestHash[key];
     state.humanApprovals.audit.length = 0;
@@ -638,7 +690,7 @@ test("routing diversity can dislodge a sticky thinking provider after many repea
   });
 });
 
-test("routing diversity promotes a same-class peer when the sticky provider stays ahead after the normal penalty", async () => {
+test("routing diversity prefers a cross-source same-class peer when the sticky source is overused", async () => {
   await withRoutingState(async () => {
     const sticky = provider("http://example.invalid", {
       name: "Windsurf-ClaudeSonnet46Thinking",
@@ -713,8 +765,236 @@ test("routing diversity promotes a same-class peer when the sticky provider stay
       },
     );
 
-    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
+    assert.equal(ranked[0].name, "Copilot-claudesonnet46");
     assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.0, true);
+  });
+});
+
+test("routing diversity treats the same underlying model across sources as a peer group", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const crossSourceSameModel = provider("http://example.invalid", {
+      name: "Claude-Sonnet46",
+      family: "claude",
+      model: "claude/claude-sonnet-4.6",
+      upstream_model: "claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 4,
+      quality_group: 4,
+      speed_group: 3,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.70, configurable: true });
+    Object.defineProperty(crossSourceSameModel, "_lastRoutingScore", { value: 5.25, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, crossSourceSameModel],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue debugging the routing loop with tools." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 33000,
+        _estimatedTokens: 52000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 2,
+          taskKind: "debugging",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 18 },
+            "Claude-Sonnet46": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Claude-Sonnet46");
+    assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.4, true);
+  });
+});
+
+test("routing diversity promotes another source into the shortlist when one source dominates", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const codex = provider("http://example.invalid", {
+      name: "Codex-GPT54",
+      family: "codex",
+      model: "codex/gpt-5.4",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 272000,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "medium",
+    });
+    const sameSourcePeer = provider("http://example.invalid", {
+      name: "Windsurf-GPT52CodexXHighFast",
+      family: "windsurf",
+      model: "windsurf/gpt-5-2-codex-xhigh-priority",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 400000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "xhigh",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.04, configurable: true });
+    Object.defineProperty(codex, "_lastRoutingScore", { value: 4.30, configurable: true });
+    Object.defineProperty(sameSourcePeer, "_lastRoutingScore", { value: 4.17, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, codex, sameSourcePeer],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Investigate why routing keeps selecting Sonnet even though other providers are available." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 32743,
+        _estimatedTokens: 52000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 2,
+          taskKind: "debugging",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 11 },
+            "Windsurf-ClaudeSonnet46": { requests: 9 },
+            "Codex-GPT54": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Codex-GPT54");
+    assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.7, true);
+  });
+});
+
+test("routing diversity samples cold same-class peers after a long sticky streak", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46Thinking",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4-6-thinking",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "high",
+    });
+    const coldSameClassPeer = provider("http://example.invalid", {
+      name: "Copilot-claudesonnet46",
+      family: "copilot",
+      model: "copilot/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    const crossClassPeer = provider("http://example.invalid", {
+      name: "Windsurf-GPT54MiniHighThinking",
+      family: "windsurf",
+      model: "windsurf/gpt-5-4-mini-high",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 243594,
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "high",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.90, configurable: true });
+    Object.defineProperty(coldSameClassPeer, "_lastRoutingScore", { value: 4.95, configurable: true });
+    Object.defineProperty(crossClassPeer, "_lastRoutingScore", { value: 5.20, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, crossClassPeer, coldSameClassPeer],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue implementing this routing fix with tools." },
+        ],
+        tools: [{ type: "function", function: { name: "Edit" } }],
+        _inputTokens: 118000,
+        _estimatedTokens: 150000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 4,
+          stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46Thinking",
+          providers: {
+            "Windsurf-ClaudeSonnet46Thinking": { requests: 35 },
+            "Copilot-claudesonnet46": { requests: 0 },
+            "Windsurf-GPT54MiniHighThinking": { requests: 4 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Copilot-claudesonnet46");
+    assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.5, true);
   });
 });
 
@@ -1014,6 +1294,41 @@ test("routeToProvider does not forward tool schemas for direct identity answers"
       assert.equal(forwarded.functions, undefined);
       assert.equal(forwarded.tool_choice, undefined);
       assert.equal(forwarded.function_call, undefined);
+    });
+  });
+});
+
+test("routeToProvider accepts passive discussion text when optional tools are available", async () => {
+  await withRoutingState(async () => {
+    let forwarded;
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "OPENAI_API_KEY este folosit pentru apelurile catre API-ul OpenAI; in cazul asta vorbim doar despre configurare, nu trebuie rulat nimic.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+        }));
+      });
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        tool_choice: "auto",
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+        messages: [{ role: "user", content: "pt ce are nevoie de OPENAI_API_KEY?" }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.equal(forwarded.tools, undefined);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /OPENAI_API_KEY/);
     });
   });
 });
@@ -4501,7 +4816,7 @@ test("routeToProvider accepts concise script command reports from tool-heavy ses
   });
 });
 
-test("routeToProvider still rejects short planning-only text when tools are available", async () => {
+test("routeToProvider accepts short planning-only discussion when tools are optional", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -4516,14 +4831,14 @@ test("routeToProvider still rejects short planning-only text when tools are avai
         usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
       }));
     }, async (url) => {
-      await assert.rejects(
-        routing.routeToProvider(provider(url), {
-          model: "auto-coding",
-          messages: [{ role: "user", content: "analyze the current project and provide a strategy" }],
-          tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
-        }),
-        (err) => err.status === 422 && err.stalling === true,
-      );
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "analyze the current project and provide a strategy" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.match(JSON.parse(resp.body).choices[0].message.content, /Scanning repo/);
     });
   });
 });
@@ -5184,6 +5499,264 @@ test("auto-memory avoids heavy max providers for background memory ingestion", (
   }
 });
 
+test("auto-memory diversity rotates same-class structured peers despite stale high-risk assessment", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://127.0.0.1/sticky", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    const peer = provider("http://127.0.0.1/peer", {
+      name: "Copilot-claudehaiku45",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/claude-haiku-4.5",
+      upstream_model: "claude-haiku-4.5",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 9.80, configurable: true });
+    Object.defineProperty(peer, "_lastRoutingScore", { value: 8.10, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, peer],
+      {
+        model: "auto-memory",
+        messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 5,
+          contextLevel: 4,
+          taskKind: "security_review",
+          costTarget: 5,
+          speedTarget: 2,
+          thinkingLevel: 5,
+          stepShape: { shape: "security", gate: "human_signoff", posture: "think_expensive" },
+        },
+      },
+      "auto-memory",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Copilot-gpt5mini",
+          providers: {
+            "Copilot-gpt5mini": { requests: 28 },
+            "Copilot-claudehaiku45": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Copilot-claudehaiku45");
+  });
+});
+
+test("auto-memory diversity samples memory peers across quality buckets after sticky repeats", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://127.0.0.1/sticky", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    const memoryPeer = provider("http://127.0.0.1/haiku", {
+      name: "Claude-Haiku45",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-haiku-4-5-20251001",
+      upstream_model: "claude-haiku-4-5-20251001",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+      supports_structured_outputs: true,
+    });
+    const distantPeer = provider("http://127.0.0.1/codex", {
+      name: "Codex-GPT54Mini",
+      family: "codex",
+      protocol: "openai",
+      model: "codex/gpt-5.4-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 9.18, configurable: true });
+    Object.defineProperty(memoryPeer, "_lastRoutingScore", { value: 7.53, configurable: true });
+    Object.defineProperty(distantPeer, "_lastRoutingScore", { value: 5.72, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, memoryPeer, distantPeer],
+      {
+        model: "auto-memory",
+        messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+      },
+      "auto-memory",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Copilot-gpt5mini",
+          providers: {
+            "Copilot-gpt5mini": { requests: 12 },
+            "Claude-Haiku45": { requests: 0 },
+            "Codex-GPT54Mini": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Claude-Haiku45");
+    assert.equal(ranked.find((p) => p.name === "Copilot-gpt5mini")._routingDiversityPenalty > 1.6, true);
+  });
+});
+
+test("auto-memory diversity keeps balancing an underused peer after it was the last provider", async () => {
+  await withRoutingState(async () => {
+    const overusedLeader = provider("http://127.0.0.1/sticky", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    const underusedPeer = provider("http://127.0.0.1/haiku", {
+      name: "Claude-Haiku45",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-haiku-4-5-20251001",
+      upstream_model: "claude-haiku-4-5-20251001",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+      supports_structured_outputs: true,
+    });
+    const weakerColdPeer = provider("http://127.0.0.1/claudehaiku", {
+      name: "Copilot-claudehaiku45",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/claude-haiku-4.5",
+      upstream_model: "claude-haiku-4.5",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    Object.defineProperty(overusedLeader, "_lastRoutingScore", { value: 9.36, configurable: true });
+    Object.defineProperty(underusedPeer, "_lastRoutingScore", { value: 8.06, configurable: true });
+    Object.defineProperty(weakerColdPeer, "_lastRoutingScore", { value: 6.73, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [overusedLeader, underusedPeer, weakerColdPeer],
+      {
+        model: "auto-memory",
+        messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+      },
+      "auto-memory",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Claude-Haiku45",
+          providers: {
+            "Copilot-gpt5mini": { requests: 17 },
+            "Claude-Haiku45": { requests: 1 },
+            "Copilot-claudehaiku45": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Claude-Haiku45");
+    assert.equal(ranked.find((p) => p.name === "Copilot-gpt5mini")._routingDiversityPenalty > 1.2, true);
+  });
+});
+
+test("auto-memory diversity uses group request counts across fresh sessions", async () => {
+  await withRoutingState(async () => {
+    const overusedLeader = provider("http://127.0.0.1/sticky", {
+      name: "Copilot-gpt5mini",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+      supports_structured_outputs: true,
+    });
+    const underusedPeer = provider("http://127.0.0.1/haiku", {
+      name: "Claude-Haiku45",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-haiku-4-5-20251001",
+      upstream_model: "claude-haiku-4-5-20251001",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+      supports_structured_outputs: true,
+    });
+    Object.defineProperty(overusedLeader, "_lastRoutingScore", { value: 9.36, configurable: true });
+    Object.defineProperty(underusedPeer, "_lastRoutingScore", { value: 8.06, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [overusedLeader, underusedPeer],
+      {
+        model: "auto-memory",
+        messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+      },
+      "auto-memory",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: { providers: {} },
+        routeDiversityStats: {
+          lastProvider: "Claude-Haiku45",
+          providers: {
+            "Copilot-gpt5mini": { requests: 17 },
+            "Claude-Haiku45": { requests: 1 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Claude-Haiku45");
+  });
+});
+
 test("soft-filtered smart groups preserve every configured source as fallback", () => {
   const originalProviders = state.PROVIDERS;
   const originalGroups = state.GROUPS;
@@ -5625,6 +6198,118 @@ test("routing skips providers with recent unresolved chronic stalling", async ()
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
     }
+  });
+});
+
+test("routing penalizes recently errored providers after cooldown expiry", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Recent-Invalid-Argument",
+        model: "windsurf/claude-sonnet-4-6-thinking",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "high",
+      },
+      {
+        name: "Clean-Same-Class-Peer",
+        model: "copilot/claude-sonnet-4.6",
+        family: "copilot",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+    ];
+    state.scores["Recent-Invalid-Argument"] = {
+      requests: 60,
+      successes: 56,
+      failures: 4,
+      success_rate: 56 / 60,
+      avg_latency: 4200,
+      last_error: {
+        message: '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}',
+        time: Date.now() - 5 * 60_000,
+      },
+      cooldown_until: Date.now() - 1000,
+      cooldown_reason: "windsurf invalid_argument",
+    };
+    state.scores["Clean-Same-Class-Peer"] = {
+      requests: 20,
+      successes: 17,
+      failures: 3,
+      success_rate: 17 / 20,
+      avg_latency: 6200,
+      last_error: null,
+      cooldown_until: 0,
+    };
+
+    try {
+      const providers = routing.getProvidersForGroup("auto-coding", 120000, {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Continue implementing this routing fix." }],
+        tools: [{ type: "function", function: { name: "Edit" } }],
+        _inputTokens: 88000,
+        _estimatedTokens: 120000,
+      });
+
+      assert.equal(providers[0].name, "Clean-Same-Class-Peer");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("provider score keeps recent invalid_argument errors below clean peers after cooldown expiry", async () => {
+  await withRoutingState(async () => {
+    const recentErrorProvider = provider("http://example.invalid/recent", {
+      name: "Recent-Invalid-Argument",
+      tier: 1,
+    });
+    const cleanPeer = provider("http://example.invalid/clean", {
+      name: "Clean-Peer",
+      tier: 1,
+    });
+    state.scores["Recent-Invalid-Argument"] = {
+      requests: 60,
+      successes: 57,
+      failures: 3,
+      success_rate: 57 / 60,
+      avg_latency: 4200,
+      last_error: {
+        message: '{"error":{"code":"invalid_argument","message":"an internal error occurred"}}',
+        time: Date.now() - 5 * 60_000,
+      },
+      cooldown_until: Date.now() - 1000,
+      cooldown_reason: "windsurf invalid_argument",
+    };
+    state.scores["Clean-Peer"] = {
+      requests: 20,
+      successes: 17,
+      failures: 3,
+      success_rate: 17 / 20,
+      avg_latency: 6200,
+      last_error: null,
+      cooldown_until: 0,
+    };
+
+    assert.equal(scoring.providerScore(recentErrorProvider) < scoring.providerScore(cleanPeer), true);
   });
 });
 
