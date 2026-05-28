@@ -838,6 +838,88 @@ test("routing diversity treats the same underlying model across sources as a pee
   });
 });
 
+test("routing diversity does not rotate between different routing levels", async () => {
+  await withRoutingState(async () => {
+    const sonnetLevel4 = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeSonnet46",
+      family: "windsurf",
+      model: "windsurf/claude-sonnet-4.6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    const gpt4oLevel3 = provider("http://example.invalid", {
+      name: "Copilot-gpt4o20240513",
+      family: "copilot",
+      model: "copilot/gpt-4o-2024-05-13",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 128000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    const gpt41Level3 = provider("http://example.invalid", {
+      name: "Copilot-gpt41",
+      family: "copilot",
+      model: "copilot/gpt-4.1",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 128000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(sonnetLevel4, "_lastRoutingScore", { value: 6.04, configurable: true });
+    Object.defineProperty(gpt4oLevel3, "_lastRoutingScore", { value: 4.24, configurable: true });
+    Object.defineProperty(gpt41Level3, "_lastRoutingScore", { value: 4.14, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sonnetLevel4, gpt4oLevel3, gpt41Level3],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue coding; there are many optional tools available." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 55481,
+        _estimatedTokens: 87481,
+        _llmProxyDifficulty: {
+          level: 3,
+          taskLevel: 3,
+          contextLevel: 3,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 3,
+          stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Windsurf-ClaudeSonnet46",
+          providers: {
+            "Windsurf-ClaudeSonnet46": { requests: 7 },
+            "Copilot-gpt4o20240513": { requests: 0 },
+            "Copilot-gpt41": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(routingPolicy.providerMaxRoutingLevel(sonnetLevel4), 4);
+    assert.equal(routingPolicy.providerMaxRoutingLevel(gpt4oLevel3), 3);
+    assert.equal(ranked[0].name, "Windsurf-ClaudeSonnet46");
+    assert.equal(gpt4oLevel3._routingDiversityBoost || 0, 0);
+  });
+});
+
 test("routing diversity promotes another source into the shortlist when one source dominates", async () => {
   await withRoutingState(async () => {
     const sticky = provider("http://example.invalid", {
@@ -852,13 +934,13 @@ test("routing diversity promotes another source into the shortlist when one sour
       thinking_effort: "high",
     });
     const codex = provider("http://example.invalid", {
-      name: "Codex-GPT54",
+      name: "Codex-GPT52",
       family: "codex",
-      model: "codex/gpt-5.4",
+      model: "codex/gpt-5.2",
       caps: ["text", "coding", "tools", "thinking"],
       context: 272000,
       cost_group: 3,
-      quality_group: 5,
+      quality_group: 4,
       speed_group: 3,
       thinking_effort: "medium",
     });
@@ -907,13 +989,13 @@ test("routing diversity promotes another source into the shortlist when one sour
           providers: {
             "Windsurf-ClaudeSonnet46Thinking": { requests: 11 },
             "Windsurf-ClaudeSonnet46": { requests: 9 },
-            "Codex-GPT54": { requests: 0 },
+            "Codex-GPT52": { requests: 0 },
           },
         },
       },
     );
 
-    assert.equal(ranked[0].name, "Codex-GPT54");
+    assert.equal(ranked[0].name, "Codex-GPT52");
     assert.equal(ranked.find((p) => p.name === "Windsurf-ClaudeSonnet46Thinking")._routingDiversityPenalty > 1.7, true);
   });
 });

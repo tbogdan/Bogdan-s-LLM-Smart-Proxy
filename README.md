@@ -1,12 +1,12 @@
 # Project LLM Smart Proxy
 
-Project LLM Smart Proxy is a local Docker OpenAI-compatible smart proxy for the supported provider families: Windsurf, Claude, Codex, and GitHub Copilot. It exposes one local endpoint, discovers available models for those families, and routes smart group model names such as `auto`, `auto-coding`, and `coding-sm` to the best available provider.
+Project LLM Smart Proxy is a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. It exposes one endpoint, discovers available models, and routes smart groups such as `auto`, `auto-coding`, and `coding-sm` to the best provider.
 
 ## Summary
 
-Project LLM Smart Proxy reduces AI operating cost by automatically routing each request to the right LLM for the task, context size, latency target, and business policy.
+Project LLM Smart Proxy lowers AI operating cost by routing each request according to task, context size, latency target, and business policy.
 
-- Cost-aware automation: steers simple work to small, free, or low-cost models and escalates only when quality, tools, reasoning, or context require it.
+- Cost-aware automation: sends simple work to small/free/low-cost models and escalates only when quality, tools, reasoning, or context require it.
 - Multi-source provider fabric: unifies Windsurf, Claude, Codex, and GitHub Copilot behind one local API, so clients are not locked to one vendor path.
 - Context continuity: preserves working context across requests with a local Neo4j memory ledger, Graphiti semantic sidecar, compacted-context archives, and built-in memory summaries.
 - Multi-client API support: serves OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, token counting, and model discovery for IDEs, SDKs, and agents.
@@ -29,8 +29,7 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The setup script copies `.env.example` to `.env` when needed, prompts for the provider families to enable, and starts Docker Compose with the required profiles.
-When Codex is enabled, it also copies `${CODEX_HOME:-$HOME/.codex}/auth.json` into `data/codex-auth.json` if the file exists.
+The setup script copies `.env.example` to `.env` when needed, prompts for enabled provider families, starts Docker Compose with the required profiles, and copies `${CODEX_HOME:-$HOME/.codex}/auth.json` into `data/codex-auth.json` when Codex is enabled and the file exists.
 
 ## Manual Setup
 
@@ -73,8 +72,8 @@ cp ~/.codex/auth.json data/codex-auth.json
 node github-copilot-auth.js --env-file .env
 ```
 
-For Claude, choose the Anthropic Console account in the browser flow. The helper reads the login-managed API key from Claude Code's local credential store and writes it to `ANTHROPIC_API_KEY` in `.env`. As a manual fallback, create a key at `https://platform.claude.com/settings/keys` and put it into `ANTHROPIC_API_KEY`.
-For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. You can override it with `--client-id`. The helper uses GitHub's device-flow authorization and writes the resulting GitHub token to `COPILOT_GITHUB_TOKEN`; the proxy exchanges it for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
+For Claude, choose the Anthropic Console account. The helper reads Claude Code's local login-managed API key and writes `ANTHROPIC_API_KEY`; manual fallback: create a key at `https://platform.claude.com/settings/keys` and set it as `ANTHROPIC_API_KEY`.
+For Copilot, the helper uses GitHub device-flow auth with VS Code GitHub Authentication's public OAuth client id by default, accepts `--client-id`, writes `COPILOT_GITHUB_TOKEN`, and the proxy exchanges it for a short-lived Copilot runtime token.
 
 Start Docker with the Codex profile when Codex is enabled:
 
@@ -88,19 +87,60 @@ Without Codex, the base services are enough:
 docker compose up -d --build
 ```
 
-The base services include the graph memory backend and the Graphiti MCP sidecar. Their internal settings are fixed in Compose so `.env` stays focused on provider credentials, host ports, and routing policy. Neo4j and Graphiti MCP are kept on the Compose network by default instead of publishing extra host ports.
+Base services include the graph memory backend and Graphiti MCP sidecar. Their settings live in Compose so `.env` stays focused on provider credentials, host ports, and routing policy. Neo4j and Graphiti MCP stay on the Compose network by default.
 
 To run this proxy beside another checkout on the same Docker host, set a different `COMPOSE_PROJECT_NAME`, `LLM_PROXY_PORT`, and `CODEX_PROXY_PORT` in `.env`. Container-internal ports stay unchanged.
 
 ## Endpoint
 
-- Base URL: `http://localhost:18900/v1`
-- API key: any non-empty value, for example `proxy`
-- Default model: `auto`
+- **Base URL:** `http://localhost:18900/v1`
+- **API key:** any non-empty value, e.g. `proxy`
+- **Default model:** `auto`
 
-Use this endpoint from OpenAI-compatible SDKs, IDEs, and coding agents.
+### Client Setup
 
-For Claude Code as a client, use the Anthropic-compatible bridge on the same service:
+#### Quick setup (persistent)
+
+Copy or reference `example-openai-endpoint.env` for persistent OpenAI-compatible clients:
+
+```env
+OPENAI_API_BASE_URL=http://localhost:18900/v1
+OPENAI_API_KEY=proxy
+OPENAI_MODEL=auto
+```
+
+Add these lines to your shell profile, such as `~/.zshrc` or `~/.bashrc`, or to your IDE environment/settings file, then restart the IDE or terminal.
+
+#### Codex (persistent config example)
+
+For Codex CLI or plugin, edit `~/.codex/config.toml`:
+
+```toml
+# ~/.codex/config.toml
+model = "auto-coding"
+model_provider = "llm-proxy"
+
+[model_providers.llm-proxy]
+name = "Project LLM Smart Proxy (OpenAI-compatible)"
+base_url = "http://localhost:18900/v1"
+env_key = "OPENAI_API_KEY"
+```
+
+Set the API key in your shell or IDE environment:
+
+```bash
+export OPENAI_API_KEY=proxy
+```
+
+Restart after saving.
+
+#### VS Code, JetBrains, or other OpenAI-compatible IDEs
+
+In the extension/plugin settings, use **API Base URL** `http://localhost:18900/v1`, **API Key** `proxy`, and **Model** `auto` or another supported model.
+
+#### Anthropic/Claude Code as client
+
+Use the Anthropic-compatible bridge on the same service:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:18900
@@ -109,7 +149,7 @@ export ANTHROPIC_SMALL_FAST_MODEL=coding-sm
 claude
 ```
 
-Project-local Claude Code config can be placed in `.claude/settings.local.json`:
+Project-local Claude Code config in `.claude/settings.local.json`:
 
 ```json
 {
@@ -121,7 +161,7 @@ Project-local Claude Code config can be placed in `.claude/settings.local.json`:
 }
 ```
 
-The Claude Code bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
+The bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
 
 ## Test
 
@@ -145,11 +185,11 @@ curl http://localhost:18900/v1/messages/count_tokens \
 
 ## Benchmark
 
-The local benchmark compares an expensive direct concrete model with a proxy smart-routing ladder using the same test set. The direct arm bypasses proxy prompt injection, memory injection, content compaction, and routing assessment markers; the proxy arm keeps full optimization enabled and uses the appropriate smart group per case (`auto-assess`, `auto-sm`, `auto-memory`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases are coding-heavy and borrow benchmark shapes from code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decision tasks. It reports provider/model choices, average and p50/p95 latency, correctness, weighted correctness by complexity, prompt/completion tokens, estimated cost, cost group, route traces, memory/compaction counters, provider-family fairness, proxy savings percentage, and ASCII comparison charts.
+The local benchmark compares an expensive direct concrete model with proxy smart routing on the same cases. The direct arm bypasses proxy prompt injection, memory injection, compaction, and assessment markers; the proxy arm keeps optimization enabled and chooses the smart group per case (`auto-assess`, `auto-sm`, `auto-memory`, `auto-text`, `coding-sm`, `auto-coding`, `auto-thinking`, or `auto-max`). Cases cover code reasoning, real issue repair, secure coding, tool-use, terminal-agent recovery, and architecture decisions. Reports include provider/model choice, average and p50/p95 latency, correctness, weighted correctness, prompt/completion tokens, estimated cost, cost group, route traces, memory/compaction counters, provider-family fairness, savings percentage, and ASCII charts.
 
 ### Smart Routing, Memory, and Compaction Benchmark
 
-This section summarizes the 2026-05-22 local ladder benchmark. The full benchmark methodology, routing examples, latency/cost breakdown, and benchmark log analysis live in [Smart Routing, Memory, and Compaction Benchmark](docs/smart-routing-memory-benchmark.md).
+This summarizes the 2026-05-22 local ladder benchmark. Full methodology, routing examples, latency/cost breakdown, and log analysis live in [Smart Routing, Memory, and Compaction Benchmark](docs/smart-routing-memory-benchmark.md).
 
 #### Executive Summary
 
@@ -176,13 +216,13 @@ npm run benchmark -- --run --suite=all --max-minutes=5
 npm run benchmark -- --run --direct-model=windsurf/claude-opus-4.6 --proxy-model=auto-coding
 ```
 
-Defaults are intentionally conservative: sequential requests, one repeat, six route-ladder cases, bounded completions, no cost cap, and a runtime guard of a few minutes. Use `--suite=opus` for the Opus-vs-optimized-proxy comparison where the direct arm calls Opus directly and the proxy arm receives natural high-complexity programming, architecture, and logic tasks with proxy cleanup and routing policy enabled. Use `--suite=all` to run the route ladder and Opus comparison in one merged benchmark. Cost is an estimate from model-family pricing and normalized token usage, then summarized as absolute USD plus proxy savings percentage. It can differ from subscription or bundled-provider billing; Windsurf SWE is treated as free.
+Defaults are conservative: sequential requests, one repeat, six route-ladder cases, bounded completions, no cost cap, and a short runtime guard. `--suite=opus` compares direct Opus with optimized proxy routing on natural high-complexity programming, architecture, and logic tasks with proxy cleanup/policy enabled. `--suite=all` merges the route ladder and Opus comparison. Cost is estimated from model-family pricing and normalized token usage, summarized as USD plus proxy savings; it can differ from subscription or bundled-provider billing, and Windsurf SWE is treated as free.
 
 ## Smart Routing, Memory, and Compaction Strategy
 
 ### Productivity Effect
 
-The proxy does more than choose a cheaper model. It applies managed system-prompt injection that turns a generic upstream model into a task-aware operating lane:
+The proxy does more than choose a cheaper model: managed system-prompt injection turns generic upstream models into task-aware operating lanes.
 
 - Identity and client compatibility are normalized across providers.
 - Tool strategy is injected only when tools are actually available.
@@ -191,7 +231,7 @@ The proxy does more than choose a cheaper model. It applies managed system-promp
 - Memory instructions tell models to use injected memory first and request private recall with `LLM_PROXY_RECALL` only when needed.
 - Post-route assessment markers let the response carry hidden metadata for the next route without leaking it to the user; continuations reuse that marker/cache instead of asking a classifier again for the same user intent.
 
-This improves productivity because client prompts do not need to repeatedly restate workflow rules, memory behavior, tool discipline, or routing expectations. The user and IDE can ask naturally; the proxy supplies the operating policy.
+Client prompts do not need to restate workflow rules, memory behavior, tool discipline, or routing expectations; the user/IDE can ask naturally while the proxy supplies policy.
 
 ### Routing Algorithm
 
@@ -359,20 +399,20 @@ Policy aliases are accepted for operator convenience: `cheap`, `cost`, `efficien
 
 ### Human Sign-Off Gate
 
-Human approval is enabled by default. Large-model access gates first run the hidden AI assessment only for a new task or explicit upgrade; access assessment never creates a human approval state by itself. If the assessed task carries the `human_signoff` gate, currently `security_review` or real destructive/production-impacting execution, the proxy stops before provider execution and returns a normal assistant message marked `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`. Completion review, test generation, dry-run-first work, and normal large-model access do not create human approval states. Trusted AI assessment can only create `security_review` sign-off when the current deterministic request also shows security/high-risk intent.
+Human approval is enabled by default. Large-model gates run hidden AI assessment only for a new task or explicit upgrade, and access assessment alone never creates approval state. If the assessed task carries `human_signoff` (`security_review` or real destructive/production-impacting execution), the proxy stops before provider execution and returns `LLM_PROXY_HUMAN_APPROVAL_REQUIRED`. Completion review, test generation, dry-run-first work, and normal large-model access do not create approval states. Trusted AI assessment can create `security_review` sign-off only when the deterministic request also shows security/high-risk intent.
 
-The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After reviewing the request, reply with the exact `approved_by_user:<challenge>` token shown in the proxy message. The proxy also accepts that token if an IDE sends it back as tool output, or if an API client retries the same payload with one of these approval forms:
+The response includes an approval challenge and writes an audit event to `${DATA_DIR}/human-approvals.jsonl`. After review, reply with the exact `approved_by_user:<challenge>` token. The proxy also accepts the token as IDE tool output or an API retry with:
 
 ```text
 X-LLM-Proxy-Approval: approved_by_user:<challenge>
 approved_by_user=approved_by_user:<challenge>
 ```
 
-The approval token is bound to a hash of the original request, task gate, shape, tools, and messages, expires after 15 minutes by default, and is stripped before the upstream model sees the request. The visible proxy approval prompt and the approval reply are stripped before the original request is routed upstream, so the approval exchange cannot pollute routing assessment or provider context. API clients that need the old hard HTTP error can set `LLM_PROXY_HUMAN_APPROVAL_RESPONSE_MODE=http_error`. `/health` exposes whether the approval system is enabled, the pending count, and the audit file path. For local experiments only, it can be disabled with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
+The token is bound to a hash of the original request, task gate, shape, tools, and messages; expires after 15 minutes by default; and is stripped before upstream execution. The visible approval prompt and reply are stripped before routing the original request, so they cannot pollute assessment or provider context. API clients that need the old hard HTTP error can set `LLM_PROXY_HUMAN_APPROVAL_RESPONSE_MODE=http_error`. `/health` exposes enabled state, pending count, and audit file path. Local experiments can disable it with `LLM_PROXY_HUMAN_APPROVAL_ENABLED=false`.
 
 ## Memory Layer
 
-The strategy section above describes the memory and compaction algorithms. The runtime implementation is `lib/memory`; Docker Compose enables the local Neo4j graph backend by default and stores memory governance events, corrections, compacted archive refs, and recall hints there. The in-process backend remains available for tests or temporary non-Docker runs, but it is not part of the operator `.env`.
+The strategy section describes the memory and compaction algorithms. Runtime lives in `lib/memory`; Docker Compose enables local Neo4j by default for governance events, corrections, compacted archive refs, and recall hints. The in-process backend remains for tests or temporary non-Docker runs, but is not part of operator `.env`.
 
 Models can request private memory work with first-line markers that the proxy strips before returning content to the client:
 
@@ -383,9 +423,9 @@ LLM_PROXY_MEMORY v=1 op=user_correction target=routing_policy type=preference co
 
 `LLM_PROXY_RECALL` triggers one internal retry with recalled memory injected into the system prompt. `LLM_PROXY_MEMORY` records memory governance intent, including user corrections that should supersede older facts when the graph backend is enabled. Context compaction archives dropped turns as `memory://...` references and tells the next model to use `LLM_PROXY_RECALL` when it needs details.
 
-Graphiti MCP runs as a semantic sidecar behind the proxy. The canonical memory ledger remains `lib/memory` backed by Neo4j; Graphiti MCP receives memory events and compacted archives asynchronously through a retryable outbox. Recall stays canonical-first: direct Neo4j memory is injected first, semantic Graphiti hints are appended only for explicit `LLM_PROXY_RECALL` requests and only if the sidecar answers within its timeout.
+Graphiti MCP runs as a semantic sidecar. The canonical ledger remains `lib/memory` backed by Neo4j; Graphiti receives memory events and compacted archives asynchronously through a retryable outbox. Recall stays canonical-first: direct Neo4j memory is injected first, and semantic Graphiti hints are appended only for explicit `LLM_PROXY_RECALL` requests when the sidecar answers within timeout.
 
-The Graphiti MCP sidecar is wired through this proxy instead of requiring a real `OPENAI_API_KEY`: its OpenAI-compatible URL is `http://llm-proxy:18900/v1`, the LLM model is `auto-memory`, and `/v1/embeddings` is served locally by a deterministic hash embedder. This keeps sidecar ingestion local and cheap.
+Graphiti MCP uses this proxy instead of a real `OPENAI_API_KEY`: OpenAI-compatible URL `http://llm-proxy:18900/v1`, LLM model `auto-memory`, and local deterministic hash embeddings at `/v1/embeddings`. Sidecar ingestion stays local and cheap.
 
 ## Docker Profiles
 
