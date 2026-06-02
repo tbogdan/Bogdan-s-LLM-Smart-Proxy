@@ -877,6 +877,57 @@ test("transformRequest caps output after proxy prompt and memory injection", asy
   assert.match(transformed.messages[0].content, /memory truncated|memory omitted/);
 });
 
+test("transformRequest compacts near provider context before tokenizer mismatch can overflow", async () => {
+  const originalCompact = compaction.compactMessagesAsync;
+  const originalLog = state.log;
+  const originalRatio = process.env.LLM_PROXY_POST_COMPACT_CONTEXT_RATIO;
+  const logs = [];
+  let compactCalled = false;
+
+  const request = {
+    model: "auto-coding",
+    max_tokens: 100,
+    messages: [
+      { role: "system", content: "Project rule." },
+      { role: "user", content: "x ".repeat(820) },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "y ".repeat(820) },
+      { role: "assistant", content: "ok" },
+    ],
+  };
+  const estimated = compaction.estimateTokens(request.messages)
+    + compaction.estimateRequestSchemaTokens(request)
+    + request.max_tokens;
+
+  try {
+    delete process.env.LLM_PROXY_POST_COMPACT_CONTEXT_RATIO;
+    state.log = (line) => logs.push(line);
+    compaction.compactMessagesAsync = async (messages, targetTokens, maxOutputTokens) => {
+      compactCalled = true;
+      assert.equal(targetTokens < estimated, true);
+      assert.equal(maxOutputTokens, 100);
+      return {
+        messages: [
+          messages[0],
+          { role: "user", content: "compacted transcript" },
+        ],
+      };
+    };
+
+    assert.equal(estimated > 900 && estimated < 950, true);
+    const transformed = await transforms.transformRequest({ ...provider, context: 1000 }, request);
+
+    assert.equal(compactCalled, true);
+    assert.equal(transformed.messages.some((message) => /compacted transcript/.test(String(message.content || ""))), true);
+    assert.match(logs.join("\n"), /POST-COMPACT: Codex-Test needs .* > 900 \(90% of 1000\)/);
+  } finally {
+    compaction.compactMessagesAsync = originalCompact;
+    state.log = originalLog;
+    if (originalRatio === undefined) delete process.env.LLM_PROXY_POST_COMPACT_CONTEXT_RATIO;
+    else process.env.LLM_PROXY_POST_COMPACT_CONTEXT_RATIO = originalRatio;
+  }
+});
+
 test("transformRequest includes legacy function schemas in final context budget", async () => {
   const fnSchema = {
     name: "legacy_large_tool",

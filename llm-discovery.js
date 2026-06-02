@@ -1004,6 +1004,10 @@ function retestFailedProviderAfterMs(reason = "") {
   return 2 * 60 * 60_000;
 }
 
+function isAvailabilityProofReason(reason = "") {
+  return String(reason || "").toLowerCase() === "rate_limited";
+}
+
 async function testSeedProviders(seed) {
   const results = [];
   const RETEST_OK_MS = 3.5 * 24 * 60 * 60_000; // retest alive providers every 3.5 days
@@ -1062,16 +1066,19 @@ async function testSeedProviders(seed) {
 
     const probeResult = await probeSeedProviderDetailed({ ...sp, key_env: keyEnv }, key);
     const chatOk = probeResult.ok;
+    const availabilityOk = chatOk || isAvailabilityProofReason(probeResult.reason);
 
     results.push({
       ...sp,
-      alive: chatOk,
+      alive: availabilityOk,
       last_tested: new Date().toISOString(),
       ...(chatOk ? {} : { reason: probeResult.reason || "probe_failed" }),
     });
 
     if (chatOk) {
       log(`  ALIVE: ${sp.name} (${sp.model})`);
+    } else if (availabilityOk) {
+      log(`  ALIVE: ${sp.name} (${sp.model}) — ${probeResult.reason}`);
     } else {
       log(`  DEAD:  ${sp.name} (${sp.model})`);
     }

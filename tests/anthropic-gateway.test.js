@@ -199,6 +199,61 @@ test("toAnthropicResponse strips private memory metadata from text", () => {
   ]);
 });
 
+test("toAnthropicResponse strips cached historical tool artifacts from text", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            "Am actualizat scriptul.",
+            "Historical tool invocation (already executed): Edit {\"file_path\":\"/tmp/new-test-wizard.sh\"}",
+          ].join("\n"),
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "Am actualizat scriptul." },
+  ]);
+});
+
+test("streaming Anthropic bridge strips fragmented historical tool artifacts", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Am actualizat scriptul.\n" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Historical tool invocation" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: " (already executed): Edit {\"file_path\":\"/tmp/new-test-wizard.sh\"}" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "ce ai schimbat?" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Am actualizat scriptul/);
+  assert.doesNotMatch(body, /Historical tool invocation|already executed|new-test-wizard/);
+});
+
 test("streaming Anthropic bridge strips private memory metadata", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
@@ -614,4 +669,48 @@ test("streaming Anthropic bridge keeps multiple unindexed tool calls separate", 
   assert.match(body, /"name":"Read"/);
   assert.match(body, /"name":"Bash"/);
   assert.equal(/invalid tool call/i.test(body), false);
+});
+
+test("streaming Anthropic bridge maps message-level OpenAI tool calls to Anthropic tool_use", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_edit",
+                type: "function",
+                function: {
+                  name: "Edit",
+                  arguments: "{\"file_path\":\"/tmp/run_cmd.py\",\"old_string\":\"old\",\"new_string\":\"new\"}",
+                },
+              }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "patch file" }],
+    tools: [{ name: "Edit", input_schema: { type: "object", required: ["file_path", "old_string", "new_string"] } }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /"type":"tool_use"/);
+  assert.match(body, /"name":"Edit"/);
+  assert.equal(body.includes('\\"file_path\\":\\"/tmp/run_cmd.py\\"'), true);
+  assert.equal(/Tool call error/i.test(body), false);
 });

@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const policy = require("../lib/routing-policy");
+const seedProviders = require("../seed-providers.json");
 
 test("classifyProvider assigns five cost groups across supported model families", () => {
   assert.equal(policy.classifyProvider({ family: "claude", model: "claude/claude-opus-4-7", name: "Claude-Opus47" }).cost_group, 4);
@@ -27,6 +28,10 @@ test("classifyProvider keeps API cost multipliers out of global cost groups", ()
 
 test("classifyProvider assigns researched quality, speed, and thinking defaults", () => {
   assert.deepEqual(
+    policy.classifyProvider({ family: "claude", model: "claude/claude-opus-4-8", name: "Claude-Opus48" }),
+    { cost_group: 4, quality_group: 5, speed_group: 3, thinking_effort: "xhigh", thinking_level: 5 },
+  );
+  assert.deepEqual(
     policy.classifyProvider({ family: "claude", model: "claude/claude-sonnet-4-6", name: "Claude-Sonnet46" }),
     { cost_group: 3, quality_group: 4, speed_group: 4, thinking_effort: "medium", thinking_level: 3 },
   );
@@ -42,6 +47,77 @@ test("classifyProvider assigns researched quality, speed, and thinking defaults"
     policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41", tc: true, caps: ["text", "coding", "tools", "thinking"] }),
     { cost_group: 3, quality_group: 4, speed_group: 4, thinking_effort: "medium", thinking_level: 3 },
   );
+});
+
+test("providerMaxRoutingLevel reserves level 5 for frontier high-thinking models", () => {
+  const cases = [
+    [{ name: "Windsurf-ClaudeSonnet46", model: "windsurf/claude-sonnet-4.6", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 4],
+    [{ name: "Windsurf-ClaudeSonnet46Thinking", model: "windsurf/claude-sonnet-4-6-thinking", quality_group: 4, cost_group: 3, thinking_effort: "high" }, 4],
+    [{ name: "Claude-Sonnet46", model: "claude/claude-sonnet-4-6", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 4],
+    [{ name: "Codex-GPT54", model: "codex/gpt-5.4", quality_group: 5, cost_group: 3, thinking_effort: "medium" }, 4],
+    [{ name: "Windsurf-GPT54LowThinking", model: "windsurf/gpt-5-4-low", quality_group: 5, cost_group: 3, thinking_effort: "low" }, 4],
+    [{ name: "Windsurf-GPT55NoThinking", model: "windsurf/gpt-5-5-none", quality_group: 5, cost_group: 4, thinking_effort: "none" }, 4],
+    [{ name: "Windsurf-GPT55LowThinking", model: "windsurf/gpt-5-5-low", quality_group: 5, cost_group: 4, thinking_effort: "low" }, 4],
+    [{ name: "Windsurf-Gemini31ProHighThinking", model: "windsurf/gemini-3-1-pro-high", quality_group: 5, cost_group: 2, thinking_effort: "high" }, 4],
+    [{ name: "Claude-Opus48", model: "claude/claude-opus-4-8", quality_group: 5, cost_group: 4, thinking_effort: "high" }, 5],
+    [{ name: "Windsurf-ClaudeOpus48", model: "windsurf/claude-opus-4.8", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Claude-Opus47", model: "claude/claude-opus-4-7", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Copilot-claudeopus47", model: "copilot/claude-opus-4.7", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Claude-Opus46", model: "claude/claude-opus-4-6", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Windsurf-ClaudeOpus46Thinking", model: "windsurf/claude-opus-4-6-thinking", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Codex-GPT55", model: "codex/gpt-5.5", quality_group: 5, cost_group: 4, thinking_effort: "xhigh" }, 5],
+    [{ name: "Windsurf-GPT54HighThinking", model: "windsurf/gpt-5-4-high", quality_group: 5, cost_group: 3, thinking_effort: "high" }, 5],
+    [{ name: "Copilot-gpt4o20240513", model: "copilot/gpt-4o-2024-05-13", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 2],
+    [{ name: "Copilot-gpt4opreview", model: "copilot/gpt-4-o-preview", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 2],
+    [{ name: "Copilot-gpt4omini", model: "copilot/gpt-4o-mini", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 2],
+    [{ name: "Copilot-gpt41", model: "copilot/gpt-4.1", quality_group: 4, cost_group: 3, thinking_effort: "medium" }, 3],
+  ];
+
+  for (const [providerConfig, expected] of cases) {
+    assert.equal(
+      policy.providerMaxRoutingLevel(providerConfig),
+      expected,
+      providerConfig.name,
+    );
+  }
+});
+
+test("seed Haiku providers stay capped at standard routing tier", () => {
+  const haikuProviders = (seedProviders.providers || []).filter((provider) => {
+    const text = `${provider.name || ""} ${provider.model || ""} ${provider.upstream_model || ""}`.toLowerCase();
+    return text.includes("haiku");
+  });
+
+  assert.ok(haikuProviders.length >= 3);
+  for (const provider of haikuProviders) {
+    const profile = policy.classifyProvider(provider);
+    assert.equal(policy.providerMaxRoutingLevel(provider), 3, provider.name);
+    assert.ok(profile.quality_group <= 3, `${provider.name} quality_group=${profile.quality_group}`);
+    assert.ok(profile.thinking_level <= 2, `${provider.name} thinking_level=${profile.thinking_level}`);
+  }
+});
+
+test("classifyProvider caps Haiku even when discovered metadata is too optimistic", () => {
+  const provider = {
+    name: "Copilot-claudehaiku45",
+    family: "copilot",
+    model: "copilot/claude-haiku-4.5",
+    upstream_model: "claude-haiku-4.5",
+    cost_group: 2,
+    quality_group: 4,
+    speed_group: 5,
+    thinking_effort: "medium",
+    thinking_level: 3,
+  };
+
+  assert.deepEqual(policy.classifyProvider(provider), {
+    cost_group: 2,
+    quality_group: 3,
+    speed_group: 5,
+    thinking_effort: "low",
+    thinking_level: 2,
+  });
+  assert.equal(policy.providerMaxRoutingLevel(provider), 3);
 });
 
 test("source-local cost multiplier bonus compares only providers from the same source", () => {
@@ -80,6 +156,43 @@ test("source-local cost multiplier bonus compares only providers from the same s
     true,
   );
   assert.equal(policy.sourceLocalCostMultiplierBonus(windsurf, [cheap, expensive, windsurf], req), 0);
+});
+
+test("providerPolicyBonus nudges frontier requests toward Opus 4.8 over older Opus", () => {
+  const req = {
+    messages: [{ role: "user", content: "Deep production incident: debug a hard multi-service failure with one million token context." }],
+    _inputTokens: 620000,
+    _estimatedTokens: 680000,
+    _llmProxyDifficulty: {
+      level: 5,
+      taskKind: "debugging",
+      taskLevel: 5,
+      contextLevel: 5,
+      costTarget: 4,
+      qualityTarget: 5,
+      thinkingLevel: 4,
+      speedTarget: 3,
+      stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+    },
+  };
+  const opus47 = {
+    name: "Claude-Opus47",
+    family: "claude",
+    model: "claude/claude-opus-4-7",
+    context: 1000000,
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const opus48 = {
+    ...opus47,
+    name: "Claude-Opus48",
+    model: "claude/claude-opus-4-8",
+  };
+
+  assert.equal(policy.providerPolicyBonus(opus48, req) > policy.providerPolicyBonus(opus47, req), true);
 });
 
 test("routing targets parse elastic env budgets", () => {

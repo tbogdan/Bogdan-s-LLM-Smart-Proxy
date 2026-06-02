@@ -17,7 +17,7 @@ test("fallback providers are namespaced and belong to supported families", () =>
   assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.FALLBACK_MODELS).map(([family, models]) => [family, models.length])),
-    { windsurf: 101, claude: 9, codex: 6, copilot: 32 },
+    { windsurf: 102, claude: 10, codex: 6, copilot: 33 },
   );
 
   for (const provider of seed.providers) {
@@ -63,6 +63,7 @@ test("capabilities are inferred for supported model families", () => {
   assert.deepEqual(config.inferCapabilities("codex/gpt-5.5").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("windsurf/swe-1.6-fast").sort(), ["coding", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("windsurf/adaptive").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
+  assert.deepEqual(config.inferCapabilities("claude/claude-opus-4-8").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("windsurf/claude-opus-4.7").sort(), ["coding", "max", "text", "thinking", "tools"].sort());
   assert.deepEqual(config.inferCapabilities("copilot/gpt-4.1").sort(), ["coding", "text", "thinking", "tools"].sort());
 });
@@ -81,6 +82,7 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
     assert.equal(windsurfModels.includes(model), true, `fallback Windsurf catalog should include ${model}`);
   }
   assert.deepEqual(config.FALLBACK_MODELS.claude.map((model) => model.upstream), [
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
@@ -100,6 +102,7 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
 test("contextForModel uses explicit provider limits before catalog defaults", () => {
   assert.equal(config.contextForModel("codex", "gpt-5.5", {}), 272000);
   assert.equal(config.contextForModel("codex", "gpt-5.4", {}), 272000);
+  assert.equal(config.contextForModel("claude", "claude-opus-4-8", {}), 1000000);
   assert.equal(config.contextForModel("claude", "claude-opus-4-7", {}), 1000000);
   assert.equal(config.contextForModel("claude", "claude-sonnet-4-5-20250929", { max_input_tokens: 1000000, max_tokens: 64000 }), 1000000);
   assert.equal(config.contextForModel("claude", "claude-haiku-4-5-20251001", { max_tokens: 64000 }), 200000);

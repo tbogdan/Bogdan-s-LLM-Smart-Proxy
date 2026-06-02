@@ -751,3 +751,53 @@ test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completi
     await closeServer(server);
   }
 });
+
+test("streamWindsurfCloud uses a stream idle timeout and resets it after chunks", async () => {
+  const server = http2.createServer();
+  const seen = [];
+  server.on("stream", (stream, headers) => {
+    seen.push(headers);
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    setTimeout(() => {
+      stream.write(cloud.connectEnvelope(cloud.encodeString(3, "first ")));
+    }, 20);
+    setTimeout(() => {
+      stream.write(cloud.connectEnvelope(cloud.encodeString(3, "second ")));
+    }, 60);
+    setTimeout(() => {
+      stream.end(Buffer.concat([
+        cloud.connectEnvelope(cloud.encodeString(3, "done")),
+        cloud.connectEnvelope(Buffer.alloc(0), 2),
+      ]));
+    }, 90);
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const chunks = [];
+    await cloud.streamWindsurfCloud(
+      {
+        key: "host-token",
+        origin: `http://127.0.0.1:${port}`,
+        path: cloud.GET_CHAT_MESSAGE_PATH,
+        upstream_model: "claude-sonnet-4-6-thinking",
+        windsurf_model_uid: "claude-sonnet-4-6-thinking",
+        stream_timeout_ms: 50,
+      },
+      { model: "windsurf/claude-sonnet-4-6-thinking", messages: [{ role: "user", content: "Hello" }], stream: true },
+      {
+        onChunk(chunk) {
+          chunks.push(chunk);
+        },
+      },
+    );
+
+    assert.equal(seen[0]["connect-timeout-ms"], "50");
+    assert.match(chunks.join(""), /first /);
+    assert.match(chunks.join(""), /second /);
+    assert.match(chunks.join(""), /done/);
+  } finally {
+    await closeServer(server);
+  }
+});

@@ -89,7 +89,7 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
         seed.providers.filter((provider) => provider.family === family).length,
       ]),
     ),
-    { windsurf: 101, claude: 9, codex: 6, copilot: 32 },
+    { windsurf: 102, claude: 10, codex: 6, copilot: 33 },
   );
 
   for (const provider of seed.providers) {
@@ -108,6 +108,25 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
     ANTHROPIC_API_KEY: "anthropic-key",
   })[0];
   const providers = discovery.providersFromEndpointModels(endpoint, [
+    {
+      id: "claude-opus-4-8",
+      display_name: "Claude Opus 4.8",
+      created_at: "2026-05-28T00:00:00Z",
+      max_input_tokens: 1000000,
+      max_tokens: 128000,
+      capabilities: {
+        effort: {
+          supported: true,
+          low: { supported: true },
+          medium: { supported: true },
+          high: { supported: true },
+          max: { supported: true },
+        },
+        thinking: { supported: true, types: { adaptive: { supported: true } } },
+        code_execution: { supported: true },
+        context_management: { supported: true, compact_20260112: { supported: true } },
+      },
+    },
     {
       id: "claude-sonnet-4-6",
       display_name: "Claude Sonnet 4.6",
@@ -129,10 +148,14 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
     { id: "claude-haiku-4-5", max_input_tokens: 200000, max_tokens: 64000 },
   ]);
 
-  assert.deepEqual(providers.map((provider) => provider.model), ["claude/claude-sonnet-4-6", "claude/claude-haiku-4-5"]);
-  assert.deepEqual(providers.map((provider) => provider.upstream_model), ["claude-sonnet-4-6", "claude-haiku-4-5"]);
-  assert.equal(providers[0].name, "Claude-claudesonnet46");
+  assert.deepEqual(providers.map((provider) => provider.model), ["claude/claude-opus-4-8", "claude/claude-sonnet-4-6", "claude/claude-haiku-4-5"]);
+  assert.deepEqual(providers.map((provider) => provider.upstream_model), ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+  assert.equal(providers[0].name, "Claude-claudeopus48");
   assert.equal(providers[0].family, "claude");
+  assert.equal(providers[0].context, 1000000);
+  assert.equal(providers[0].quality_group, 5);
+  assert.equal(providers[0].thinking_effort, "xhigh");
+  assert.equal(providers[0].supports_adaptive_thinking, true);
   assert.equal(providers[0].protocol, "anthropic");
   assert.equal(providers[0].key_env, "ANTHROPIC_API_KEY");
   assert.deepEqual(providers[0].headers, {});
@@ -141,15 +164,19 @@ test("providersFromEndpointModels maps Claude models to namespaced provider entr
   assert.equal(typeof providers[0].last_tested, "string");
   assert.equal(providers[0].context, 1000000);
   assert.equal(providers[0].max_tokens, 128000);
-  assert.equal(providers[0].display_name, "Claude Sonnet 4.6");
+  assert.equal(providers[0].display_name, "Claude Opus 4.8");
   assert.deepEqual(providers[0].supported_thinking_efforts, ["low", "medium", "high", "xhigh"]);
   assert.equal(providers[0].supports_adaptive_thinking, true);
   assert.equal(providers[0].supports_code_execution, true);
   assert.equal(providers[0].supports_context_compaction, true);
-  assert.equal(providers[0].cost_group, 3);
-  assert.equal(providers[0].quality_group, 4);
-  assert.equal(providers[0].speed_group, 4);
-  assert.equal(providers[1].context, 200000);
+  assert.equal(providers[0].cost_group, 4);
+  assert.equal(providers[0].quality_group, 5);
+  assert.equal(providers[0].speed_group, 3);
+  assert.equal(providers[1].display_name, "Claude Sonnet 4.6");
+  assert.equal(providers[1].cost_group, 3);
+  assert.equal(providers[1].quality_group, 4);
+  assert.equal(providers[1].speed_group, 4);
+  assert.equal(providers[2].context, 200000);
 });
 
 test("providersFromEndpointModels maps Codex models to namespaced provider entries", () => {
@@ -241,11 +268,13 @@ test("discoverEndpointModels uses built-in Copilot model list without remote cat
   });
 
   assert.equal(result.source, "configured");
-  assert.equal(result.models.length, 32);
+  assert.equal(result.models.length, 33);
   assert.equal(result.models.some((model) => model.id === "gpt-4.1"), true);
+  assert.equal(result.models.some((model) => model.id === "claude-opus-4.8"), true);
   assert.equal(result.models.some((model) => model.id === "claude-sonnet-4.6"), true);
   assert.equal(result.models.some((model) => model.id === "gpt-5.4"), true);
   assert.equal(result.models.find((model) => model.id === "gpt-4.1").cost_multiplier, 0);
+  assert.equal(result.models.find((model) => model.id === "claude-opus-4.8").cost_multiplier, 15);
   assert.equal(result.models.find((model) => model.id === "claude-opus-4.7").cost_multiplier, 15);
 });
 
@@ -1219,6 +1248,57 @@ server.listen(0, "127.0.0.1", async () => {
   assert.equal(parsed.hits, 1);
   assert.equal(parsed.result.alive, false);
   assert.equal(parsed.result.reason, "temporary_provider_error");
+});
+
+test("testSeedProviders keeps rate-limited providers available", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-discovery-rate-limit-alive-"));
+  const script = `
+const http = require("node:http");
+const discovery = require("./llm-discovery");
+
+let hits = 0;
+
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/chat/completions") {
+    hits += 1;
+    req.resume();
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "rate_limit_error", message: "Too many requests" } }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(0, "127.0.0.1", async () => {
+  const url = "http://127.0.0.1:" + server.address().port + "/chat/completions";
+  const provider = {
+    name: "Codex-GPT55",
+    family: "codex",
+    protocol: "openai",
+    model: "codex/gpt-5.5",
+    upstream_model: "gpt-5.5",
+    url,
+    key_env: "CODEX_API_KEY",
+  };
+  const result = await discovery.testSeedProviders({ providers: [provider] });
+  console.log("RESULT " + JSON.stringify({ result: result[0], hits }));
+  server.close(() => process.exit(0));
+});
+`;
+
+  const result = spawnSync(process.execPath, ["-e", script], {
+    cwd: path.join(__dirname, ".."),
+    env: { ...process.env, DATA_DIR: dataDir, CODEX_API_KEY: "codex-key" },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const line = result.stdout.split("\n").find((entry) => entry.startsWith("RESULT "));
+  assert.ok(line, result.stdout);
+  const parsed = JSON.parse(line.slice("RESULT ".length));
+  assert.equal(parsed.hits, 1);
+  assert.equal(parsed.result.alive, true);
+  assert.equal(parsed.result.reason, "rate_limited");
 });
 
 test("testSeedProviders quickly retries temporary provider errors", () => {

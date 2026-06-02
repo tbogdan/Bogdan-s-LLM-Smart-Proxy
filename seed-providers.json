@@ -49,7 +49,7 @@
       "cost_group": 1,
       "quality_group": 4,
       "speed_group": 5,
-      "thinking_effort": "medium",
+      "thinking_effort": "low",
       "source": "windsurf_app"
     },
     {
@@ -79,7 +79,7 @@
       "cost_group": 1,
       "quality_group": 4,
       "speed_group": 4,
-      "thinking_effort": "medium",
+      "thinking_effort": "low",
       "source": "windsurf_app"
     },
     {
@@ -232,6 +232,37 @@
       ],
       "headers": {},
       "seed": true
+    },
+    {
+      "name": "Windsurf-ClaudeOpus48",
+      "family": "windsurf",
+      "protocol": "windsurf",
+      "url": "windsurf",
+      "key_env": "WINDSURF_API_KEY",
+      "model": "windsurf/claude-opus-4.8",
+      "upstream_model": "claude-opus-4.8",
+      "windsurf_model_uid": "claude-opus-4-8",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "thinking",
+        "max",
+        "images"
+      ],
+      "headers": {},
+      "seed": true,
+      "max_tokens": 200000,
+      "app_cost_tier": 4,
+      "cost_group": 4,
+      "quality_group": 5,
+      "speed_group": 3,
+      "thinking_effort": "xhigh",
+      "thinking_level": 5,
+      "source": "builtin"
     },
     {
       "name": "Windsurf-ClaudeOpus47",
@@ -406,6 +437,51 @@
       ],
       "headers": {},
       "seed": true
+    },
+    {
+      "name": "Claude-Opus48",
+      "family": "claude",
+      "protocol": "anthropic",
+      "url": "claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "model": "claude/claude-opus-4-8",
+      "upstream_model": "claude-opus-4-8",
+      "context": 1000000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "seed": true,
+      "max_tokens": 128000,
+      "cost_group": 4,
+      "quality_group": 5,
+      "speed_group": 3,
+      "thinking_effort": "xhigh",
+      "thinking_level": 5,
+      "display_name": "Claude Opus 4.8",
+      "source": "models_url",
+      "source_type": "model",
+      "created_at": "2026-05-28T00:00:00Z",
+      "supported_thinking_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_code_execution": true,
+      "supports_context_management": true,
+      "supports_context_compaction": true,
+      "supports_adaptive_thinking": true,
+      "supports_extended_thinking": false,
+      "supports_structured_outputs": true,
+      "supports_pdf_input": true
     },
     {
       "name": "Claude-Opus47",
@@ -3587,6 +3663,56 @@
       "thinking_level": 5
     },
     {
+      "name": "Copilot-claudeopus48",
+      "family": "copilot",
+      "protocol": "openai",
+      "url": "https://api.githubcopilot.com/chat/completions",
+      "key_env": "COPILOT_GITHUB_TOKEN",
+      "model": "copilot/claude-opus-4.8",
+      "upstream_model": "claude-opus-4.8",
+      "context": 200000,
+      "caps": [
+        "text",
+        "coding",
+        "tools",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "tc": true,
+      "max_tokens": 32000,
+      "cost_multiplier": 15,
+      "max_context_window": 200000,
+      "vendor": "Anthropic",
+      "version": "claude-opus-4.8",
+      "model_picker_enabled": true,
+      "model_picker_category": "powerful",
+      "is_chat_default": false,
+      "is_chat_fallback": false,
+      "supported_endpoints": [
+        "/v1/messages",
+        "/chat/completions"
+      ],
+      "supported_thinking_efforts": [
+        "medium"
+      ],
+      "thinking_effort": "xhigh",
+      "supports_parallel_tool_calls": true,
+      "supports_structured_outputs": true,
+      "supports_tool_calls": true,
+      "supports_adaptive_thinking": true,
+      "supports_streaming": true,
+      "source_type": "chat",
+      "tokenizer": "o200k_base",
+      "tier": 2,
+      "headers": {},
+      "seed": true,
+      "cost_group": 4,
+      "quality_group": 5,
+      "speed_group": 4,
+      "thinking_level": 5
+    },
+    {
       "name": "Copilot-claudeopus47",
       "family": "copilot",
       "protocol": "openai",
@@ -4224,7 +4350,7 @@
         "/chat/completions",
         "/v1/messages"
       ],
-      "thinking_effort": "medium",
+      "thinking_effort": "low",
       "supports_parallel_tool_calls": true,
       "supports_tool_calls": true,
       "supports_streaming": true,
@@ -4314,7 +4440,7 @@
         "/chat/completions",
         "/v1/messages"
       ],
-      "thinking_effort": "medium",
+      "thinking_effort": "low",
       "supports_parallel_tool_calls": true,
       "supports_tool_calls": true,
       "supports_streaming": true,
@@ -4324,9 +4450,9 @@
       "headers": {},
       "seed": true,
       "cost_group": 2,
-      "quality_group": 4,
+      "quality_group": 3,
       "speed_group": 5,
-      "thinking_level": 3
+      "thinking_level": 2
     },
     {
       "name": "Copilot-gemini3flashpreview",

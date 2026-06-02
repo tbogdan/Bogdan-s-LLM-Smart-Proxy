@@ -474,6 +474,31 @@ test("routeStreamToProvider strips hidden memory markers from streamed content",
   });
 });
 
+test("routeStreamToProvider strips malformed historical tool invocation lines from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Am actualizat catalogul.\\n" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Historical tool invocation (already executed\\\": Edit {\\\"file_path\\\":\\\"/tmp/catalog.py\\\"}" }, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), {
+        model: "auto-text",
+        stream: true,
+        messages: [{ role: "user", content: "Ce ai schimbat?" }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("Am actualizat catalogul."), true);
+      assert.equal(output.includes("Historical tool invocation"), false);
+      assert.equal(output.includes("already executed"), false);
+    });
+  });
+});
+
 test("routeStreamToProvider strips trailing hidden memory markers after visible content", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -866,8 +891,6 @@ test("handleChatCompletion adds hidden continue user message after native inert 
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
-      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
-      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });
@@ -957,6 +980,110 @@ test("handleChatCompletion adds hidden continue after native file-check Go prelu
   });
 });
 
+test("handleChatCompletion continues native active tool work after short text-only progress", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    const calls = [];
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Short-Progress",
+      model: "windsurf/native-short-progress",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: { content: "Found the vars writer; dry-run only rendered, so live run still needs execution." },
+            finish_reason: null,
+          }],
+        })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_live",
+              type: "function",
+              function: { name: "Bash", arguments: "{\"command\":\"python3 -m chaosctl.cli run reports/startup-experiment.yml\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        messages: [
+          { role: "user", content: "Run reports/startup-experiment.yml live, not dry-run; it should take at least the test duration." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Bash", arguments: "{\"command\":\"cat reports/startup-experiment.yml\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_read", content: "experiment:\\n  type: vz-start-stop\\n  pause_seconds: 300" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_vars", type: "function", function: { name: "Bash", arguments: "{\"command\":\"ls reports/*.vars.yml\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_vars", content: "(eval):1: no matches found: reports/*.vars.yml" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_grep", type: "function", function: { name: "Bash", arguments: "{\"command\":\"grep -n _write_vars chaosctl/run_cmd.py\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_grep", content: "169:def _write_vars(...):\\n174:path = report_dir / f\"{name}-{ts}-vars.yml\"" },
+        ],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(calls.length, 2);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("dry-run only rendered"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.equal(output.includes("chaosctl.cli run reports/startup-experiment.yml"), true);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
 test("handleChatCompletion cools native Windsurf invalid_argument streams", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
@@ -997,6 +1124,83 @@ test("handleChatCompletion cools native Windsurf invalid_argument streams", asyn
       assert.equal(score.failures, 1);
       assert.equal(score.cooldown_reason, "windsurf invalid_argument");
       assert.equal(score.cooldown_until > Date.now() + 50 * 60_000, true);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion cools same Windsurf model-class peers after zero-chunk stream timeout", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-SonnetThinking-Timeout",
+        model: "windsurf/claude-sonnet-4-6-thinking",
+        upstream_model: "claude-sonnet-4-6-thinking",
+        protocol: "windsurf",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+      },
+      {
+        name: "Windsurf-Sonnet-Timeout-Peer",
+        model: "windsurf/claude-sonnet-4.6",
+        upstream_model: "claude-sonnet-4.6",
+        protocol: "windsurf",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+      },
+      {
+        name: "Windsurf-GPT54Mini-Timeout-Other",
+        model: "windsurf/gpt-5-4-mini-high",
+        upstream_model: "gpt-5-4-mini-high",
+        protocol: "windsurf",
+        family: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+      },
+    ];
+    providerAdapters.routeNativeStream = async () => {
+      const error = new Error("Windsurf Connect stream timeout after 120000ms");
+      error.status = 502;
+      throw error;
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "windsurf/claude-sonnet-4-6-thinking",
+        stream: true,
+        messages: [{ role: "user", content: "continue" }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const failed = state.scores["Windsurf-SonnetThinking-Timeout"];
+      const peer = state.scores["Windsurf-Sonnet-Timeout-Peer"];
+      const other = state.scores["Windsurf-GPT54Mini-Timeout-Other"];
+
+      assert.equal(clientRes.status, 502);
+      assert.match(failed.cooldown_reason, /zero-chunk native stream timeout/);
+      assert.match(peer.cooldown_reason, /peer zero-chunk native stream timeout/);
+      assert.equal(peer.cooldown_until > Date.now() + 5 * 60_000, true);
+      assert.equal(other?.cooldown_reason, undefined);
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
