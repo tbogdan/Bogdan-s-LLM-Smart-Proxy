@@ -2,8 +2,53 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 
 const responses = require("../lib/responses");
+const routing = require("../lib/routing");
+const state = require("../lib/state");
+const providerAdapters = require("../lib/provider-adapters");
+
+class FakeSseResponse extends EventEmitter {
+  constructor() {
+    super();
+    this.statusCode = null;
+    this.headers = {};
+    this.body = "";
+    this.writableEnded = false;
+    this.destroyed = false;
+    this.endCalls = 0;
+  }
+
+  writeHead(status, headers = {}) {
+    this.statusCode = status;
+    this.headers = headers;
+  }
+
+  write(chunk) {
+    if (this.writableEnded) throw new Error("write after end");
+    this.body += chunk.toString();
+  }
+
+  end(chunk) {
+    if (chunk) this.write(chunk);
+    if (this.writableEnded) return;
+    this.writableEnded = true;
+    this.endCalls += 1;
+    this.emit("close");
+  }
+}
+
+function parseSseEvents(body = "") {
+  return String(body)
+    .split(/\n\n/)
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk.startsWith("data: "))
+    .map((chunk) => chunk.slice(6).trim())
+    .filter((data) => data && data !== "[DONE]")
+    .map((data) => JSON.parse(data));
+}
 
 test("translateInput maps Responses API messages, tools, and model aliases to chat completions", () => {
   const chat = responses.translateInput({
@@ -17,6 +62,8 @@ test("translateInput maps Responses API messages, tools, and model aliases to ch
     tools: [
       { type: "function", name: "read_file", description: "Read a file", parameters: { type: "object" }, strict: true },
     ],
+    tool_choice: "required",
+    parallel_tool_calls: false,
     max_output_tokens: 1234,
   });
 
@@ -36,6 +83,29 @@ test("translateInput maps Responses API messages, tools, and model aliases to ch
   assert.deepEqual(chat.tools, [
     { type: "function", function: { name: "read_file", description: "Read a file", parameters: { type: "object" }, strict: true } },
   ]);
+  assert.equal(chat.tool_choice, "required");
+  assert.equal(chat.parallel_tool_calls, false);
+});
+
+test("translateInput maps Responses function tool_choice objects to Chat Completions shape", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4",
+    input: [{ role: "user", content: "Read package.json." }],
+    tools: [{ type: "function", name: "Read", parameters: { type: "object" } }],
+    tool_choice: { type: "function", name: "Read" },
+  });
+
+  assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "Read" } });
+});
+
+test("translateInput forwards detected IDE client metadata for prompt capability scoping", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4",
+    input: [{ role: "user", content: "Read package.json." }],
+    tools: [{ type: "function", name: "Read", parameters: { type: "object" } }],
+  }, { client: "codex" });
+
+  assert.equal(chat._llmProxyClient, "codex");
 });
 
 test("translateInput maps OpenAI SDK chat-style Responses input and JSON schema format", () => {
@@ -231,6 +301,216 @@ test("MockResponse converts streaming tool call deltas into Responses function_c
   assert.equal(completed.response.output[0].arguments, "{\"path\":\"README.md\"}");
 });
 
+test("MockResponse keeps distinct output indexes for mixed text and tool call streams", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"I will inspect that."},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\\"file_path\\""}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"package.json\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+  res.end();
+
+  const messageAdded = events.find((event) => event.type === "response.output_item.added" && event.item.type === "message");
+  const toolAdded = events.find((event) => event.type === "response.output_item.added" && event.item.type === "function_call");
+  const textDone = events.find((event) => event.type === "response.output_text.done");
+  const argsDone = events.find((event) => event.type === "response.function_call_arguments.done");
+  assert.equal(messageAdded.output_index, 0);
+  assert.equal(toolAdded.output_index, 1);
+  assert.equal(textDone.output_index, 0);
+  assert.equal(argsDone.output_index, 1);
+
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.deepEqual(completed.response.output.map((item) => item.type), ["message", "function_call"]);
+  assert.equal(completed.response.output[0].content[0].text, "I will inspect that.");
+  assert.equal(completed.response.output[1].arguments, "{\"file_path\":\"package.json\"}");
+});
+
+test("MockResponse end is idempotent after routed streams close internally", () => {
+  const events = [];
+  let doneCalls = 0;
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => { doneCalls += 1; },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+  res.end();
+
+  assert.equal(doneCalls, 1);
+  assert.equal(events.filter((event) => event.type === "response.completed").length, 1);
+});
+
+test("handleResponsesHTTP ignores duplicate internal stream closes", async () => {
+  responses.init({
+    handleChatCompletion: async (_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}]}\n\n');
+      res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+      res.end();
+      res.end();
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "text/event-stream" } },
+    res,
+    JSON.stringify({ model: "gpt-5.4", stream: true, input: "hi" }),
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.endCalls, 1);
+  assert.equal((res.body.match(/response.completed/g) || []).length, 1);
+});
+
+test("handleResponsesHTTP keeps Codex loop alive by returning function_call after hidden continuation", async () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  const originalRouteNativeStream = providerAdapters.routeNativeStream;
+  const originalLog = state.log;
+  const originalWriteFileSync = fs.writeFileSync;
+  const originalScores = state.scores;
+  const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+  const originalMaxRetries = process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES;
+  const calls = [];
+  const logs = [];
+
+  try {
+    state.PROVIDERS = [{
+      name: "Responses-Native-Loop",
+      model: "windsurf/responses-native-loop",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+    }];
+    state.GROUPS = { "auto-coding": "coding" };
+    state.scores = {};
+    state.log = (message) => logs.push(String(message));
+    fs.writeFileSync = () => {};
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES = "3";
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens: () => {},
+    });
+    responses.init({ handleChatCompletion: routing.handleChatCompletion });
+
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((message) => message.role === "user") || [];
+      calls.push({
+        provider: provider.name,
+        userCount: userMessages.length,
+        lastUser: userMessages.at(-1)?.content,
+      });
+
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: [
+          "[5/N] Checking the identity provider route for membership state.",
+          "Next step: inspect the membership API response and rerun Playwright.",
+        ].join("\n") }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_account_api",
+              type: "function",
+              function: {
+                name: "exec_command",
+                arguments: "{\"cmd\":\"curl -s http://localhost:5173/api/user/memberships\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+
+    const res = new FakeSseResponse();
+    await responses.handleResponsesHTTP(
+      { headers: { accept: "text/event-stream" } },
+      res,
+      JSON.stringify({
+        model: "auto-coding",
+        stream: true,
+        input: [
+          { role: "user", content: "Continue fixing the identity provider route and verify it." },
+          { type: "function_call", call_id: "call_prev", name: "exec_command", arguments: "{\"cmd\":\"node e2e_membership_test.js\"}" },
+          { type: "function_call_output", call_id: "call_prev", output: "[4/N] Subscriptions tab loaded. No active membership card displayed." },
+        ],
+        tools: [{
+          type: "function",
+          name: "exec_command",
+          parameters: {
+            type: "object",
+            required: ["cmd"],
+            properties: { cmd: { type: "string" } },
+            additionalProperties: false,
+          },
+        }],
+      }),
+    );
+
+    const events = parseSseEvents(res.body);
+    const completed = events.find((event) => event.type === "response.completed");
+    const output = completed?.response?.output || [];
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.endCalls, 1);
+    assert.equal(res.body.includes("Checking the identity provider route"), false);
+    assert.deepEqual(calls, [
+      {
+        provider: "Responses-Native-Loop",
+        userCount: 1,
+        lastUser: "Continue fixing the identity provider route and verify it.",
+      },
+      {
+        provider: "Responses-Native-Loop",
+        userCount: 2,
+        lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+      },
+    ]);
+    assert.deepEqual(output.map((item) => item.type), ["function_call"]);
+    assert.equal(output[0].name, "exec_command");
+    assert.equal(output[0].arguments, "{\"cmd\":\"curl -s http://localhost:5173/api/user/memberships\"}");
+    assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Responses-Native-Loop .*output=action_prelude.*action=hidden_continue/);
+    assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Responses-Native-Loop retry=1/);
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+    state.scores = originalScores;
+    state.log = originalLog;
+    providerAdapters.routeNativeStream = originalRouteNativeStream;
+    fs.writeFileSync = originalWriteFileSync;
+    if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+    else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+    if (originalMaxRetries === undefined) delete process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES;
+    else process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES = originalMaxRetries;
+    routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+  }
+});
+
 test("handleResponsesHTTP returns JSON Responses output for non-streaming OpenAI SDK callers", async () => {
   const schema = {
     type: "object",
@@ -308,6 +588,101 @@ test("handleResponsesHTTP returns JSON Responses output for non-streaming OpenAI
   assert.equal(body.output[0].content[0].type, "output_text");
   assert.equal(body.output[0].content[0].text, "{\"facts\":[\"Graphiti uses proxy\"]}");
   assert.deepEqual(body.usage, { input_tokens: 7, output_tokens: 5, total_tokens: 12 });
+});
+
+test("handleResponsesHTTP replays previous_response_id history for tool outputs", async () => {
+  const captured = [];
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      captured.push(JSON.parse(JSON.stringify(req)));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (captured.length === 1) {
+        res.end(JSON.stringify({
+          id: "chatcmpl_tool",
+          object: "chat.completion",
+          created: 1779437101,
+          model: req.model,
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"package.json\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        id: "chatcmpl_done",
+        object: "chat.completion",
+        created: 1779437102,
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "Read result accepted." },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 20, completion_tokens: 4, total_tokens: 24 },
+      }));
+    },
+  });
+
+  const makeRes = () => ({
+    statusCode: null,
+    headers: {},
+    body: "",
+    writeHead(status, headers = {}) {
+      this.statusCode = status;
+      this.headers = headers;
+    },
+    write(chunk) {
+      this.body += chunk.toString();
+    },
+    end(chunk) {
+      if (chunk) this.write(chunk);
+    },
+  });
+
+  const first = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json" } },
+    first,
+    JSON.stringify({
+      model: "gpt-5.4",
+      input: [{ role: "user", content: "Read package.json." }],
+      tools: [{ type: "function", name: "Read", parameters: { type: "object" } }],
+      tool_choice: "required",
+    }),
+  );
+  const firstBody = JSON.parse(first.body);
+  const callId = firstBody.output.find((item) => item.type === "function_call").call_id;
+
+  const second = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json" } },
+    second,
+    JSON.stringify({
+      model: "gpt-5.4",
+      previous_response_id: firstBody.id,
+      input: [{ type: "function_call_output", call_id: callId, output: "{\"name\":\"llm-proxy\"}" }],
+    }),
+  );
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(captured[0].tool_choice, "required");
+  const replay = captured[1].messages;
+  const assistantIndex = replay.findIndex((message) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call_read");
+  const toolIndex = replay.findIndex((message) => message.role === "tool" && message.tool_call_id === "call_read");
+  assert.equal(assistantIndex >= 0, true);
+  assert.equal(toolIndex > assistantIndex, true);
 });
 
 test("handleResponsesHTTP repairs structured JSON output to match requested schema", async () => {

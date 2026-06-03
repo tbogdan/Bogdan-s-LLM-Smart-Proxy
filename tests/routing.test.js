@@ -100,6 +100,10 @@ test("stripCachedProxyArtifacts removes private routing and memory marker lines"
           "effort=low speed=4 reason=repo_check",
           "[LLM_PROXY_MEMORY v=1 op=save_fact target=markers type=decision confidence=high]",
           'LLM_PROXY_RECALL v=1 q="routing" types=architecture budget=800 reason=lookup',
+          "LLM_PROXY_CONTEXT_COMPACTION_REQUIRED",
+          "client=codex reason=too_large_for_best_context input_tokens=968131 requested_tokens=984515 max_context=1048576",
+          "The proxy compacted locally when possible, but this request still does not fit any configured provider.",
+          "Codex: start a fresh thread or compact the conversation, then retry the same instruction.",
         ].join("\n"),
       },
     ],
@@ -110,7 +114,7 @@ test("stripCachedProxyArtifacts removes private routing and memory marker lines"
 
   assert.equal(removed, 1);
   assert.match(serialized, /Done\./);
-  assert.doesNotMatch(serialized, /LLM_PROXY_TASK_DIFFICULTY|LLM_PROXY_MEMORY|LLM_PROXY_RECALL|effort=low/);
+  assert.doesNotMatch(serialized, /LLM_PROXY_TASK_DIFFICULTY|LLM_PROXY_MEMORY|LLM_PROXY_RECALL|LLM_PROXY_CONTEXT_COMPACTION_REQUIRED|too_large_for_best_context|effort=low/);
 });
 
 test("human approval ignores assessed security signoff without current security intent", async () => {
@@ -261,6 +265,163 @@ test("routeToProvider converts imitated tool-call text into real tool calls", as
   });
 });
 
+test("routeToProvider treats non-stream historical tool replay as hidden continuation", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-history-replay",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "Historical tool invocation (already executed): exec_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const testProvider = provider(url, {
+        name: "Windsurf-HTTP-History-Replay-Test",
+        model: "windsurf/http-history-replay-test",
+        family: "windsurf",
+        protocol: "openai",
+      });
+      await assert.rejects(
+        () => routing.routeToProvider(testProvider, {
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue fixing the bug." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_prev", content: "failing test output" },
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: "exec_command",
+              parameters: {
+                type: "object",
+                required: ["cmd"],
+                properties: { cmd: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          }],
+        }),
+        (err) => err.hiddenContinuation === true && err.artifactReplay === true,
+      );
+      assert.equal(state.scores["Windsurf-HTTP-History-Replay-Test"]?.failures || 0, 0);
+    });
+  });
+});
+
+test("handleChatCompletion retries non-stream historical tool replay with anti-replay continue", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "Historical tool invocation (already executed): exec_command {\"cmd\":\"pwd\"}",
+              },
+              finish_reason: "stop",
+            }],
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_next",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "HTTP-History-Replay-Loop-Test",
+          model: "test/http-history-replay-loop",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue fixing the bug." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_prev", content: "failing test output" },
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: "exec_command",
+              parameters: {
+                type: "object",
+                required: ["cmd"],
+                properties: { cmd: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          }],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(requests[1].messages.filter((message) => message.role === "user").at(-1).content, /^continue\. Do not replay historical tool invocations/);
+        assert.match(fake.body, /"tool_calls"/);
+        assert.doesNotMatch(fake.body, /Historical tool invocation|already executed/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
 test("routeToProvider converts XML function-call text into real tool calls", async () => {
   await withRoutingState(async () => {
     const xmlToolText = [
@@ -346,6 +507,258 @@ test("routeToProvider converts XML function-call text into real tool calls", asy
       assert.equal(secondArgs.offset, 1);
       assert.equal(secondArgs.limit, 60);
       assert.doesNotMatch(resp.body, /<function_calls>|<invoke name=/);
+    });
+  });
+});
+
+test("routeToProvider converts naked command argument text into a real exec_command tool call", async () => {
+  await withRoutingState(async () => {
+    const expectedCmd = String.raw`cd /Users/bogdan/PhpstormProjects/Events && grep -n "'/login'\|\"/login\"\|auth_login\|loginUser\|'login'" backend/src/routes.php | head; echo '---REDIS KEYS---'; docker exec events_redis redis-cli KEYS 'rate' 2>/dev/null | head -30; docker exec events_redis redis-cli KEYS 'auth' 2>/dev/null | head -30`;
+    const badToolText = [
+      "Rate limit persists. Clearing Redis-backed rate-limit keys instead of waiting.",
+      "",
+      `cmd": "${expectedCmd}", "yield_time_ms": 8000}`,
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-naked-command-args",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: badToolText,
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Clear the login rate limit and continue testing." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: {
+                cmd: { type: "string" },
+                yield_time_ms: { type: "number" },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+      const args = JSON.parse(message.tool_calls[0].function.arguments);
+
+      assert.equal(message.content, null);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.equal(message.tool_calls[0].function.name, "exec_command");
+      assert.equal(args.cmd, expectedCmd);
+      assert.equal(args.yield_time_ms, 8000);
+      assert.doesNotMatch(resp.body, /Rate limit persists|cmd":/);
+    });
+  });
+});
+
+test("routeToProvider does not execute explanatory candidate command payload text", async () => {
+  await withRoutingState(async () => {
+    const candidateText = [
+      "I would not run it yet.",
+      "Candidate payload: cmd\": \"docker ps | head\", \"yield_time_ms\": 8000}",
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-candidate-command-args",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: candidateText,
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Explain the possible cleanup command." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: {
+                cmd: { type: "string" },
+                yield_time_ms: { type: "number" },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+
+      assert.equal(parsed.choices[0].finish_reason, "stop");
+      assert.equal(message.content, candidateText);
+      assert.equal(message.tool_calls, undefined);
+    });
+  });
+});
+
+test("routeToProvider repairs concatenated generated tool argument snapshots", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-tool-snapshot",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "exec_command",
+                arguments: "{}{\"cmd\":\"pwd\"}{\"cmd\":\"pwd\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Run pwd." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const args = JSON.parse(parsed.choices[0].message.tool_calls[0].function.arguments);
+      assert.deepEqual(args, { cmd: "pwd" });
+    });
+  });
+});
+
+test("routeToProvider maps generated command alias to exec_command cmd", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-tool-command-alias",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "exec_command",
+                arguments: "{\"command\":\"pwd\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Run pwd." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const args = JSON.parse(parsed.choices[0].message.tool_calls[0].function.arguments);
+      assert.deepEqual(args, { cmd: "pwd" });
+    });
+  });
+});
+
+test("routeToProvider converts bare tool-call text into real tool calls", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-bare-tool-text",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "exec_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Run pwd." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+      assert.equal(message.content, null);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.equal(message.tool_calls[0].function.name, "exec_command");
+      assert.deepEqual(JSON.parse(message.tool_calls[0].function.arguments), { cmd: "pwd" });
     });
   });
 });
@@ -3680,6 +4093,387 @@ test("handleChatCompletion ignores stale approval token when current request no 
   });
 });
 
+test("handleChatCompletion retries one hidden user continue when assistant echoes continue", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: requests.length === 1 ? "continue" : "Done. Verified lib/routing.js after the hidden continue.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Continue-Echo-Test",
+          model: "test/continue-echo",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the routing fix." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+          ],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(JSON.parse(fake.body).choices[0].message.content, "Done. Verified lib/routing.js after the hidden continue.");
+        assert.equal(requests.length, 2);
+        assert.equal(requests[0].messages.some((message) => message.role === "user" && message.content === "continue"), false);
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
+        assert.match(requests[1].messages.at(-1).content, /call the next appropriate tool now/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion retries one hidden user continue when assistant echoes tool-result separator", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: requests.length === 1 ? "Tool result received." : "Done. Verified lib/routing.js after the tool separator.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tool-Separator-Echo-Test",
+          model: "test/tool-separator-echo",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the routing fix." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+          ],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(JSON.parse(fake.body).choices[0].message.content, "Done. Verified lib/routing.js after the tool separator.");
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
+        assert.match(requests[1].messages.at(-1).content, /call the next appropriate tool now/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion converts cached assistant continue before tool nudge into hidden user continue", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: { role: "assistant", content: "Done. Verified src/App.vue after the TodoWrite nudge." },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Cached-Continue-Test",
+          model: "test/cached-continue",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the frontend fix." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_edit", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"src/App.vue\"}" } }] },
+            { role: "tool", tool_call_id: "call_edit", content: "The file src/App.vue has been updated successfully." },
+            { role: "assistant", content: "continue" },
+            {
+              role: "user",
+              content: [
+                "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using it.",
+                "Here are the existing contents of your todo list:",
+                "[1. [completed] Edited App.vue",
+                "2. [pending] Test browser flow]",
+              ].join("\n"),
+            },
+          ],
+          tools: [
+            { type: "function", function: { name: "Edit", parameters: { type: "object" } } },
+            { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        const upstreamMessages = requests[0].messages || [];
+        assert.equal(upstreamMessages.at(-1).role, "user");
+        assert.match(upstreamMessages.at(-1).content, /^continue the active task\./);
+        assert.match(upstreamMessages.at(-1).content, /call the next appropriate tool now/);
+        assert.equal(upstreamMessages.some((message) => message.role === "assistant" && message.content === "continue"), false);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion converts cached tool-result separator before tool nudge into hidden user continue", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: { role: "assistant", content: "Done. Verified src/App.vue after the tool separator." },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Cached-Tool-Separator-Test",
+          model: "test/cached-tool-separator",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the frontend fix." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_edit", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"src/App.vue\"}" } }] },
+            { role: "tool", tool_call_id: "call_edit", content: "The file src/App.vue has been updated successfully." },
+            { role: "assistant", content: "Tool result received." },
+            {
+              role: "user",
+              content: [
+                "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using it.",
+                "Here are the existing contents of your todo list:",
+                "[1. [completed] Edited App.vue",
+                "2. [pending] Test browser flow]",
+              ].join("\n"),
+            },
+          ],
+          tools: [
+            { type: "function", function: { name: "Edit", parameters: { type: "object" } } },
+            { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        const upstreamMessages = requests[0].messages || [];
+        assert.equal(upstreamMessages.at(-1).role, "user");
+        assert.match(upstreamMessages.at(-1).content, /^continue the active task\./);
+        assert.match(upstreamMessages.at(-1).content, /call the next appropriate tool now/);
+        assert.equal(upstreamMessages.some((message) => message.role === "assistant" && message.content === "Tool result received."), false);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+for (const separatorText of ["Tool result acknowledged.", "Tool result recieved."]) {
+  test(`handleChatCompletion converts cached ${separatorText} separator before tool nudge`, async () => {
+    await withRoutingState(async () => {
+      const originalProviders = state.PROVIDERS;
+      const originalGroups = state.GROUPS;
+      const requests = [];
+
+      await withServer((req, res) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          requests.push(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "Done. Verified src/App.vue after the cached separator cleanup." },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+          }));
+        });
+      }, async (url) => {
+        state.GROUPS = { "auto-coding": "coding" };
+        state.PROVIDERS = [
+          provider(url, {
+            name: `Cached-${separatorText.replace(/[^A-Za-z]/g, "")}-Test`,
+            model: "test/cached-tool-separator-variant",
+            caps: ["text", "coding", "tools", "thinking"],
+            cost_group: 2,
+            speed_group: 4,
+            thinking_effort: "medium",
+          }),
+        ];
+        try {
+          const fake = new FakeClientResponse();
+          await routing.handleChatCompletion({
+            model: "auto-coding",
+            messages: [
+              { role: "user", content: "Continue implementing the frontend fix." },
+              { role: "assistant", content: null, tool_calls: [{ id: "call_edit", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"src/App.vue\"}" } }] },
+              { role: "tool", tool_call_id: "call_edit", content: "The file src/App.vue has been updated successfully." },
+              { role: "assistant", content: separatorText },
+              { role: "user", content: "The TodoWrite tool hasn't been used recently. If this is still active, continue the todo list." },
+            ],
+            tools: [
+              { type: "function", function: { name: "Edit", parameters: { type: "object" } } },
+              { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+            ],
+            _llmProxyDifficulty: {
+              level: 4,
+              taskLevel: 3,
+              contextLevel: 4,
+              taskKind: "agentic_coding",
+              costTarget: 3,
+              thinkingLevel: 3,
+              stepShape: { shape: "write_heavy", gate: "run_behavior" },
+            },
+          }, fake, { internal: true });
+
+          assert.equal(fake.status, 200);
+          assert.equal(requests.length, 1);
+          const upstreamMessages = requests[0].messages || [];
+          assert.match(upstreamMessages.at(-1).content, /^continue the active task\./);
+          assert.equal(upstreamMessages.some((message) => message.role === "assistant" && message.content === separatorText), false);
+        } finally {
+          state.PROVIDERS = originalProviders;
+          state.GROUPS = originalGroups;
+        }
+      });
+    });
+  });
+}
+
 test("handleChatCompletion does not require human approval for completion-review assessment", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -4527,6 +5321,58 @@ test("internal assessment responses are not rejected as proxy identity mismatche
         assert.equal(resp.status, 200);
         assert.match(resp.body, /I am Gemini/);
         assert.doesNotMatch(logs.join("\n"), /IDENTITY-MISMATCH/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
+  });
+});
+
+test("auto-memory transcript identity snippets are not public identity probes", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "Store this as a short transcript summary about an identity check and follow-up routing diagnostics.",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 80, completion_tokens: 18, total_tokens: 98 },
+          }));
+        });
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Memory-Summary-Test",
+          family: "codex",
+          model: "codex/gpt-5.4-mini",
+          caps: ["text"],
+        }), {
+          model: "auto-memory",
+          messages: [{
+            role: "user",
+            content: [
+              "Summarize this transcript for memory only.",
+              "user: cum te numesti?",
+              "assistant: Project LLM Smart Proxy.",
+              "user: scan homebridge routing logs.",
+            ].join("\n"),
+          }],
+          max_tokens: 128,
+          stream: false,
+        });
+
+        assert.equal(resp.status, 200);
+        assert.doesNotMatch(logs.join("\n"), /IDENTITY-MISMATCH/);
+        assert.doesNotMatch(logs.join("\n"), /POSSIBLE-STALL: Memory-Summary-Test observed/);
       });
     } finally {
       state.log = originalLog;
@@ -5664,6 +6510,59 @@ test("handleChatCompletion returns controlled IDE guidance when no provider can 
   });
 });
 
+test("handleChatCompletion returns a non-assistant Codex context error when no provider can fit context", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const reqBody = {
+      model: "auto-coding",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "Use the tool only if needed." }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "large_contract_tool",
+          description: "Large schema contract. ".repeat(900),
+          parameters: {
+            type: "object",
+            required: ["payload"],
+            properties: {
+              payload: {
+                type: "string",
+                description: "Payload description. ".repeat(900),
+              },
+            },
+          },
+        },
+      }],
+    };
+
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [provider("http://127.0.0.1/unused", {
+      name: "Tiny-Context",
+      caps: ["text", "coding", "tools"],
+      context: 512,
+    })];
+    try {
+      const fake = new FakeClientResponse();
+      await routing.handleChatCompletion(reqBody, fake, {
+        headers: { "user-agent": "Codex/0.9" },
+      });
+      const body = JSON.parse(fake.body);
+
+      assert.equal(fake.status, 413);
+      assert.equal(body.error.code, "LLM_PROXY_CONTEXT_COMPACTION_REQUIRED");
+      assert.equal(body.error.type, "context_length_exceeded");
+      assert.equal(body.error.details.client, "codex");
+      assert.match(body.error.message, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+      assert.doesNotMatch(JSON.stringify(body), /"choices"/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
 test("handleChatCompletion emits IDE-specific context guidance for known clients", async () => {
   for (const [userAgent, clientId] of [
     ["Claude-Code/2.1.89", "claude_code"],
@@ -5699,12 +6598,19 @@ test("handleChatCompletion emits IDE-specific context guidance for known clients
               },
             },
           }],
-        }, fake, { headers: { "user-agent": userAgent } });
+	        }, fake, { headers: { "user-agent": userAgent } });
 
-        const body = JSON.parse(fake.body);
-        assert.equal(fake.status, 200);
-        assert.match(body.choices[0].message.content, new RegExp(`client=${clientId}`));
-        assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
+	        const body = JSON.parse(fake.body);
+	        if (clientId === "codex") {
+	          assert.equal(fake.status, 413);
+	          assert.equal(body.error.code, "LLM_PROXY_CONTEXT_COMPACTION_REQUIRED");
+	          assert.equal(body.error.details.client, "codex");
+	          assert.match(body.error.message, /client=codex/);
+	        } else {
+	          assert.equal(fake.status, 200);
+	          assert.match(body.choices[0].message.content, new RegExp(`client=${clientId}`));
+	          assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
+	        }
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
@@ -5747,6 +6653,49 @@ test("handleChatCompletion suppresses direct provider context overflow errors", 
         assert.match(body.choices[0].message.content, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
         assert.match(body.choices[0].message.content, /client=windsurf/);
         assert.doesNotMatch(body.choices[0].message.content, /context_length_exceeded|maximum context length|Please reduce the length/i);
+      } finally {
+        state.PROVIDERS = originalProviders;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion recognizes native prompt-too-long context overflow", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "prompt is too long: 1269220 tokens > 293432 maximum for this model",
+        },
+      }));
+    }, async (url) => {
+      const originalProviders = state.PROVIDERS;
+      state.PROVIDERS = [provider(url, {
+        name: "Direct-Prompt-Too-Long",
+        model: "test/direct-prompt-too-long",
+        caps: ["text"],
+        context: 1000000,
+      })];
+
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "test/direct-prompt-too-long",
+          max_tokens: 32000,
+          messages: [{ role: "user", content: "Continue." }],
+        }, fake, { headers: { "user-agent": "Codex/0.9" } });
+
+        const body = JSON.parse(fake.body);
+	        assert.equal(fake.status, 413);
+	        assert.equal(body.error.code, "LLM_PROXY_CONTEXT_COMPACTION_REQUIRED");
+	        assert.equal(body.error.type, "context_length_exceeded");
+	        assert.equal(body.error.details.client, "codex");
+	        assert.match(body.error.message, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+	        assert.match(body.error.message, /client=codex/);
+	        assert.doesNotMatch(body.error.message, /prompt is too long|1269220|293432/i);
       } finally {
         state.PROVIDERS = originalProviders;
       }
@@ -5830,6 +6779,75 @@ test("handleChatCompletion auto-compacts oversized group requests before surfaci
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
         compaction.configureAISummary(previousSummary);
+      }
+    });
+  });
+});
+
+test("handleChatCompletion does not ask Codex to compact when requested tokens still fit best context", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalCompact = compaction.compactMessagesAsync;
+    const captured = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        captured.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "fits context ok" } }],
+          usage: { prompt_tokens: 940, completion_tokens: 4, total_tokens: 944 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [provider(url, {
+        name: "Fits-Best-Context",
+        model: "test/fits-best-context",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 1000,
+        cost_group: 2,
+        quality_group: 4,
+        speed_group: 5,
+        thinking_effort: "medium",
+      })];
+      compaction.compactMessagesAsync = async () => null;
+
+      try {
+        const messages = [
+          { role: "system", content: "You are a coding agent." },
+          ...Array.from({ length: 22 }, (_, i) => ({
+            role: i % 2 === 0 ? "assistant" : "user",
+            content: `Historical turn ${i}: ${"context pressure ".repeat(9)}`,
+          })),
+          { role: "user", content: "Continue the fix." },
+        ];
+        const request = {
+          model: "auto-coding",
+          max_tokens: 10,
+          messages,
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+        };
+        const inputTokens = compaction.estimateTokens(messages) + compaction.estimateRequestSchemaTokens(request);
+        assert.equal(inputTokens > 900, true);
+        assert.equal(inputTokens + request.max_tokens < 1000, true);
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion(request, fake, {
+          headers: { "user-agent": "Codex/0.9" },
+        });
+
+        assert.equal(fake.status, 200);
+        assert.equal(captured.length, 1);
+        assert.doesNotMatch(fake.body, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+        assert.match(fake.body, /fits context ok/);
+      } finally {
+        compaction.compactMessagesAsync = originalCompact;
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
       }
     });
   });
@@ -6702,6 +7720,7 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const calls = [];
+    const lastUserMessages = [];
 
     try {
       state.GROUPS = { "auto-coding": "coding" };
@@ -6713,6 +7732,8 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
         req.on("end", () => {
           const body = JSON.parse(raw || "{}");
           calls.push(body.model);
+          const lastUser = [...(body.messages || [])].reverse().find((message) => message.role === "user");
+          lastUserMessages.push(lastUser?.content || "");
           if (/^claude-opus-4-[78]$/.test(String(body.model || ""))) {
             res.writeHead(200, { "content-type": "text/event-stream" });
             res.end([
@@ -6725,11 +7746,21 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
             ].join("\n"));
             return;
           }
+          const windsurfAttempts = calls.filter((model) => model === "windsurf/claude-opus-4-8-low").length;
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
             id: "chatcmpl-stall-fallback",
             object: "chat.completion",
-            choices: [{ index: 0, message: { role: "assistant", content: "Fallback ok after native stall." }, finish_reason: "stop" }],
+            choices: [{
+              index: 0,
+              message: {
+                role: "assistant",
+                content: windsurfAttempts === 1
+                  ? "Fallback ok after native stall."
+                  : "Done. Verified Claude Opus fallback after native stall.",
+              },
+              finish_reason: "stop",
+            }],
             usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
           }));
         });
@@ -6815,11 +7846,22 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
         }, fake, { internal: true });
 
         assert.equal(fake.status, 200);
-        assert.deepEqual(calls, ["claude-opus-4-8", "claude-opus-4-7", "windsurf/claude-opus-4-8-low"]);
+        assert.deepEqual(calls, [
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "windsurf/claude-opus-4-8-low",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "windsurf/claude-opus-4-8-low",
+        ]);
+        assert.equal(lastUserMessages[0], "termina de verificat si fixat claude api pt opus");
+        assert.match(lastUserMessages.at(-1), /^continue the active task\./);
+        assert.match(lastUserMessages.at(-1), /call the next appropriate tool now/);
         assert.equal(scoring.isOnCooldown("Claude-Opus48"), false);
         assert.equal(scoring.isOnCooldown("Claude-Opus47"), false);
-        assert.match(fake.body, /Fallback ok after na/);
-        assert.match(fake.body, /tive stall/);
+        assert.match(fake.body, /Done\. Verified Claud/);
+        assert.match(fake.body, /e Opus fallback afte/);
+        assert.match(fake.body, /r native stall/);
       });
     } finally {
       state.PROVIDERS = originalProviders;
@@ -7118,6 +8160,123 @@ test("auto-coding avoids providers with learned data-image incompatibility for d
     });
 
     assert.equal(providers[0].name, "Claude-Data-Image-Ok");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+    state.providerCompat = originalCompat;
+  }
+});
+
+test("auto-coding image-bearing agent requests keep non-image providers as fallbacks", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  const originalCompat = state.providerCompat;
+  state.GROUPS = { "auto-coding": "coding" };
+  state.providerCompat = {
+    "Codex-GPT54": { no_data_images: true },
+    "Copilot-gpt54": { no_images: true },
+  };
+  state.PROVIDERS = [
+    {
+      name: "Claude-Sonnet45",
+      model: "claude/claude-sonnet-4-5-20250929",
+      upstream_model: "claude-sonnet-4-5-20250929",
+      protocol: "anthropic",
+      family: "claude",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 200000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    },
+    {
+      name: "Codex-GPT54",
+      model: "codex/gpt-5.4",
+      upstream_model: "gpt-5.4",
+      protocol: "codex",
+      family: "codex",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 272000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 4,
+      thinking_effort: "high",
+    },
+    {
+      name: "Windsurf-GPT54MiniHighThinking",
+      model: "windsurf/gpt-5.4-mini-high",
+      upstream_model: "gpt-5.4-mini-high",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 272000,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "high",
+    },
+    {
+      name: "Copilot-gpt54",
+      model: "copilot/gpt-5.4",
+      upstream_model: "gpt-5.4",
+      protocol: "openai",
+      family: "copilot",
+      key: "test",
+      caps: ["text", "coding", "tools", "images", "thinking"],
+      context: 264000,
+      tier: 1,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 4,
+      thinking_effort: "high",
+    },
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-coding", 132000, {
+      model: "auto-coding",
+      messages: [
+        {
+          role: "system",
+          content: "Claude Code compatibility prompt.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Continue implementation; use the screenshot only if relevant." },
+            { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+          ],
+        },
+      ],
+      tools: Array.from({ length: 50 }, (_, index) => ({
+        type: "function",
+        function: { name: `Tool${index}`, parameters: { type: "object" } },
+      })),
+      _inputTokens: 100000,
+      _estimatedTokens: 132000,
+      _llmProxyDifficulty: {
+        level: 4,
+        taskLevel: 3,
+        contextLevel: 4,
+        taskKind: "agentic_coding",
+        costTarget: 4,
+        thinkingLevel: 4,
+        stepShape: { shape: "write_heavy", gate: "run_behavior" },
+      },
+    });
+    const names = providers.map((p) => p.name);
+
+    assert.equal(names[0], "Claude-Sonnet45");
+    assert(names.includes("Codex-GPT54"), "expected Codex fallback to remain in the route pool");
+    assert(names.includes("Windsurf-GPT54MiniHighThinking"), "expected Windsurf fallback to remain in the route pool");
+    assert(names.includes("Copilot-gpt54"), "expected Copilot fallback to remain in the route pool");
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;
@@ -7934,6 +9093,75 @@ test("routing profile log exposes complexity targets and provider policy dimensi
   assert.match(candidate, /speed=5/);
 });
 
+test("provider pool summary exposes non-top5 sources and model classes", () => {
+  const candidates = [
+    provider("http://127.0.0.1/claude45a", {
+      name: "Claude-Sonnet45",
+      model: "claude/claude-sonnet-4-5-20250929",
+      family: "claude",
+      cost_group: 3,
+      quality_group: 4,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/claude4", {
+      name: "Claude-Sonnet4",
+      model: "claude/claude-sonnet-4-20250514",
+      family: "claude",
+      cost_group: 3,
+      quality_group: 4,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/claude46", {
+      name: "Claude-Sonnet46",
+      model: "claude/claude-sonnet-4-6",
+      family: "claude",
+      cost_group: 3,
+      quality_group: 4,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/opus41", {
+      name: "Claude-Opus41",
+      model: "claude/claude-opus-4-1-20250805",
+      family: "claude",
+      cost_group: 4,
+      quality_group: 5,
+      thinking_effort: "xhigh",
+    }),
+    provider("http://127.0.0.1/opus4", {
+      name: "Claude-Opus4",
+      model: "claude/claude-opus-4-20250514",
+      family: "claude",
+      cost_group: 4,
+      quality_group: 5,
+      thinking_effort: "xhigh",
+    }),
+    provider("http://127.0.0.1/codex54", {
+      name: "Codex-GPT54",
+      model: "codex/gpt-5.4",
+      family: "codex",
+      cost_group: 3,
+      quality_group: 5,
+      thinking_effort: "medium",
+    }),
+    provider("http://127.0.0.1/windsurf", {
+      name: "Windsurf-SWE16",
+      model: "windsurf/swe-1.6",
+      family: "windsurf",
+      cost_group: 2,
+      quality_group: 4,
+      thinking_effort: "high",
+    }),
+  ];
+
+  const summary = routing.formatProviderPoolSummaryForLog(candidates, 5);
+
+  assert.match(summary, /pool_sources=claude:5,codex:1,windsurf:1/);
+  assert.match(summary, /pool_classes=.*gpt-5-4:1/);
+  assert.match(summary, /pool_levels=rl4:6,rl3:1/);
+  assert.match(summary, /hidden_after_top5_sources=codex:1,windsurf:1/);
+  assert.match(summary, /hidden_after_top5_classes=gpt-5-4:1,swe-1-6:1/);
+});
+
 test("routing profile log exposes review shape and diff validation gate", () => {
   const reqBody = {
     model: "auto-coding",
@@ -8033,7 +9261,7 @@ test("response expectation matrix treats post-route fallback run behavior stalls
     stallingHeuristic: true,
   });
 
-  assert.equal(row.task_kind, "agentic_coding");
+  assert.notEqual(row.task_kind, "direct_answer");
   assert.equal(row.shape, "write_heavy");
   assert.equal(row.gate, "run_behavior");
   assert.equal(row.assessment_origin, "post_route_fallback");
@@ -8043,6 +9271,189 @@ test("response expectation matrix treats post-route fallback run behavior stalls
   assert.equal(row.output_kind, "inert_continuation");
   assert.equal(row.stall_class, "possible_stall");
   assert.equal(row.action, "log_only");
+});
+
+test("log-only possible stalls emit one contextual diagnostic without observed stall marker", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "Continuing." },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 100, completion_tokens: 3, total_tokens: 103 },
+          }));
+        });
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Log-Only-Stall-Test",
+          family: "codex",
+          model: "codex/gpt-5.4-mini",
+        }), {
+          model: "auto-coding",
+          tool_choice: { type: "auto" },
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+          messages: [{ role: "user", content: "continua implementarea" }],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 4,
+            thinkingLevel: 4,
+            thinkingEffort: "high",
+            speedTarget: 3,
+            reason: "agentic_coding",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+            _assessmentProvider: {
+              origin: "post_route_fallback",
+              maxTokens: 0,
+              stream: true,
+              responseProvider: "Claude-Sonnet45",
+            },
+          },
+        });
+
+        assert.equal(resp.status, 200);
+        const joined = logs.join("\n");
+        assert.match(joined, /POSSIBLE-STALL: Log-Only-Stall-Test .*action=log_only/);
+        assert.doesNotMatch(joined, /POSSIBLE-STALL: Log-Only-Stall-Test observed/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
+  });
+});
+
+test("response expectation matrix retries generic progress during active tool work", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Fix the broken route and verify it with Playwright." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"rg membership-validation src\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "src/router.ts:148 membership-validation\nsrc/router.ts:218 membership-validation" },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 3,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 4,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 3,
+      reason: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Found the duplicate route; next I need to update the router and rerun Playwright.",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix keeps nudging active work after hidden continue progress", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    _hiddenContinuationRetries: 1,
+    _llmProxyOriginalLastUserText: "Fix the broken route and verify it with Playwright.",
+    messages: [
+      { role: "user", content: "Fix the broken route and verify it with Playwright." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"rg membership-validation src\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "src/router.ts:148 membership-validation\nsrc/router.ts:218 membership-validation" },
+      { role: "user", content: "continue" },
+    ],
+    _llmProxyDifficulty: {
+      level: 5,
+      taskLevel: 4,
+      contextLevel: 5,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 4,
+      reason: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Still need to inspect the account page and rerun Playwright before this is complete.",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix treats identity provider work as active tooling", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Fix the identity provider route and verify it with tests." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"rg identity-provider src\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "src/auth/routes.ts:42 identity-provider" },
+    ],
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Found the identity provider route issue; next I need to inspect auth logs and rerun tests.",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.notEqual(row.task_kind, "direct_answer");
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
 });
 
 test("response expectation matrix fails over bare continue in read-heavy plan routes", () => {
@@ -9297,6 +10708,128 @@ test("handleChatCompletion tries active level minus one before near-level cooldo
         assert.equal(fake.status, 200);
         assert.equal(calls.length, 1);
         assert.match(calls[0], /haiku/i);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion lets diversity rank near-level backstop providers with primary candidates", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-backstop-diversity",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "backstop ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        const messages = [
+          { role: "system", content: "Project /Users/test/backstop-diversity" },
+          { role: "user", content: "Debug routing with provider logs and code tools." },
+        ];
+        const sessionId = memory.getSession(messages).id;
+        state.PROVIDERS = [
+          {
+            name: "Claude-Sonnet45",
+            model: "claude/claude-sonnet-4-5-20250929",
+            upstream_model: "claude-sonnet-4-5-20250929",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 2,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Claude-Sonnet4",
+            model: "claude/claude-sonnet-4-20250514",
+            upstream_model: "claude-sonnet-4-20250514",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 2,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Codex-GPT54",
+            model: "codex/gpt-5.4",
+            upstream_model: "gpt-5.4",
+            family: "codex",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 272000,
+            tier: 2,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 3,
+            thinking_effort: "medium",
+          },
+        ];
+        state.sessionStats[sessionId] = {
+          lastProvider: "Claude-Sonnet45",
+          providers: {
+            "Claude-Sonnet45": { requests: 10 },
+            "Claude-Sonnet4": { requests: 9 },
+            "Codex-GPT54": { requests: 0 },
+          },
+        };
+        scoring.setCooldown("Codex-GPT54", 3600_000, "test cooldown");
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _inputTokens: 87085,
+          _estimatedTokens: 87085,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages,
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["gpt-5.4"]);
+        assert.equal(fake.headers["X-LLM-Provider"], "Codex-GPT54");
       });
     } finally {
       state.PROVIDERS = originalProviders;

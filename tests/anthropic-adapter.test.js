@@ -180,6 +180,52 @@ test("groups consecutive OpenAI tool results into one Anthropic user message", (
   ]);
 });
 
+test("drops artificial whitespace assistant separators before native Claude requests", () => {
+  const provider = { family: "claude", protocol: "anthropic", upstream_model: "claude-opus-4-8" };
+  const output = anthropic.toAnthropicRequest(
+    provider,
+    {
+      model: "claude/claude-opus-4-8",
+      messages: [
+        { role: "system", content: "Use repo rules." },
+        { role: "user", content: "Read README." },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_read",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_read", content: "README contents." },
+        { role: "assistant", content: " " },
+        { role: "user", content: "continue" },
+      ],
+    },
+    {
+      sessionId: "session-from-header",
+      env: {
+        CLAUDE_CODE_VERSION: "2.1.150",
+        CLAUDE_CODE_DEVICE_ID: "device-from-env",
+        CLAUDE_CODE_ACCOUNT_UUID: "account-from-env",
+      },
+    }
+  );
+
+  assert.deepEqual(output.messages.map((message) => message.role), ["user", "assistant", "user", "user"]);
+  const textBlocks = [];
+  for (const message of output.messages) {
+    const parts = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
+    for (const part of parts) {
+      if (part?.type === "text") textBlocks.push(part.text);
+    }
+  }
+  assert.equal(textBlocks.some((text) => String(text || "").trim() === ""), false);
+});
+
 test("converts buffered Anthropic text stream to OpenAI SSE", () => {
   const output = anthropic.toOpenAIStream(
     "claude/claude-sonnet-4-5",

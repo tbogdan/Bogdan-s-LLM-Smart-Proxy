@@ -62,6 +62,8 @@ test("transformRequest sanitizes tool schemas and tool call history for provider
   assert.equal(transformed.messages.some((m) => m.role === "final"), false);
   assert.equal(transformed.messages.find((m) => m.role === "assistant" && m.tool_calls).content, null);
   assert.equal(transformed.messages.some((m, i, arr) => m.role === "tool" && arr[i + 1]?.role === "user"), false);
+  assert.equal(transformed.messages.some((m) => m.role === "assistant" && m.content === "continue"), false);
+  assert.equal(transformed.messages.some((m) => m.role === "assistant" && m.content === "Tool result received."), false);
 });
 
 test("transformRequest caps tools using provider-advertised maximum", async () => {
@@ -434,6 +436,10 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /RULES — AUTONOMY WITH USER GATES:/);
   assert.match(system, /You are autonomous after the user has authorized implementation/);
   assert.match(system, /Reply A to proceed without explicit user gate\|Press enter to continue without explicit user gate/);
+  assert.match(system, /OUTPUT CONTRACT:/);
+  assert.match(system, /CONTINUATION AND HISTORY:/);
+  assert.match(system, /VIOLATIONS \(any = failure\):/);
+  assert.match(system, /Tool result received \/ continue \/ next-step-only progress while useful tool work remains/);
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
   assert.match(system, /ROUTING ASSESSMENT.*next route/i);
   assert.match(system, /likely next route after the current response or tool call/i);
@@ -445,11 +451,114 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
   assert.match(system, /Compacted tool outputs use \[READ/);
   assert.match(system, /If a file was already read and not modified, do NOT re-read it/);
-  assert.match(system, /You must use subagents whenever possible/i);
-  assert.match(system, /Do not delegate the immediate blocking step/i);
-  assert.match(system, /SUBAGENT QUALITY CONTROL:/);
+  assert.match(system, /CLIENT CAPABILITY CONTRACT:/);
+  assert.match(system, /Subagents: no dedicated subagent tool detected/i);
+  assert.doesNotMatch(system, /You must use subagents whenever possible/i);
+  assert.match(system, /PARALLEL EXECUTION:/);
   assert.match(system, /Keep this project-specific instruction\./);
   assert.equal(system.includes("Bogdan's LLM Smart Proxy"), false);
+});
+
+test("transformRequest injects structured output contract and route mode lanes", async () => {
+  const implement = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tools: [{ type: "function", function: { name: "Read" } }],
+    messages: [{ role: "user", content: "Implement the parser fix and verify it." }],
+  });
+  const implementSystem = implement.messages[0].content;
+
+  assert.match(implementSystem, /OUTPUT CONTRACT/);
+  assert.match(implementSystem, /For active work with tools available, every assistant turn must be exactly one of:/);
+  assert.match(implementSystem, /valid tool call\(s\)/);
+  assert.match(implementSystem, /complete final answer after all required work and verification are done/);
+  assert.match(implementSystem, /one concise blocking clarification when no safe\/discoverable action exists/);
+  assert.match(implementSystem, /Tool result received/);
+  assert.match(implementSystem, /historical-tool-invocation replay text/);
+  assert.match(implementSystem, /Do not output tool calls as prose, XML, markdown, shell transcripts/);
+  assert.match(implementSystem, /If images, screenshots, or other media are present/);
+  assert.match(implementSystem, /MODE LANE: Implement\n- Tool calls, edits, verification, and continuation until complete\./);
+  assert.match(implementSystem, /If work remains and a tool can advance it, call the next appropriate tool now/);
+  assert.match(implementSystem, /CONTINUATION AND HISTORY:/);
+  assert.match(implementSystem, /Do not end a turn while required tool sessions, commands, browser automation, or active implementation work are still running or incomplete/);
+  assert.match(implementSystem, /treat it as stale context and continue with a real tool call or final answer/);
+  assert.match(implementSystem, /VIOLATIONS \(any = failure\):/);
+
+  const orderedLayers = [
+    "IDENTITY:",
+    "USE CASE FOCUS:",
+    "MODE LANE: Implement",
+    "REQUEST CONTEXT:",
+    "OUTPUT CONTRACT:",
+    "CONTINUATION AND HISTORY:",
+    "VIOLATIONS (any = failure):",
+    "FLOW:",
+    "TOOL STRATEGY",
+  ];
+  for (let i = 1; i < orderedLayers.length; i += 1) {
+    assert.equal(
+      implementSystem.indexOf(orderedLayers[i - 1]) < implementSystem.indexOf(orderedLayers[i]),
+      true,
+      `${orderedLayers[i - 1]} should appear before ${orderedLayers[i]}`,
+    );
+  }
+
+  const explore = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tools: [{ type: "function", function: { name: "Read" } }],
+    messages: [{ role: "user", content: "Debug the failing Playwright click and inspect the logs before editing." }],
+  });
+  assert.match(explore.messages[0].content, /MODE LANE: Explore\n- Read\/search\/log review, parallel exploration, evidence summary, no writes until authorized\./);
+
+  const plan = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [{ role: "user", content: "Create a plan before implementation and wait for confirmation." }],
+  });
+  assert.match(plan.messages[0].content, /MODE LANE: Plan\n- Plan, assumptions, risks, verification gates, then stop before implementation\./);
+
+  const ask = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [{ role: "user", content: "Cum te numesti?" }],
+  });
+  assert.match(ask.messages[0].content, /MODE LANE: Ask\n- Concise answer, no tools, no private markers unless explicitly enabled\./);
+});
+
+test("transformRequest scopes goal plan and subagent instructions to current IDE capabilities", async () => {
+  const generic = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "Implement the parser fix and verify it." }],
+  });
+  const genericSystem = generic.messages[0].content;
+
+  assert.match(genericSystem, /CLIENT CAPABILITY CONTRACT:/);
+  assert.match(genericSystem, /Detected client: generic/i);
+  assert.match(genericSystem, /Plan\/progress: no dedicated plan tool detected/i);
+  assert.match(genericSystem, /Goals: no dedicated goal tool detected/i);
+  assert.match(genericSystem, /Subagents: no dedicated subagent tool detected/i);
+  assert.doesNotMatch(genericSystem, /You must use subagents whenever possible/i);
+  assert.doesNotMatch(genericSystem, /Use TodoWrite\/update_plan/i);
+  assert.doesNotMatch(genericSystem, /Use TodoWrite to track/i);
+
+  const codex = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "codex",
+    tools: [
+      { type: "function", function: { name: "update_plan", parameters: { type: "object" } } },
+      { type: "function", function: { name: "get_goal", parameters: { type: "object" } } },
+      { type: "function", function: { name: "update_goal", parameters: { type: "object" } } },
+      { type: "function", function: { name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } } },
+      { type: "function", function: { name: "functions.exec_command", parameters: { type: "object" } } },
+    ],
+    messages: [{ role: "user", content: "Implement the parser fix and verify it." }],
+  });
+  const codexSystem = codex.messages[0].content;
+
+  assert.match(codexSystem, /CLIENT CAPABILITY CONTRACT:/);
+  assert.match(codexSystem, /Detected client: codex/i);
+  assert.match(codexSystem, /Plan\/progress: use update_plan/i);
+  assert.match(codexSystem, /Goals: available via get_goal, update_goal/i);
+  assert.match(codexSystem, /Subagents: available via multi_agent_v1\.spawn_agent/i);
+  assert.match(codexSystem, /Use subagents whenever possible/i);
 });
 
 test("transformRequest skips difficulty marker contract for direct exact replies", async () => {
@@ -464,7 +573,8 @@ test("transformRequest skips difficulty marker contract for direct exact replies
   assert.match(system, /You are Project LLM Smart Proxy/);
   assert.match(system, /DIRECT ANSWER MODE/);
   assert.match(system, /LIGHTWEIGHT MODE/);
-  assert.equal(system.length < 1600, true);
+  assert.match(system, /MODE LANE: Ask/);
+  assert.equal(system.length < 2100, true);
   assert.doesNotMatch(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
   assert.doesNotMatch(system, /EVERY response MUST include at least one tool call/);
   assert.doesNotMatch(system, /FLOW: UNDERSTAND/);
@@ -482,8 +592,9 @@ test("transformRequest uses lightweight prompt for simple no-tool text requests"
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /SUMMARY MODE/);
   assert.match(system, /Route profile: task=list_summary/);
+  assert.match(system, /MODE LANE: Ask/);
   assert.doesNotMatch(system, /PLAN DISSEMINATION AND SELF-REVIEW/);
-  assert.equal(system.length < 1600, true);
+  assert.equal(system.length < 2100, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
   assert.doesNotMatch(system, /TASK DECOMPOSITION/);
 });
@@ -500,7 +611,8 @@ test("transformRequest uses lightweight prompt for no-tool coding benchmark task
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /CODING MODE/);
   assert.match(system, /Route profile: task=agentic_coding/);
-  assert.equal(system.length < 1600, true);
+  assert.match(system, /MODE LANE: Ask/);
+  assert.equal(system.length < 2100, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
 });
 
@@ -521,7 +633,8 @@ test("transformRequest uses compact assessment prompt for complex no-tool smart 
   assert.match(system, /Sentinel mandatory/i);
   assert.match(system, /never bare effort=\.\.\., speed=\.\.\., or reason=\.\.\./i);
   assert.match(system, /never marker-only/i);
-  assert.equal(system.length < 1800, true);
+  assert.match(system, /MODE LANE: Ask/);
+  assert.equal(system.length < 2400, true);
   assert.doesNotMatch(system, /TOOL STRATEGY/);
   assert.doesNotMatch(system, /TASK DECOMPOSITION/);
 });
@@ -637,6 +750,7 @@ test("transformRequest tells models to wait when user explicitly gates implement
   assert.match(system, /USER CONFIRMATION GATES:/);
   assert.match(system, /If the user explicitly asks for proposals, review, research, or a plan before implementation/);
   assert.match(system, /wait for the user's confirmation before editing files or running implementation steps/);
+  assert.match(system, /MODE LANE: Plan/);
   assert.match(system, /Waiting for confirmation without explicit user requirement/);
 });
 
@@ -1031,6 +1145,71 @@ test("transformRequest compacts near provider context before tokenizer mismatch 
   }
 });
 
+test("transformRequest uses conservative Codex context compaction for large Responses traffic", async () => {
+  const originalCompact = compaction.compactMessagesAsync;
+  const originalLog = state.log;
+  const originalRatio = process.env.LLM_PROXY_CODEX_POST_COMPACT_CONTEXT_RATIO;
+  const originalTarget = process.env.LLM_PROXY_CODEX_POST_COMPACT_TARGET_RATIO;
+  const logs = [];
+  let compactCalled = false;
+
+  const request = {
+    model: "auto-coding",
+    max_tokens: 4096,
+    stream: true,
+    messages: [
+      { role: "system", content: "Project rule." },
+      { role: "user", content: "x ".repeat(310000) },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "y ".repeat(310000) },
+      { role: "assistant", content: "ok" },
+    ],
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+  };
+  const estimated = compaction.estimateTokens(request.messages)
+    + compaction.estimateRequestSchemaTokens(request)
+    + request.max_tokens;
+
+  try {
+    delete process.env.LLM_PROXY_CODEX_POST_COMPACT_CONTEXT_RATIO;
+    delete process.env.LLM_PROXY_CODEX_POST_COMPACT_TARGET_RATIO;
+    state.log = (line) => logs.push(line);
+    compaction.compactMessagesAsync = async (messages, targetTokens, maxOutputTokens) => {
+      compactCalled = true;
+      assert.equal(estimated > Math.floor(272000 * 0.55), true);
+      assert.equal(targetTokens < estimated, true);
+      assert.equal(targetTokens <= Math.floor(272000 * 0.5), true);
+      assert.equal(maxOutputTokens, 4096);
+      return {
+        messages: [
+          messages[0],
+          { role: "user", content: "codex compacted transcript" },
+        ],
+      };
+    };
+
+    const transformed = await transforms.transformRequest({
+      ...provider,
+      name: "Codex-GPT55",
+      family: "codex",
+      model: "codex/gpt-5.5",
+      upstream_model: "gpt-5.5",
+      context: 272000,
+    }, request);
+
+    assert.equal(compactCalled, true);
+    assert.equal(transformed.messages.some((message) => /codex compacted transcript/.test(String(message.content || ""))), true);
+    assert.match(logs.join("\n"), /POST-COMPACT: Codex-GPT55 needs .* > 149600 \(55% of 272000\)/);
+  } finally {
+    compaction.compactMessagesAsync = originalCompact;
+    state.log = originalLog;
+    if (originalRatio === undefined) delete process.env.LLM_PROXY_CODEX_POST_COMPACT_CONTEXT_RATIO;
+    else process.env.LLM_PROXY_CODEX_POST_COMPACT_CONTEXT_RATIO = originalRatio;
+    if (originalTarget === undefined) delete process.env.LLM_PROXY_CODEX_POST_COMPACT_TARGET_RATIO;
+    else process.env.LLM_PROXY_CODEX_POST_COMPACT_TARGET_RATIO = originalTarget;
+  }
+});
+
 test("transformRequest includes legacy function schemas in final context budget", async () => {
   const fnSchema = {
     name: "legacy_large_tool",
@@ -1163,6 +1342,33 @@ test("transformRequest removes empty assistant messages after tool synchronizati
   assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.content && !msg.tool_calls?.length), false);
 });
 
+test("transformRequest does not add whitespace assistant separators for native Anthropic providers", async () => {
+  const anthropicProvider = {
+    ...provider,
+    name: "Claude-Opus48",
+    family: "claude",
+    protocol: "anthropic",
+    model: "claude/claude-opus-4-8",
+  };
+  const transformed = await transforms.transformRequest(anthropicProvider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Read the file." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_read_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_read_1", content: "README contents." },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === ""), false);
+  assert.equal(transformed.messages.some((msg, i, arr) => msg.role === "tool" && arr[i + 1]?.role === "user"), true);
+});
+
 test("transformRequest flattens compacted Windsurf tool history into text", async () => {
   const windsurfProvider = {
     name: "Windsurf-ClaudeSonnet46",
@@ -1199,6 +1405,103 @@ test("transformRequest flattens compacted Windsurf tool history into text", asyn
   assert.match(serialized, /Historical tool result \(already observed\) for Read/);
   assert.match(serialized, /README contents after compaction/);
   assert.equal(transformed.tools.length, 1);
+});
+
+test("transformRequest compacts large Windsurf flattened tool history", async () => {
+  const originalThreshold = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_COMPACT_THRESHOLD;
+  const originalKeep = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_KEEP_EVENTS;
+  process.env.WINDSURF_FLATTEN_TOOL_HISTORY_COMPACT_THRESHOLD = "6";
+  process.env.WINDSURF_FLATTEN_TOOL_HISTORY_KEEP_EVENTS = "4";
+  try {
+    const windsurfProvider = {
+      name: "Windsurf-Gemini25Pro",
+      model: "windsurf/google-gemini-2-5-pro",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["tools", "coding"],
+      context: 1048576,
+      tier: 1,
+    };
+    const messages = [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Continue debugging." },
+    ];
+    for (let i = 1; i <= 5; i += 1) {
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: `call_${i}`, type: "function", function: { name: "Read", arguments: `{\"file_path\":\"file${i}.md\"}` } }],
+      });
+      messages.push({ role: "tool", tool_call_id: `call_${i}`, content: `tool result ${i}` });
+    }
+    messages.push({ role: "user", content: "Go to the next step." });
+
+    const transformed = await transforms.transformRequest(windsurfProvider, {
+      model: "auto-coding",
+      messages,
+      tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", properties: { file_path: { type: "string" } } } } }],
+    });
+
+    const serialized = JSON.stringify(transformed.messages);
+    assert.equal(transformed.messages.some((msg) => msg.role === "tool"), false);
+    assert.equal(transformed.messages.some((msg) => msg.tool_calls?.length > 0), false);
+    assert.match(serialized, /Earlier native tool history omitted for compatibility/);
+    assert.doesNotMatch(serialized, /file1\.md/);
+    assert.doesNotMatch(serialized, /tool result 1/);
+    assert.match(serialized, /file4\.md/);
+    assert.match(serialized, /tool result 5/);
+  } finally {
+    if (originalThreshold === undefined) delete process.env.WINDSURF_FLATTEN_TOOL_HISTORY_COMPACT_THRESHOLD;
+    else process.env.WINDSURF_FLATTEN_TOOL_HISTORY_COMPACT_THRESHOLD = originalThreshold;
+    if (originalKeep === undefined) delete process.env.WINDSURF_FLATTEN_TOOL_HISTORY_KEEP_EVENTS;
+    else process.env.WINDSURF_FLATTEN_TOOL_HISTORY_KEEP_EVENTS = originalKeep;
+  }
+});
+
+test("transformRequest drops flattened Windsurf history on artifact replay retry", async () => {
+  const originalRetryKeep = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_RETRY_KEEP_EVENTS;
+  process.env.WINDSURF_FLATTEN_TOOL_HISTORY_RETRY_KEEP_EVENTS = "0";
+  try {
+    const windsurfProvider = {
+      name: "Windsurf-Gemini25Pro",
+      model: "windsurf/google-gemini-2-5-pro",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["tools", "coding"],
+      context: 1048576,
+      tier: 1,
+    };
+    const transformed = await transforms.transformRequest(windsurfProvider, {
+      _llmProxyArtifactReplayRetry: true,
+      model: "auto-coding",
+      messages: [
+        { role: "system", content: "You are a coding assistant." },
+        { role: "user", content: "Continue debugging." },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_prev", content: "failing test output" },
+        { role: "user", content: "continue. Do not replay historical tool invocations or tool results." },
+      ],
+      tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"], properties: { cmd: { type: "string" } } } } }],
+    });
+
+    const serialized = JSON.stringify(transformed);
+    assert.equal(transformed._llmProxyArtifactReplayRetry, undefined);
+    assert.equal(transformed.messages.some((msg) => msg.role === "tool"), false);
+    assert.equal(transformed.messages.some((msg) => msg.tool_calls?.length > 0), false);
+    assert.match(serialized, /Earlier native tool history omitted for compatibility/);
+    assert.doesNotMatch(serialized, /Historical tool invocation/);
+    assert.doesNotMatch(serialized, /Historical tool result/);
+    assert.doesNotMatch(serialized, /failing test output/);
+  } finally {
+    if (originalRetryKeep === undefined) delete process.env.WINDSURF_FLATTEN_TOOL_HISTORY_RETRY_KEEP_EVENTS;
+    else process.env.WINDSURF_FLATTEN_TOOL_HISTORY_RETRY_KEEP_EVENTS = originalRetryKeep;
+  }
 });
 
 test("transformRequest leaves internal AI summary self-calls unwrapped by proxy prompt", async () => {

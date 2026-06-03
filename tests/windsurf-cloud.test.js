@@ -685,6 +685,31 @@ test("toOpenAIResponse merges Windsurf tool call argument fragments", () => {
   ]);
 });
 
+test("toOpenAIResponse replaces repeated Windsurf tool argument snapshots", () => {
+  const body = Buffer.concat([
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(2, "exec_command"),
+      cloud.encodeString(3, "{}"),
+    ]))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(3, "{\"cmd\":\"pwd\"}"),
+    ]))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(3, "{\"cmd\":\"pwd\"}"),
+    ]))),
+    Buffer.from([2, 0, 0, 0, 0]),
+  ]);
+  const output = cloud.toOpenAIResponse("windsurf/google-gemini-2-5-pro", body);
+
+  assert.equal(output.choices[0].finish_reason, "tool_calls");
+  assert.deepEqual(output.choices[0].message.tool_calls, [
+    { id: "call_1", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" } },
+  ]);
+});
+
 test("toOpenAIResponse treats trailer bit flags as error metadata", () => {
   const body = Buffer.concat([
     cloud.connectEnvelope(cloud.encodeString(3, "partial text")),
@@ -710,6 +735,32 @@ test("createOpenAIStreamFrameParser emits Connect frames incrementally", () => {
   assert.equal(chunks.some((chunk) => chunk.includes("Hello ")), true);
   assert.equal(chunks.some((chunk) => chunk.includes("streaming")), true);
   assert.equal(chunks.some((chunk) => chunk.includes('"finish_reason":"stop"')), true);
+});
+
+test("createOpenAIStreamFrameParser suppresses repeated full tool argument snapshots", () => {
+  const parser = cloud.createOpenAIStreamFrameParser("windsurf/google-gemini-2-5-pro");
+  const frames = [
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(2, "exec_command"),
+      cloud.encodeString(3, "{}"),
+    ]))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(3, "{\"cmd\":\"pwd\"}"),
+    ]))),
+    cloud.connectEnvelope(cloud.encodeMessage(6, Buffer.concat([
+      cloud.encodeString(1, "call_1"),
+      cloud.encodeString(3, "{\"cmd\":\"pwd\"}"),
+    ]))),
+  ];
+
+  const chunks = [...frames.flatMap((frame) => parser.push(frame)), ...parser.end()];
+  const serialized = chunks.join("");
+
+  assert.equal(serialized.includes("{}{\\\"cmd\\\""), false);
+  assert.equal((serialized.match(/\\\"cmd\\\":\\\"pwd\\\"/g) || []).length, 1);
+  assert.equal(serialized.includes('"finish_reason":"tool_calls"'), true);
 });
 
 test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completion", async () => {

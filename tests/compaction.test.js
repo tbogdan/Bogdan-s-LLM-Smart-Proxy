@@ -128,6 +128,47 @@ test("detectGarbledText accepts coherent terminal recovery workflow reports", ()
   assert.equal(compaction.detectGarbledText(report), false);
 });
 
+test("estimateTokens includes image parts so vision context is not undercounted", () => {
+  const tokens = compaction.estimateTokens([
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Compare the attached screenshots." },
+        { type: "input_image", image_url: { url: "https://example.test/screen.png", detail: "low" } },
+        { type: "image_url", image_url: { url: "data:image/png;base64," + "b".repeat(8000) } },
+      ],
+    },
+  ]);
+
+  assert.equal(tokens >= 256 + 2000, true);
+});
+
+test("compactMessages keeps an omitted-image marker in summaries for dropped visual context", () => {
+  const messages = [
+    { role: "system", content: "System stays." },
+    { role: "user", content: "Initial request." },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "because visual context" },
+        { type: "image_url", image_url: { url: "https://example.test/old.png", detail: "high" } },
+      ],
+    },
+    { role: "user", content: "Old follow-up." },
+    { role: "user", content: "Recent one." },
+    { role: "assistant", content: "Done." },
+    { role: "user", content: "Recent two." },
+    { role: "assistant", content: "Done." },
+    { role: "user", content: "Recent three." },
+    { role: "assistant", content: "Done." },
+  ];
+
+  const compacted = compaction.compactMessages(messages, 200, 20, [], "visual-summary-test");
+
+  assert.equal(compacted.removed > 0, true);
+  assert.match(compacted.messages[compacted.summaryIndex].content, /\[image omitted: URL detail=high\]/);
+});
+
 test("detectGarbledText accepts valid architecture JSON reports", () => {
   const report = JSON.stringify({
     decision: "adaptive-routing",

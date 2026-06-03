@@ -55,6 +55,27 @@ test("toAnthropicContent converts OpenAI image_url parts to Anthropic image bloc
   ]);
 });
 
+test("toAnthropicContent drops whitespace-only text parts beside images", () => {
+  assert.deepEqual(mediaContent.toAnthropicContent([
+    { type: "text", text: " " },
+    { type: "image_url", image_url: { url: "https://example.test/screenshot.png" } },
+  ]), [
+    { type: "image", source: { type: "url", url: "https://example.test/screenshot.png" } },
+  ]);
+});
+
+test("textFromContent marks omitted images without mislabeling valid URLs unsupported", () => {
+  assert.equal(mediaContent.textFromContent([
+    { type: "input_text", text: "Old visual context." },
+    { type: "input_image", image_url: { url: "https://example.test/screenshot.png", detail: "high" } },
+    { type: "input_image", file_id: "file_123" },
+  ], { imagePlaceholder: true }), [
+    "Old visual context.",
+    "[image omitted: URL detail=high]",
+    "[image omitted: unsupported file_id file_123]",
+  ].join("\n"));
+});
+
 test("providerSupportsImageInput excludes native Windsurf until its adapter encodes media", () => {
   assert.equal(mediaContent.providerSupportsImageInput({ protocol: "windsurf", caps: ["text", "images"] }), false);
   assert.equal(mediaContent.providerSupportsImageInput({ protocol: "openai", caps: ["text", "images"] }), true);
@@ -70,4 +91,13 @@ test("messagesHaveDataImages detects data URL images across normalized content s
   assert.equal(mediaContent.messagesHaveDataImages([
     { role: "user", content: [{ type: "input_image", image_url: "https://example.test/a.png" }] },
   ]), false);
+});
+
+test("estimateImageTokens gives uploaded images a context budget", () => {
+  assert.equal(mediaContent.estimateImageTokens([
+    { type: "input_text", text: "Review these." },
+    { type: "input_image", image_url: "https://example.test/a.png" },
+    { type: "image_url", image_url: { url: "data:image/png;base64," + "a".repeat(12000), detail: "high" } },
+    { type: "input_image", file_id: "file_123" },
+  ]), 1024 + 3000 + 1024);
 });

@@ -533,6 +533,28 @@ test("provider adapters prepare OpenAI-compatible requests with upstream model f
   assert.deepEqual(body.stream_options, { include_usage: true });
 });
 
+test("provider adapters strip unsupported Codex reasoning temperature", () => {
+  const adapters = require("../lib/provider-adapters");
+  const body = adapters.prepareOpenAICompatibleRequest(
+    {
+      name: "Codex-GPT54Mini",
+      family: "codex",
+      protocol: "openai",
+      model: "codex/gpt-5.4-mini",
+      upstream_model: "gpt-5.4-mini",
+    },
+    {
+      model: "codex/gpt-5.4-mini",
+      temperature: 0.2,
+      messages: [{ role: "user", content: "Hello" }],
+    },
+    false,
+  );
+
+  assert.equal(body.model, "gpt-5.4-mini");
+  assert.equal(body.temperature, undefined);
+});
+
 test("provider adapters use max_completion_tokens for Copilot GPT-5.4 chat completions", () => {
   const adapters = require("../lib/provider-adapters");
   const provider = {

@@ -6,6 +6,7 @@ const http = require("http");
 const fs = require("fs");
 const routing = require("../lib/routing");
 const state = require("../lib/state");
+const scoring = require("../lib/scoring");
 const providerAdapters = require("../lib/provider-adapters");
 
 class FakeClientResponse {
@@ -113,6 +114,36 @@ test("routeStreamToProvider rejects empty streams before sending client headers"
       assert.equal(clientRes.status, null);
       assert.equal(clientRes.ended, false);
     });
+  });
+});
+
+test("routeStreamToProvider treats preflush stream aborts as transient transport errors", async () => {
+  await withNoScoreWrites(async () => {
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    try {
+      await withServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "thinking" } }] })}\n\n`);
+        setImmediate(() => res.destroy(new Error("aborted")));
+      }, async (url) => {
+        const clientRes = new FakeClientResponse();
+
+        await assert.rejects(
+          routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes),
+          (err) => err.headersSent === false,
+        );
+
+        assert.equal(clientRes.status, null);
+        assert.equal(state.scores["Stream-Test"]?.last_error || null, null);
+        assert.doesNotMatch(logs.join("\n"), /POSSIBLE-STALL: Stream-Test/);
+        assert.match(logs.join("\n"), /STREAM-ABORT: Stream-Test .*transient transport abort/);
+      });
+    } finally {
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
   });
 });
 
@@ -348,6 +379,32 @@ test("routeStreamToProvider strips split legacy bare speed-only markers from str
       assert.equal(output.includes("speed=4"), false);
       assert.equal(output.includes("reason=commit_changes"), false);
       assert.equal(output.includes("Committed changes."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips malformed internal routing token fragments", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "Checking console logs before the next step.\n\n",
+        "LLM_PROXY_INTERNAL_ROUTINGwright\n",
+        "Continuing with the account page.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("Checking console logs"), true);
+      assert.equal(output.includes("Continuing with the account page."), true);
+      assert.equal(output.includes("LLM_PROXY_INTERNAL_ROUTING"), false);
+      assert.equal(output.includes("ROUTINGwright"), false);
     });
   });
 });
@@ -605,6 +662,50 @@ test("routeStreamToProvider strips malformed historical tool invocation lines fr
   });
 });
 
+test("routeStreamToProvider strips mid-line historical tool replay when useful text remains", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "I will run it with Playwright.Historical tool invocation (already executed): exec_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: "stop",
+        }],
+      })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /I will run it with P/);
+      assert.match(output, /laywright/);
+      assert.doesNotMatch(output, /Historical tool invocation/);
+      assert.doesNotMatch(output, /already executed/);
+    });
+  });
+});
+
 test("routeStreamToProvider strips trailing hidden memory markers after visible content", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -701,6 +802,277 @@ test("routeStreamToProvider converts streamed imitated tool-call text before flu
   });
 });
 
+test("routeStreamToProvider converts streamed bare tool-call text before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "exec_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"exec_command"/);
+      assert.doesNotMatch(output, /exec_command \{/);
+    });
+  });
+});
+
+test("routeStreamToProvider converts truncated command tool-call text before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"exec_command"/);
+      assert.doesNotMatch(output, /_command \{/);
+    });
+  });
+});
+
+test("routeStreamToProvider canonicalizes structured _command tool calls", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_cmd",
+              type: "function",
+              function: { name: "_command", arguments: "{\"cmd\":\"pwd\"}" },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"exec_command"/);
+      assert.doesNotMatch(output, /"name":"_command"/);
+    });
+  });
+});
+
+test("routeStreamToProvider repairs streamed update_plan aliases before validation", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_plan",
+              type: "function",
+              function: {
+                name: "update_plan",
+                arguments: JSON.stringify({
+                  steps: [
+                    { text: "Inspect logs", state: "done" },
+                    { text: "Patch update_plan normalization", state: "active" },
+                  ],
+                  note: "Keep Codex provider instead of rerouting.",
+                }),
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "update_plan",
+            parameters: {
+              type: "object",
+              required: ["plan"],
+              properties: {
+                explanation: { type: "string" },
+                plan: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["step", "status"],
+                    properties: {
+                      step: { type: "string" },
+                      status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+                    },
+                  },
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"update_plan"/);
+      assert.match(output, /\\"plan\\"/);
+      assert.match(output, /\\"step\\":\\"Inspect logs\\"/);
+      assert.match(output, /\\"status\\":\\"completed\\"/);
+      assert.match(output, /\\"status\\":\\"in_progress\\"/);
+      assert.doesNotMatch(output, /\\"steps\\"/);
+    });
+  });
+});
+
+test("routeStreamToProvider repairs empty streamed update_plan calls to a safe progress plan", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_plan_empty",
+              type: "function",
+              function: { name: "update_plan", arguments: "{}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "update_plan",
+            parameters: {
+              type: "object",
+              required: ["plan"],
+              properties: {
+                plan: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["step", "status"],
+                    properties: {
+                      step: { type: "string" },
+                      status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+                    },
+                  },
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"update_plan"/);
+      assert.match(output, /\\"plan\\"/);
+      assert.match(output, /\\"step\\":\\"Continue active task\\"/);
+      assert.match(output, /\\"status\\":\\"in_progress\\"/);
+    });
+  });
+});
+
 test("routeStreamToProvider rejects invalid streamed tool calls before sending client headers", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -763,6 +1135,115 @@ test("routeStreamToProvider validates fragmented streamed tool calls before flus
   });
 });
 
+test("handleChatCompletion retries OpenAI SSE bare continue during active tool work", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalCompat = state.providerCompat["OpenAI-SSE-Hidden-Continue"]
+      ? { ...state.providerCompat["OpenAI-SSE-Hidden-Continue"] }
+      : null;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        if (requests.length === 1) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "continue" }, finish_reason: null }] })}\n\n`);
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_next",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [{
+        name: "OpenAI-SSE-Hidden-Continue",
+        model: "openai/sse-hidden-continue",
+        url,
+        key: "test",
+        protocol: "openai",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+        stream_only: true,
+      }];
+      scoring.getCompat("OpenAI-SSE-Hidden-Continue").stream_only = true;
+      try {
+        const clientRes = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 4,
+            thinkingEffort: "high",
+            speedTarget: 3,
+            reason: "agentic_coding",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+          messages: [
+            { role: "user", content: "Continue implementing the routing fix." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_prev", content: "failing test output" },
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: "exec_command",
+              parameters: {
+                type: "object",
+                required: ["cmd"],
+                properties: { cmd: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          }],
+        }, clientRes, { internal: true });
+
+        const output = clientRes.chunks.join("");
+        assert.equal(clientRes.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(requests[1].messages.filter((message) => message.role === "user").at(-1).content, /^continue the active task\./);
+        assert.match(output, /"tool_calls"/);
+        assert.doesNotMatch(output, /"content":"continue"/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalCompat) state.providerCompat["OpenAI-SSE-Hidden-Continue"] = originalCompat;
+        else delete state.providerCompat["OpenAI-SSE-Hidden-Continue"];
+      }
+    });
+  });
+});
+
 test("handleChatCompletion estimates output tokens for native streaming providers", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
@@ -796,6 +1277,56 @@ test("handleChatCompletion estimates output tokens for native streaming provider
       assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
       assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);
     } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion treats native preflush aborts as transient transport errors", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.log = (message) => logs.push(String(message));
+    state.PROVIDERS = [{
+      name: "Native-Abort-Test",
+      model: "native-abort-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async () => {
+      throw new Error("aborted");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-abort-model",
+        stream: true,
+        messages: [{ role: "user", content: "Continue work." }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+      }, clientRes);
+
+      const score = state.scores["Native-Abort-Test"];
+      assert.equal(clientRes.status, 502);
+      assert.equal(score?.failures || 0, 0);
+      assert.equal(score?.cooldown_until || 0, 0);
+      assert.match(logs.join("\n"), /NATIVE-STREAM-ABORT: Native-Abort-Test .*transient transport abort/);
+      assert.doesNotMatch(logs.join("\n"), /POSSIBLE-STALL: Native-Abort-Test/);
+    } finally {
+      state.log = originalLog;
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
@@ -866,6 +1397,179 @@ test("handleChatCompletion converts native imitated tool-call text before IDE-vi
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion strips native historical tool replay text before flushing useful content", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Native-History-Strip-Test",
+      model: "native-history-strip-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "Found the cause and continuing the fix. Historical tool invocation (already executed): exec_command {\"cmd\":\"pwd\"}",
+          },
+          finish_reason: "stop",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-history-strip-model",
+        stream: true,
+        messages: [{ role: "user", content: "Continue fixing the bug." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /Found the cause and/);
+      assert.match(output, /continuing the fix/);
+      assert.doesNotMatch(output, /Historical tool invocation/);
+      assert.doesNotMatch(output, /already executed/);
+      assert.doesNotMatch(logs.join("\n"), /TOOL-TEXT-NATIVE-INVALID: Native-History-Strip-Test tool_history_replay/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion retries native pure historical tool replay during active tool work", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    const calls = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Native-History-Replay-Test",
+      model: "native-history-replay-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: {
+              content: "Historical tool invocation (already executed): exec_command {\"cmd\":\"pwd\"}",
+            },
+            finish_reason: "stop",
+          }],
+        })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_next",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-history-replay-model",
+        stream: true,
+        messages: [
+          { role: "user", content: "Continue fixing the bug." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"node e2e_membership_test.js\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_prev", content: "[4/N] Subscriptions tab loaded. No active membership card displayed." },
+        ],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { userCount: 1, lastUser: "Continue fixing the bug." },
+        { userCount: 3, lastUser: "continue. Do not replay historical tool invocations or tool results. Use the next appropriate tool call or provide a substantive final answer from current evidence." },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"exec_command"/);
+      assert.doesNotMatch(output, /Historical tool invocation/);
+      assert.doesNotMatch(output, /already executed/);
+      assert.match(logs.join("\n"), /PROXY-RESP-NATIVE-STRIP: Native-History-Replay-Test/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-History-Replay-Test .*output=tool_history_replay.*action=hidden_continue/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });
@@ -1143,6 +1847,219 @@ test("handleChatCompletion fails over native bare continue without hidden contin
   });
 });
 
+test("handleChatCompletion retries native bare continue once as hidden user continue for active tool work", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    const calls = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Native-Hidden-Continue",
+        model: "windsurf/native-hidden-continue",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+    ];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "continue" }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 3,
+          contextLevel: 4,
+          taskKind: "agentic_coding",
+          costTarget: 4,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 3,
+          reason: "agentic_coding",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Continue implementing the routing fix." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+        ],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes, { internal: true });
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Hidden-Continue", userCount: 1, lastUser: "Continue implementing the routing fix." },
+        {
+          provider: "Native-Hidden-Continue",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Hidden-Continue .*output=inert_continuation.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Hidden-Continue retry=1/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion failovers repeated native continue after hidden nudge", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    const calls = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Native-Repeated-Continue",
+        model: "windsurf/native-repeated-continue",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+      {
+        name: "Native-Repeated-Continue-Fallback",
+        model: "windsurf/native-repeated-continue-fallback",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+      },
+    ];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (provider.name === "Native-Repeated-Continue") {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "continue" }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_fallback",
+              type: "function",
+              function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 3,
+          contextLevel: 4,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 3,
+          reason: "agentic_coding",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Continue implementing the routing fix." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+        ],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes, { internal: true });
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.equal(calls[0].provider, "Native-Repeated-Continue");
+      assert.equal(calls[1].provider, "Native-Repeated-Continue");
+      assert.match(calls[1].lastUser, /^continue the active task\./);
+      assert.equal(calls.at(-1).provider, "Native-Repeated-Continue-Fallback");
+      assert.match(output, /"tool_calls"/);
+      assert.doesNotMatch(output, /"content":"continue"/);
+      assert.match(logs.join("\n"), /REAL-STALL-NATIVE: Native-Repeated-Continue .*output=inert_continuation.*action=failover_stall/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
 test("handleChatCompletion logs native file-check Go prelude as possible stall without hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
@@ -1232,7 +2149,388 @@ test("handleChatCompletion logs native file-check Go prelude as possible stall w
   });
 });
 
-test("handleChatCompletion logs native short text-only progress as possible stall without hidden continue", async () => {
+test("handleChatCompletion retries native action prelude during active tool work", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    const calls = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Active-Prelude",
+      model: "windsurf/native-active-prelude",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: [
+          "[4/N] Subscriptions tab loaded. No active membership card displayed.",
+          "This means either membership API returns no active membership or frontend rendering is wrong.",
+          "Next step: check Account page for membership card display, then inspect the membership API response.",
+        ].join("\n") }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_account",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"cmd\":\"curl -s http://localhost:5173/account\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          taskKind: "agentic_coding",
+          costTarget: 4,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 3,
+          reason: "agentic_coding",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Continue debugging the missing membership card and fix it." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_subscriptions", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"node e2e_membership_test.js\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_subscriptions", content: "[4/N] Subscriptions tab loaded. No active membership card displayed." },
+        ],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes, { internal: true });
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Active-Prelude", userCount: 1, lastUser: "Continue debugging the missing membership card and fix it." },
+        {
+          provider: "Native-Active-Prelude",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("Subscriptions tab loaded"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Active-Prelude .*output=action_prelude.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Active-Prelude retry=1/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion keeps native active loop alive after repeated progress text", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalMaxRetries = process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES;
+    const originalLog = state.log;
+    const logs = [];
+    const calls = [];
+    process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES = "3";
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Repeated-Progress",
+      model: "windsurf/native-repeated-progress",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: [
+          "[5/N] Checking My Account page for membership state.",
+          "Next step: inspect the membership API response and rerun Playwright.",
+        ].join("\n") }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      if (calls.length === 2) {
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "Still need to inspect the account API and verify the scanner flow before this is complete." }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_account_api",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"cmd\":\"curl -s http://localhost:5173/api/user/memberships\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 4,
+          contextLevel: 5,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 4,
+          reason: "agentic_coding",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Continue debugging the missing membership card and fix it." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_subscriptions", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"node e2e_membership_test.js\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_subscriptions", content: "[4/N] Subscriptions tab loaded. No active membership card displayed." },
+        ],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes, { internal: true });
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Repeated-Progress", userCount: 1, lastUser: "Continue debugging the missing membership card and fix it." },
+        {
+          provider: "Native-Repeated-Progress",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+        {
+          provider: "Native-Repeated-Progress",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("Checking My Account page"), false);
+      assert.equal(output.includes("Still need to inspect"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      const joined = logs.join("\n");
+      assert.equal((joined.match(/HIDDEN-CONTINUE-NATIVE: Native-Repeated-Progress .*action=hidden_continue/g) || []).length, 2);
+      assert.match(joined, /HIDDEN-CONTINUE-NATIVE: Native-Repeated-Progress .*output=action_prelude.*action=hidden_continue/);
+      assert.match(joined, /HIDDEN-CONTINUE-RETRY: Native-Repeated-Progress retry=2/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      if (originalMaxRetries === undefined) delete process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES;
+      else process.env.LLM_PROXY_HIDDEN_CONTINUE_MAX_RETRIES = originalMaxRetries;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion reroutes native invalid tool calls after action prelude before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    const calls = [];
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Native-Prelude-InvalidTool",
+        model: "windsurf/native-prelude-invalid-tool",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+        cost_group: 2,
+        quality_group: 4,
+        speed_group: 5,
+        thinking_effort: "high",
+      },
+      {
+        name: "Native-Tool-Fallback",
+        model: "windsurf/native-tool-fallback",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+        cost_group: 2,
+        quality_group: 3,
+        speed_group: 5,
+        thinking_effort: "high",
+      },
+    ];
+    providerAdapters.routeNativeStream = async (provider, _body, handlers) => {
+      calls.push(provider.name);
+      if (provider.name === "Native-Prelude-InvalidTool") {
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: {
+              content: "I will save the script and run it with Playwright.",
+            },
+            finish_reason: null,
+          }],
+        })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_bad",
+                type: "function",
+                function: { name: "exec_command", arguments: "{}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_good",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        messages: [{ role: "user", content: "Continue the implementation and run the regression script." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, ["Native-Prelude-InvalidTool", "Native-Tool-Fallback"]);
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /"name":"exec_command"/);
+      assert.match(output, /\\"cmd\\":\\"pwd\\"/);
+      assert.doesNotMatch(output, /I will save the script/);
+      assert.match(logs.join("\n"), /NATIVE-STREAM-ERR: Native-Prelude-InvalidTool .*status=422/);
+      assert.doesNotMatch(logs.join("\n"), /NATIVE-STREAM-ERR: Native-Prelude-InvalidTool .*headersSent=true/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion retries native short text-only progress during active tool work", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -1323,12 +2621,247 @@ test("handleChatCompletion logs native short text-only progress as possible stal
       }, clientRes);
 
       const output = clientRes.chunks.join("");
-      assert.equal(calls.length, 1);
+      assert.deepEqual(calls, [
+        { provider: "Native-Short-Progress", userCount: 1, lastUser: "Run reports/startup-experiment.yml live, not dry-run; it should take at least the test duration." },
+        {
+          provider: "Native-Short-Progress",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
       assert.equal(clientRes.status, 200);
-      assert.equal(output.includes("dry-run only rendered"), true);
-      assert.equal(output.includes("\"tool_calls\""), false);
-      assert.match(logs.join("\n"), /POSSIBLE-STALL: Native-Short-Progress .*output=premature_progress.*action=log_only/);
-      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
+      assert.equal(output.includes("dry-run only rendered"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Short-Progress .*output=premature_progress.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Short-Progress retry=1/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion retries native premature progress after TodoWrite result", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    const calls = [];
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Todo-Progress",
+      model: "windsurf/native-todo-progress",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: { content: "Todo list updated; next I need to verify the scanner dialog." },
+            finish_reason: null,
+          }],
+        })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_verify",
+              type: "function",
+              function: { name: "Bash", arguments: "{\"command\":\"npm test -- --runInBand scanner\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        messages: [
+          { role: "user", content: "Continue fixing the scanner dialog and verify it." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_todo", type: "function", function: { name: "TodoWrite", arguments: "{\"todos\":[]}" } }],
+          },
+          { role: "tool", tool_call_id: "call_todo", content: "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress." },
+        ],
+        tools: [
+          { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+          { type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } },
+        ],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Todo-Progress", userCount: 1, lastUser: "Continue fixing the scanner dialog and verify it." },
+        {
+          provider: "Native-Todo-Progress",
+          userCount: 2,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("Todo list updated"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Todo-Progress .*output=premature_progress.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Todo-Progress retry=1/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion retries native premature progress after automatic TodoWrite nudge", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    const calls = [];
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Todo-Nudge",
+      model: "windsurf/native-todo-nudge",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((m) => m.role === "user") || [];
+      calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
+      if (calls.length === 1) {
+        handlers.onChunk(`data: ${JSON.stringify({
+          choices: [{
+            delta: { content: "I'll update the todo list before continuing the wallet verification." },
+            finish_reason: null,
+          }],
+        })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+        handlers.onChunk("data: [DONE]\n\n");
+        return;
+      }
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_todo",
+              type: "function",
+              function: { name: "TodoWrite", arguments: "{\"todos\":[{\"content\":\"Test scanner dialog\",\"status\":\"in_progress\"}]}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 4,
+          reason: "edit_recovery",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+        messages: [
+          { role: "user", content: "Continue fixing the wallet controller injection and verify the scanner dialog." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_edit", type: "function", function: { name: "Edit", arguments: "{\"file_path\":\"src/dependencies.php\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_edit", content: "The file src/dependencies.php has been updated successfully." },
+          { role: "assistant", content: "" },
+          { role: "user", content: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Here are the existing contents of your todo list:\n[1. [completed] Verify only one QR card remains in subscriptions tab\n2. [in_progress] Fix wallet controller null service injection\n3. [pending] Test wallet button opens correct /api/user route\n4. [pending] Test scanner dialog]" },
+        ],
+        tools: [
+          { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+          { type: "function", function: { name: "Edit", parameters: { type: "object", required: ["file_path"] } } },
+        ],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.deepEqual(calls, [
+        { provider: "Native-Todo-Nudge", userCount: 2, lastUser: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Here are the existing contents of your todo list:\n[1. [completed] Verify only one QR card remains in subscriptions tab\n2. [in_progress] Fix wallet controller null service injection\n3. [pending] Test wallet button opens correct /api/user route\n4. [pending] Test scanner dialog]" },
+        {
+          provider: "Native-Todo-Nudge",
+          userCount: 3,
+          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        },
+      ]);
+      assert.equal(clientRes.status, 200);
+      assert.equal(output.includes("I'll update the todo list"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Todo-Nudge .*output=premature_progress.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Todo-Nudge retry=1/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
