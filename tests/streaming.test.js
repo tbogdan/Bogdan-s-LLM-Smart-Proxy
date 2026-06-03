@@ -137,6 +137,43 @@ test("routeStreamToProvider filters telemetry SSE chunks after stream commit", a
   });
 });
 
+test("routeStreamToProvider accepts text-only reports when tool_choice auto is optional", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "Root cause: ",
+        "tool_choice auto is optional, ",
+        "so this diagnostic report is valid.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), {
+        ...requestBody(),
+        tool_choice: { type: "auto" },
+        messages: [
+          { role: "user", content: "Read the logs." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"logs.txt\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_read", content: "NO-TOOLS-STREAM-BUFFERED sample" },
+          { role: "user", content: "Explain the root cause from these logs." },
+        ],
+      }, clientRes);
+
+      assert.equal(clientRes.status, 200);
+      assert.equal(clientRes.ended, true);
+      assert.match(clientRes.chunks.join(""), /diagnostic report is valid/);
+    });
+  });
+});
+
 test("routeStreamToProvider strips private difficulty marker from streamed content", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -183,6 +220,59 @@ test("routeStreamToProvider strips split sentinel effort markers from streamed c
       assert.equal(output.includes("effort=low"), false);
       assert.equal(output.includes("reason=followup"), false);
       assert.equal(output.includes("Local test-vm yes"), true);
+    });
+  });
+});
+
+test("routeStreamToProvider holds incomplete reason slugs across chunks", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_INTERNAL_ROUTING effort=high speed=4 reason=review",
+        "-and-broader-verify",
+        "-response\n",
+        "Am verificat si restul.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("review-and-broader-verify"), false);
+      assert.equal(output.includes("-response"), false);
+      assert.equal(output.includes("Am verificat si restul."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider strips orphan slug tails after private markers", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_INTERNAL_ROUTING effort=high speed=4 reason=inventory\n",
+        "_needed\n",
+        "-current-diff\n",
+        "\"-current-diff]\n",
+        "Reading changed paths around inventory flow.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("_needed"), false);
+      assert.equal(output.includes("-current-diff"), false);
+      assert.equal(output.includes("Reading changed paths"), true);
     });
   });
 });
@@ -805,6 +895,123 @@ test("handleChatCompletion rejects empty native streams before IDE-visible succe
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion accepts native text-only reports when tool_choice auto is optional", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Text-Report",
+      model: "windsurf/native-text-report",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "Root cause: tool_choice auto is optional, so this diagnostic report is a valid final answer." }, finish_reason: null }] })}\n\n`);
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        tool_choice: { type: "auto" },
+        messages: [
+          { role: "user", content: "Read the logs." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"logs.txt\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_read", content: "NO-TOOLS-NATIVE-BUFFERED sample" },
+          { role: "user", content: "Explain the root cause from these logs." },
+        ],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /Root cause: tool_choice auto is optional/);
+      assert.doesNotMatch(output, /Provider error|text-only response with tools available/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion still rejects native text-only output when tool_choice is required", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [{
+      name: "Native-Required-Tool",
+      model: "windsurf/native-required-tool",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "I will answer in text instead of calling the required tool." }, finish_reason: null }] })}\n\n`);
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: true,
+        tool_choice: "required",
+        messages: [{ role: "user", content: "Use the Read tool." }],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 503);
+      assert.doesNotMatch(output, /I will answer in text/);
+      assert.match(output, /All providers in group failed|Provider error/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+      else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });

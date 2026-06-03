@@ -190,6 +190,18 @@ test("detectIncompatibility does not ban Windsurf tool history on generic invali
   });
 });
 
+test("detectIncompatibility learns unsupported adaptive thinking", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Claude-Sonnet45",
+      400,
+      '{"type":"error","error":{"type":"invalid_request_error","message":"adaptive thinking is not supported"}}',
+    );
+
+    assert.equal(scoring.getCompat("Claude-Sonnet45").no_adaptive_thinking, true);
+  });
+});
+
 test("detectIncompatibility cools Windsurf permission_denied internal errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
@@ -294,6 +306,19 @@ test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as 
 
     const compat = scoring.getCompat("Copilot-claudesonnet46");
     assert.equal(compat.no_tools, true);
+  });
+});
+
+test("detectIncompatibility learns Copilot maximum tools length errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-gpt54",
+      400,
+      "{\"error\":{\"message\":\"Invalid 'tools': array too long. Expected an array with maximum length 128, but got an array with length 134 instead.\",\"code\":\"invalid_request_body\"}}",
+    );
+
+    const compat = scoring.getCompat("Copilot-gpt54");
+    assert.equal(compat.max_tools, 128);
   });
 });
 

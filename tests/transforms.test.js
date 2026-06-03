@@ -64,6 +64,32 @@ test("transformRequest sanitizes tool schemas and tool call history for provider
   assert.equal(transformed.messages.some((m, i, arr) => m.role === "tool" && arr[i + 1]?.role === "user"), false);
 });
 
+test("transformRequest caps tools using provider-advertised maximum", async () => {
+  const tools = Array.from({ length: 3 }, (_, idx) => ({
+    type: "function",
+    function: {
+      name: `tool_${idx}`,
+      parameters: { type: "object", properties: {} },
+    },
+  }));
+
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    name: "Copilot-Test",
+    family: "copilot",
+    max_tools: 2,
+  }, {
+    model: "auto-coding",
+    tools,
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Use the available tools." },
+    ],
+  });
+
+  assert.deepEqual(transformed.tools.map((tool) => tool.function.name), ["tool_0", "tool_1"]);
+});
+
 test("transformRequest never increases requested max_tokens while fitting context", async () => {
   const transformed = await transforms.transformRequest({
     ...provider,
@@ -399,7 +425,8 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /FLOW: UNDERSTAND.*DECOMPOSE.*EXECUTE.*VERIFY.*SAVE.*NEXT/);
   assert.match(system, /TASK DECOMPOSITION \(mandatory for large tasks\):/);
   assert.match(system, /ANTI-STALL RULES \(critical/);
-  assert.match(system, /TOOL STRATEGY.*CRITICAL: You MUST use tools/);
+  assert.match(system, /TOOL STRATEGY.*tools are available/);
+  assert.doesNotMatch(system, /EVERY response MUST include at least one tool call/);
   assert.match(system, /USER CONFIRMATION GATES:/);
   assert.match(system, /PLAN DISSEMINATION AND SELF-REVIEW:/);
   assert.match(system, /Before implementing a newly created plan, disseminate it into concrete phases/);
@@ -418,6 +445,8 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
   assert.match(system, /Compacted tool outputs use \[READ/);
   assert.match(system, /If a file was already read and not modified, do NOT re-read it/);
+  assert.match(system, /You must use subagents whenever possible/i);
+  assert.match(system, /Do not delegate the immediate blocking step/i);
   assert.match(system, /SUBAGENT QUALITY CONTROL:/);
   assert.match(system, /Keep this project-specific instruction\./);
   assert.equal(system.includes("Bogdan's LLM Smart Proxy"), false);
@@ -709,6 +738,39 @@ test("transformRequest removes known upstream identity lines without dropping pr
   assert.match(system, /Always preserve this repository-specific convention\./);
 });
 
+test("transformRequest preserves Claude Code system verbatim for native Claude providers", async () => {
+  const claudeProvider = {
+    ...provider,
+    name: "Claude-Opus48",
+    family: "claude",
+    protocol: "anthropic",
+    model: "claude/claude-opus-4-8",
+    upstream_model: "claude-opus-4-8",
+  };
+  const originalSystem = [
+    "You are Claude Code, Anthropic's official CLI for Claude.",
+    "Keep this repository-specific convention.",
+  ].join("\n");
+  const transformed = await transforms.transformRequest(claudeProvider, {
+    model: "claude/claude-opus-4-8",
+    _claudeCodeMetadata: {
+      user_id: JSON.stringify({
+        device_id: "device-from-cli",
+        account_uuid: "account-from-cli",
+        session_id: "session-from-cli",
+      }),
+    },
+    messages: [
+      { role: "system", content: originalSystem },
+      { role: "user", content: "Reply ok." },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.equal(system, originalSystem);
+  assert.doesNotMatch(system, /Project LLM Smart Proxy/);
+});
+
 test("transformRequest strips tool schemas from direct no-tool answers", async () => {
   const transformed = await transforms.transformRequest(provider, {
     model: "auto-coding",
@@ -763,6 +825,47 @@ test("transformRequest preserves required tool contracts for direct-looking requ
   assert.equal(transformed.tool_choice, "required");
   assert.equal(transformed.tools.length, 1);
   assert.match(transformed.messages[0].content, /TOOL STRATEGY.*MUST use tools/);
+});
+
+test("transformRequest keeps required local prompt when provider rejects tool_choice", async () => {
+  const providerName = "NoToolChoice-Test";
+  const originalCompat = state.providerCompat[providerName];
+  state.providerCompat[providerName] = { no_tool_choice: true };
+  try {
+    const transformed = await transforms.transformRequest({ ...provider, name: providerName }, {
+      model: "auto-coding",
+      tool_choice: "required",
+      tools: [{ type: "function", function: { name: "Ping", parameters: { type: "object" } } }],
+      messages: [
+        { role: "system", content: "You are Claude Code." },
+        { role: "user", content: "Ping the health endpoint." },
+      ],
+    });
+
+    assert.equal(transformed.tool_choice, undefined);
+    assert.equal(transformed.tools.length, 1);
+    assert.match(transformed.messages[0].content, /TOOL STRATEGY.*MUST use tools/);
+  } finally {
+    if (originalCompat === undefined) delete state.providerCompat[providerName];
+    else state.providerCompat[providerName] = originalCompat;
+  }
+});
+
+test("transformRequest does not force every response to tool-call when tools are optional", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Investigate this issue and report the root cause." },
+    ],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.match(system, /TOOL STRATEGY.*tools are available/);
+  assert.doesNotMatch(system, /EVERY response MUST include at least one tool call/);
+  assert.match(system, /Text-only answers are allowed/);
 });
 
 test("transformRequest does not force tools for no-tool requests that include recalled memory", async () => {
@@ -940,22 +1043,29 @@ test("transformRequest includes legacy function schemas in final context budget"
     },
   };
 
-  const transformed = await transforms.transformRequest({
-    ...provider,
-    context: 4700,
-  }, {
+  const request = {
     model: "auto-coding",
     max_tokens: 500,
     functions: [fnSchema],
     messages: [
       { role: "user", content: "Implement the specified function with the available legacy function schema." },
     ],
-  });
+  };
+
+  const unconstrained = await transforms.transformRequest(provider, request);
+  const inputTokens = compaction.estimateTokens(unconstrained.messages)
+    + compaction.estimateRequestSchemaTokens(unconstrained);
+  const context = inputTokens + 250;
+
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    context,
+  }, request);
 
   const used = compaction.estimateTokens(transformed.messages)
     + compaction.estimateRequestSchemaTokens(transformed)
     + transformed.max_tokens;
-  assert.equal(used <= 4700, true);
+  assert.equal(used <= context, true);
   assert.equal(transformed.max_tokens < 500, true);
 });
 

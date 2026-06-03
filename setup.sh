@@ -105,7 +105,7 @@ if [[ "$ENABLE_CLAUDE_INPUT" =~ ^[Yy]$ ]]; then
   set_env ENABLE_CLAUDE true
   ANTHROPIC_TOKEN="$(get_env ANTHROPIC_API_KEY)"
   if [ -z "$ANTHROPIC_TOKEN" ]; then
-    echo "Claude enabled. Authenticate with Anthropic Console, then extract the managed key:"
+    echo "Claude enabled. Authenticate with Anthropic Console, then extract the managed key and Claude Code profile:"
     echo "  claude auth login --console"
     echo "  node claude-auth.js --env-path .env"
     read -p "Run extraction now if you already completed Console login? (y/N): " CLAUDE_EXTRACT_INPUT

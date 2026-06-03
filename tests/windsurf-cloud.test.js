@@ -43,6 +43,8 @@ test("resolveModel maps fallback Windsurf model ids and aliases", () => {
   assert.equal(cloud.resolveModel("adaptive").modelUid, "adaptive");
   assert.equal(cloud.resolveModel("swe-1-6-fast").id, "swe-1.6-fast");
   assert.equal(cloud.resolveModel("windsurf/claude-opus-4.7").modelUid, "claude-opus-4-7");
+  assert.equal(cloud.resolveModel("windsurf/claude-opus-4-8-low").modelUid, "claude-opus-4-8-low");
+  assert.equal(cloud.resolveModel("windsurf/claude-opus-4-8-max").modelUid, "claude-opus-4-8-max");
   assert.equal(cloud.resolveModel("windsurf/gpt-5.5").modelUid, "gpt-5-5");
   assert.equal(cloud.resolveModel("windsurf/custom-model.x").id, "custom-model.x");
   assert.equal(cloud.resolveModel("windsurf/custom-model.x").modelUid, "custom-model-x");
@@ -63,6 +65,13 @@ test("buildWindsurfProviders emits namespaced windsurf provider contracts", () =
   const opus = providers.find((provider) => provider.model === "windsurf/claude-opus-4.7");
   assert.equal(opus.windsurf_model_uid, "claude-opus-4-7");
   assert.equal(opus.caps.includes("max"), true);
+
+  const opus48Low = providers.find((provider) => provider.model === "windsurf/claude-opus-4-8-low");
+  const opus48Max = providers.find((provider) => provider.model === "windsurf/claude-opus-4-8-max");
+  assert.equal(opus48Low.windsurf_model_uid, "claude-opus-4-8-low");
+  assert.equal(opus48Low.thinking_effort, "low");
+  assert.equal(opus48Max.windsurf_model_uid, "claude-opus-4-8-max");
+  assert.equal(opus48Max.thinking_effort, "xhigh");
 });
 
 test("parseWindsurfModelConfigs extracts app Cascade configs from UserStatus envelopes", () => {

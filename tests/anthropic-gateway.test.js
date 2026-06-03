@@ -2,8 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const http = require("node:http");
 
 const gateway = require("../lib/anthropic-gateway");
+const state = require("../lib/state");
 
 class FakeResponse {
   constructor() {
@@ -105,6 +107,299 @@ test("translateRequest preserves Anthropic image blocks as OpenAI image_url part
       ],
     },
   ]);
+});
+
+test("handleMessagesHTTP preserves Claude Code metadata and session for upstream routing", async () => {
+  let capturedChatReq;
+  gateway.init({
+    handleChatCompletion: async (chatReq, res) => {
+      capturedChatReq = chatReq;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-test",
+        model: chatReq.model,
+        choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }));
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP(
+    { headers: { "x-claude-code-session-id": "session-from-header" } },
+    res,
+    JSON.stringify({
+      model: "claude-opus-4-8",
+      max_tokens: 64,
+      metadata: {
+        user_id: JSON.stringify({
+          device_id: "device-from-body",
+          account_uuid: "account-from-body",
+          session_id: "session-from-body",
+        }),
+      },
+      thinking: { type: "adaptive" },
+      context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+      output_config: { effort: "high" },
+      messages: [{ role: "user", content: "Say ok." }],
+    })
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(capturedChatReq._claudeCodeSessionId, "session-from-header");
+  assert.deepEqual(capturedChatReq._claudeCodeMetadata, {
+    user_id: JSON.stringify({
+      device_id: "device-from-body",
+      account_uuid: "account-from-body",
+      session_id: "session-from-body",
+    }),
+  });
+  assert.deepEqual(capturedChatReq._claudeCodeProfile, {
+    deviceId: "device-from-body",
+    accountUuid: "account-from-body",
+    sessionId: "session-from-header",
+  });
+  assert.deepEqual(capturedChatReq._claudeCodeRequestShape, {
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    output_config: { effort: "high" },
+  });
+});
+
+test("handleMessagesHTTP passes direct Claude Messages requests through verbatim", async () => {
+  const oldProviders = state.PROVIDERS;
+  let capturedBody;
+  let routerCalled = false;
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      capturedBody = JSON.parse(raw);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "msg_passthrough",
+        type: "message",
+        role: "assistant",
+        model: capturedBody.model,
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  state.PROVIDERS = [{
+    name: "Claude-Opus48",
+    family: "claude",
+    protocol: "anthropic",
+    model: "claude/claude-opus-4-8",
+    upstream_model: "claude-opus-4-8",
+    url: `http://127.0.0.1:${port}/v1/messages`,
+    key: "sk-ant-api03-test",
+    key_env: "ANTHROPIC_API_KEY",
+    alive: true,
+  }];
+  gateway.init({
+    handleChatCompletion: async () => {
+      routerCalled = true;
+      throw new Error("router should not be called");
+    },
+  });
+
+  const requestBody = {
+    model: "claude-opus-4-8",
+    max_tokens: 32000,
+    system: [
+      { type: "text", text: "You are Claude Code.", cache_control: { type: "ephemeral" } },
+    ],
+    messages: [{ role: "user", content: "Reply OK." }],
+    tools: [
+      {
+        name: "Read",
+        description: "Read a file",
+        input_schema: { type: "object" },
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    metadata: {
+      user_id: JSON.stringify({ device_id: "device", account_uuid: "account", session_id: "session" }),
+    },
+  };
+
+  try {
+    const res = new FakeResponse();
+    await gateway.handleMessagesHTTP(
+      { headers: { "x-claude-code-session-id": "session" } },
+      res,
+      JSON.stringify(requestBody),
+    );
+
+    assert.equal(routerCalled, false);
+    assert.equal(res.status, 200);
+    assert.deepEqual(capturedBody, requestBody);
+    assert.equal(JSON.parse(res.chunks.join("")).content[0].text, "OK");
+  } finally {
+    state.PROVIDERS = oldProviders;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+});
+
+test("handleMessagesHTTP strips unsupported adaptive thinking before direct Claude passthrough", async () => {
+  const oldProviders = state.PROVIDERS;
+  let capturedBody;
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      capturedBody = JSON.parse(raw);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "msg_passthrough_sonnet",
+        type: "message",
+        role: "assistant",
+        model: capturedBody.model,
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  state.PROVIDERS = [{
+    name: "Claude-Sonnet45",
+    family: "claude",
+    protocol: "anthropic",
+    model: "claude/claude-sonnet-4-5-20250929",
+    upstream_model: "claude-sonnet-4-5-20250929",
+    url: `http://127.0.0.1:${port}/v1/messages`,
+    key: "sk-ant-api03-test",
+    key_env: "ANTHROPIC_API_KEY",
+    alive: true,
+    supports_adaptive_thinking: false,
+    supports_extended_thinking: true,
+  }];
+  gateway.init({
+    handleChatCompletion: async () => {
+      throw new Error("router should not be called");
+    },
+  });
+
+  try {
+    const res = new FakeResponse();
+    await gateway.handleMessagesHTTP(
+      { headers: { "x-claude-code-session-id": "session-from-header" } },
+      res,
+      JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 32000,
+        thinking: { type: "adaptive" },
+        context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+        output_config: { effort: "high" },
+        messages: [{ role: "user", content: "Reply OK." }],
+      }),
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(capturedBody.thinking, undefined);
+    assert.equal(capturedBody.context_management, undefined);
+    assert.equal(capturedBody.output_config, undefined);
+  } finally {
+    state.PROVIDERS = oldProviders;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+});
+
+test("handleMessagesHTTP retries generic direct Claude Messages with SDK scaffold before router fallback", async () => {
+  const oldProviders = state.PROVIDERS;
+  const oldClaudeCodeVersion = process.env.CLAUDE_CODE_VERSION;
+  const capturedBodies = [];
+  let routerCalled = false;
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      const body = JSON.parse(raw);
+      capturedBodies.push(body);
+      const firstSystemText = Array.isArray(body.system) ? body.system[0]?.text : body.system;
+      if (!/Claude Agent SDK/.test(String(firstSystemText || ""))) {
+        response.writeHead(429, { "content-type": "application/json" });
+        response.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "Error" } }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "msg_scaffold",
+        type: "message",
+        role: "assistant",
+        model: body.model,
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  state.PROVIDERS = [{
+    name: "Claude-Opus48",
+    family: "claude",
+    protocol: "anthropic",
+    model: "claude/claude-opus-4-8",
+    upstream_model: "claude-opus-4-8",
+    url: `http://127.0.0.1:${port}/v1/messages`,
+    key: "sk-ant-api03-test",
+    key_env: "ANTHROPIC_API_KEY",
+    alive: true,
+  }];
+  process.env.CLAUDE_CODE_VERSION = "2.1.150";
+  gateway.init({
+    handleChatCompletion: async () => {
+      routerCalled = true;
+      throw new Error("router should not be called");
+    },
+  });
+
+  try {
+    const res = new FakeResponse();
+    await gateway.handleMessagesHTTP(
+      { headers: { "x-claude-code-session-id": "session" } },
+      res,
+      JSON.stringify({
+        model: "claude-opus-4-8",
+        max_tokens: 4,
+        messages: [{ role: "user", content: "Reply OK." }],
+      }),
+    );
+
+    assert.equal(routerCalled, false);
+    assert.equal(res.status, 200);
+    assert.equal(capturedBodies.length, 2);
+    assert.equal(capturedBodies[0].system, undefined);
+    assert.match(capturedBodies[1].system[0].text, /Claude Agent SDK/);
+    assert.equal(JSON.parse(res.chunks.join("")).content[0].text, "OK");
+  } finally {
+    state.PROVIDERS = oldProviders;
+    if (oldClaudeCodeVersion === undefined) delete process.env.CLAUDE_CODE_VERSION;
+    else process.env.CLAUDE_CODE_VERSION = oldClaudeCodeVersion;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
 });
 
 test("toAnthropicResponse maps OpenAI chat response to Anthropic message", () => {

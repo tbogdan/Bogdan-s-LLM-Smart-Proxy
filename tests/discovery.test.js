@@ -89,14 +89,21 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
         seed.providers.filter((provider) => provider.family === family).length,
       ]),
     ),
-    { windsurf: 102, claude: 10, codex: 6, copilot: 33 },
+    { windsurf: 114, claude: 10, codex: 6, copilot: 33 },
   );
 
   for (const provider of seed.providers) {
     assert.match(provider.model, /^(windsurf|claude|codex|copilot)\//);
   }
 
-  for (const model of ["windsurf/gpt-5-5-low", "windsurf/private-9", "windsurf/deepseek-v4"]) {
+  for (const model of [
+    "windsurf/gpt-5-5-low",
+    "windsurf/private-9",
+    "windsurf/deepseek-v4",
+    "windsurf/claude-opus-4-6-low",
+    "windsurf/claude-opus-4-7-medium",
+    "windsurf/claude-opus-4-8-max",
+  ]) {
     assert.equal(seed.providers.some((provider) => provider.model === model), true, `seed providers should include ${model}`);
   }
 });

@@ -31,7 +31,7 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    node github-copilot-auth.js --env-file .env
    ```
 
-   Choose the Anthropic Console account in the Claude browser flow. The helper extracts Claude Code's login-managed API key and writes `ANTHROPIC_API_KEY` into `.env`; if needed, you can manually create a key at `https://platform.claude.com/settings/keys`.
+   Choose the Anthropic Console account in the Claude browser flow. The helper extracts Claude Code's login-managed API key, writes `ANTHROPIC_API_KEY`, reads Claude Code profile metadata from `~/.claude.json`, and captures local CLI request defaults for the Anthropic adapter. If needed, you can manually create a key at `https://platform.claude.com/settings/keys`; pass `--session-id <uuid>` to pin a Claude Code session id in `.env`.
    For Copilot, the helper defaults to VS Code GitHub Authentication's public OAuth client id. Override it with `--client-id` if you want to use your own app. The proxy exchanges that GitHub token for a short-lived Copilot runtime token before calling the Copilot LLM endpoint.
    If you use `./setup.sh`, Codex auth is copied automatically from `${CODEX_HOME:-$HOME/.codex}/auth.json` when Codex is enabled.
 

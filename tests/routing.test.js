@@ -894,6 +894,88 @@ test("routing diversity prefers a cross-source same-class peer when the sticky s
   });
 });
 
+test("routing diversity prefers cross-family frontier peer over adjacent Claude Opus version", async () => {
+  await withRoutingState(async () => {
+    const sticky = provider("http://example.invalid", {
+      name: "Claude-Opus46",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-opus-4-6",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      context: 1000000,
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "xhigh",
+    });
+    const adjacentOpus = provider("http://example.invalid", {
+      name: "Claude-Opus48",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-opus-4-8",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      context: 1000000,
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "xhigh",
+    });
+    const crossFamilyFrontier = provider("http://example.invalid", {
+      name: "Codex-GPT55",
+      family: "codex",
+      model: "codex/gpt-5.5",
+      caps: ["text", "coding", "tools", "thinking", "max"],
+      context: 272000,
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "xhigh",
+    });
+    Object.defineProperty(sticky, "_lastRoutingScore", { value: 6.00, configurable: true });
+    Object.defineProperty(adjacentOpus, "_lastRoutingScore", { value: 5.82, configurable: true });
+    Object.defineProperty(crossFamilyFrontier, "_lastRoutingScore", { value: 4.80, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [sticky, adjacentOpus, crossFamilyFrontier],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue debugging the routing loop with tools." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 120000,
+        _estimatedTokens: 152000,
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 4,
+          contextLevel: 5,
+          taskKind: "debugging",
+          costTarget: 4,
+          speedTarget: 3,
+          thinkingLevel: 5,
+          stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+        },
+      },
+      "auto-coding",
+      true,
+      {
+        env: { LLM_ROUTING_DIVERSITY: "balanced" },
+        sessionStats: {
+          lastProvider: "Claude-Opus46",
+          providers: {
+            "Claude-Opus46": { requests: 4 },
+            "Claude-Opus48": { requests: 0 },
+            "Codex-GPT55": { requests: 0 },
+          },
+        },
+      },
+    );
+
+    assert.equal(ranked[0].name, "Codex-GPT55");
+    assert.equal((adjacentOpus._routingDiversityPenalty || 0) > 0, true);
+  });
+});
+
 test("routing diversity treats the same underlying model across sources as a peer group", async () => {
   await withRoutingState(async () => {
     const sticky = provider("http://example.invalid", {
@@ -2294,6 +2376,42 @@ test("routeToProvider keeps required tool schemas and rejects text-only response
   });
 });
 
+test("routeToProvider preserves required validation when provider compat strips tool_choice", async () => {
+  await withRoutingState(async () => {
+    const providerName = "NoToolChoice-Routing";
+    const originalCompat = state.providerCompat[providerName];
+    state.providerCompat[providerName] = { no_tool_choice: true };
+    let forwarded;
+    try {
+      await withServer((req, res) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "pong" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }));
+        });
+      }, async (url) => {
+        await assert.rejects(() => routing.routeToProvider(provider(url, { name: providerName }), {
+          model: "auto-coding",
+          tool_choice: "required",
+          tools: [{ type: "function", function: { name: "Ping", parameters: { type: "object" } } }],
+          messages: [{ role: "user", content: "Ping the health endpoint." }],
+        }), (err) => err.status === 422 && err.stalling === true);
+
+        assert.equal(forwarded.tool_choice, undefined);
+        assert.equal(forwarded.tools.length, 1);
+      });
+    } finally {
+      if (originalCompat === undefined) delete state.providerCompat[providerName];
+      else state.providerCompat[providerName] = originalCompat;
+    }
+  });
+});
+
 test("buildUsageHeaders exposes cached input token telemetry", () => {
   const req = { messages: [{ role: "user", content: "hello" }] };
   const headers = routing.buildUsageHeaders(provider("http://example.test"), req, {
@@ -2912,7 +3030,21 @@ test("handleChatCompletion uses hidden AI task assessment before routing noisy c
       });
     }, async (url) => {
       state.GROUPS = { "auto-coding": "coding", "auto-assess": "assessment", "auto-sm": "text-sm", "auto-text": "text" };
-      state.PROVIDERS = [provider(url, { name: "Assessment-Test", caps: ["text", "coding", "tools", "thinking"] })];
+      state.PROVIDERS = [
+        provider(url, { name: "Assessment-Test", caps: ["text", "coding", "tools", "thinking"] }),
+        provider(url, {
+          name: "Big-Sonnet",
+          model: "windsurf/claude-sonnet-4-6-thinking",
+          upstream_model: "claude-sonnet-4-6-thinking",
+          family: "windsurf",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 200000,
+          cost_group: 3,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
       process.env.LLM_PROXY_AI_ASSESSMENT_MODEL = "auto-text";
       process.env.LLM_PROXY_AI_ASSESSMENT = "always";
       try {
@@ -4264,6 +4396,52 @@ test("hidden assessment falls back across provider sources after assessor timeou
         else process.env.LLM_PROXY_AI_ASSESSMENT_TIMEOUT_MS = originalTimeout;
       }
     });
+  });
+});
+
+test("internal assessment responses are not rejected as proxy identity mismatches", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "I am Gemini, a model by Google." },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+          }));
+        });
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Windsurf-Gemini3FlashMinimal",
+          family: "windsurf",
+          model: "windsurf/google-gemini-3-0-flash-minimal",
+          caps: ["text"],
+        }), {
+          model: "auto-assess",
+          _llmProxyInternalAssessment: true,
+          _llmProxyBypassOptimizations: true,
+          messages: [
+            { role: "system", content: "You are an LLM proxy routing classifier." },
+            { role: "user", content: "Current user message:\nwhat is your name" },
+          ],
+          max_tokens: 48,
+          stream: false,
+        });
+
+        assert.equal(resp.status, 200);
+        assert.match(resp.body, /I am Gemini/);
+        assert.doesNotMatch(logs.join("\n"), /IDENTITY-MISMATCH/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
   });
 });
 
@@ -6303,6 +6481,213 @@ test("auto-coding ranking applies routing policy cost and speed targets", () => 
   }
 });
 
+test("handleChatCompletion skips direct Claude peers after generic rate limit", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalEnv = {
+      LLM_COST_TARGET: process.env.LLM_COST_TARGET,
+      LLM_SPEED_TARGET: process.env.LLM_SPEED_TARGET,
+      LLM_THINKING_TARGET: process.env.LLM_THINKING_TARGET,
+      LLM_ROUTING_POLICY: process.env.LLM_ROUTING_POLICY,
+    };
+    const calls = [];
+
+    try {
+      process.env.LLM_COST_TARGET = "3";
+      process.env.LLM_SPEED_TARGET = "4";
+      process.env.LLM_THINKING_TARGET = "high";
+      process.env.LLM_ROUTING_POLICY = "balanced";
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (String(body.model || "").startsWith("claude/")) {
+            res.writeHead(429, { "content-type": "application/json" });
+            res.end('{"type":"error","error":{"type":"rate_limit_error","message":"Error"},"request_id":"req_test"}');
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-rate-fallback",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "Fallback ok." }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Sonnet46",
+            model: "claude/claude-sonnet-4-6",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "high",
+          },
+          {
+            name: "Claude-Sonnet45",
+            model: "claude/claude-sonnet-4-5",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "high",
+          },
+          {
+            name: "Codex-GPT54Mini",
+            model: "codex/gpt-5.4-mini",
+            family: "codex",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 272000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "high",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            label: "complex",
+            taskLevel: 4,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+            effort: "high",
+            thinkingEffort: "high",
+            thinkingLevel: 4,
+            speedTarget: 4,
+            costTarget: 3,
+            source: "assessment",
+          },
+          messages: [{ role: "user", content: "Fix routing after Claude rate limits." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude/claude-sonnet-4-6", "codex/gpt-5.4-mini"]);
+        assert.equal(calls.includes("claude/claude-sonnet-4-5"), false);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value == null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
+test("handleChatCompletion retries explicit Claude model on equivalent provider after rate limit", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const calls = [];
+
+    try {
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (body.model === "claude/claude-sonnet-4-6") {
+            res.writeHead(429, { "content-type": "application/json" });
+            res.end('{"type":"error","error":{"type":"rate_limit_error","message":"Error"},"request_id":"req_test"}');
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-direct-rate-fallback",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "Equivalent fallback ok." }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Sonnet46",
+            model: "claude/claude-sonnet-4-6",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "high",
+          },
+          {
+            name: "Compat-claudesonnet46",
+            model: "compat/claude-sonnet-4.6",
+            family: "compat",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 264000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "high",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "claude/claude-sonnet-4-6",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          messages: [{ role: "user", content: "Fix routing after Claude rate limits." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude/claude-sonnet-4-6", "compat/claude-sonnet-4.6"]);
+        assert.match(JSON.parse(fake.body).choices[0].message.content, /fallback ok/i);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
 test("auto-coding avoids native Windsurf providers for image-bearing requests when compatible providers exist", () => {
   const originalProviders = state.PROVIDERS;
   const originalGroups = state.GROUPS;
@@ -8259,7 +8644,7 @@ test("level 4 assessment filters legacy GPT-4.x candidates when modern coding mo
   });
 });
 
-test("level 4 assessment falls back down after strict and upward providers are exhausted", async () => {
+test("level 4 auto-coding assessment keeps level floor when strict and upward providers are exhausted", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     state.PROVIDERS = [
@@ -8295,14 +8680,14 @@ test("level 4 assessment falls back down after strict and upward providers are e
 
       const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
 
-      assert.deepEqual(kept, ["Claude-Haiku45"]);
+      assert.deepEqual(kept, []);
     } finally {
       state.PROVIDERS = originalProviders;
     }
   });
 });
 
-test("level 4 assessment falls down when no strict or upward context fallback exists", async () => {
+test("level 4 auto-coding assessment does not fall down when no strict or upward context fallback exists", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     state.PROVIDERS = [
@@ -8338,9 +8723,597 @@ test("level 4 assessment falls down when no strict or upward context fallback ex
 
       const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
 
-      assert.deepEqual(kept, ["Claude-Haiku45"]);
+      assert.deepEqual(kept, []);
     } finally {
       state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
+test("level 4 auto-coding assessment rejects Haiku-only context fallback", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    state.PROVIDERS = [
+      {
+        name: "Claude-Haiku45",
+        model: "claude/claude-haiku-4-5-20251001",
+        upstream_model: "claude-haiku-4-5-20251001",
+        family: "claude",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        cost_group: 2,
+        quality_group: 3,
+        speed_group: 5,
+        thinking_effort: "low",
+      },
+    ];
+
+    try {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Continue the complex coding recovery with tools." }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          costTarget: 3,
+          thinkingLevel: 4,
+          taskKind: "agentic_coding",
+          stepShape: { shape: "write_heavy", gate: "run_behavior" },
+        },
+      };
+
+      const raw = routing.getProvidersForGroup("auto-coding", 1000, reqBody).map((provider) => provider.name);
+      const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
+
+      assert.deepEqual(raw, ["Claude-Haiku45"]);
+      assert.deepEqual(kept, []);
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
+test("handleChatCompletion tries active level minus one before near-level cooldown candidates", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-near-level",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "near-level ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Haiku45",
+            model: "claude/claude-haiku-4-5-20251001",
+            upstream_model: "claude-haiku-4-5-20251001",
+            family: "claude",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 2,
+            quality_group: 3,
+            speed_group: 5,
+            thinking_effort: "low",
+          },
+          {
+            name: "Codex-GPT54",
+            model: "codex/gpt-5.4",
+            upstream_model: "gpt-5.4",
+            family: "codex",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 272000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+        ];
+        scoring.setCooldown("Codex-GPT54", 3600_000, "test cooldown");
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages: [{ role: "user", content: "Debug the routing failure with provider logs." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(calls.length, 1);
+        assert.match(calls[0], /haiku/i);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion revives same-band cooldown providers after active strict providers fail", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (/sonnet/i.test(String(body.model || ""))) {
+            res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: { message: "strict provider failed" } }));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-same-band-cooldown",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "cooldown ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Strict-Sonnet",
+            model: "openai/claude-sonnet-4-6",
+            upstream_model: "claude-sonnet-4-6",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Cooled-Codex-GPT54",
+            model: "codex/gpt-5.4",
+            upstream_model: "gpt-5.4",
+            family: "codex",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 272000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+        ];
+        scoring.setCooldown("Cooled-Codex-GPT54", 3600_000, "test cooldown");
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages: [{ role: "user", content: "Debug the routing failure with provider logs." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude-sonnet-4-6", "gpt-5.4"]);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion exhausts plus-minus one before level plus-minus two fallback", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (!/gpt-4o-mini/i.test(String(body.model || ""))) {
+            res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: { message: "nearer provider failed" } }));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-level-two-after-near",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "level two ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Strict-Sonnet",
+            model: "openai/claude-sonnet-4-6",
+            upstream_model: "claude-sonnet-4-6",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Fallback-Haiku",
+            model: "openai/claude-haiku-4-5",
+            upstream_model: "claude-haiku-4-5",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 2,
+            quality_group: 3,
+            speed_group: 5,
+            thinking_effort: "low",
+          },
+          {
+            name: "Cooled-Codex-GPT54",
+            model: "codex/gpt-5.4",
+            upstream_model: "gpt-5.4",
+            family: "codex",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 272000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Legacy-GPT4oMini",
+            model: "openai/gpt-4o-mini",
+            upstream_model: "gpt-4o-mini",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 128000,
+            tier: 1,
+            cost_group: 2,
+            quality_group: 3,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+        ];
+        scoring.setCooldown("Cooled-Codex-GPT54", 3600_000, "test cooldown");
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages: [{ role: "user", content: "Debug the routing failure with provider logs." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude-sonnet-4-6", "claude-haiku-4-5", "gpt-5.4", "gpt-4o-mini"]);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion uses near-level fallback for context guidance before group 503", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        {
+          name: "Codex-Level3-Fallback",
+          model: "codex/gpt-5-mini",
+          upstream_model: "gpt-5-mini",
+          family: "codex",
+          protocol: "openai",
+          url: "http://127.0.0.1:1/v1/chat/completions",
+          key: "test",
+          caps: ["text", "coding", "tools", "thinking"],
+          context: 900,
+          tier: 1,
+          cost_group: 3,
+          quality_group: 3,
+          speed_group: 4,
+          thinking_effort: "medium",
+        },
+      ];
+
+      const fake = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-coding",
+        stream: false,
+        max_tokens: 300,
+        _llmProxyBypassOptimizations: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          costTarget: 3,
+          thinkingLevel: 4,
+          taskKind: "debugging",
+          stepShape: { shape: "read_heavy", gate: "plan_split" },
+        },
+        messages: [
+          { role: "system", content: "You are a coding agent." },
+          { role: "user", content: `Debug routing with logs. ${"large context ".repeat(1800)}` },
+        ],
+        tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+      }, fake, { internal: true });
+
+      assert.equal(fake.status, 200);
+      assert.match(fake.body, /LLM_PROXY_CONTEXT_COMPACTION_REQUIRED/);
+      assert.doesNotMatch(fake.body, /No providers available/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion uses level plus-minus two only after nearer candidates are exhausted", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-level-two",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "level two ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Legacy-GPT4oMini",
+            model: "openai/gpt-4o-mini",
+            upstream_model: "gpt-4o-mini",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 128000,
+            tier: 1,
+            cost_group: 2,
+            quality_group: 3,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages: [{ role: "user", content: "Debug the routing failure with provider logs." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(calls.length, 1);
+        assert.match(calls[0], /gpt-4o-mini/);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion exhausts near-level backstops after strict providers fail", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (/sonnet/i.test(String(body.model || ""))) {
+            res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: { message: "strict provider failed" } }));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-near-backstop",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "backstop ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Strict-Sonnet",
+            model: "openai/claude-sonnet-4-6",
+            upstream_model: "claude-sonnet-4-6",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Fallback-Haiku",
+            model: "openai/claude-haiku-4-5",
+            upstream_model: "claude-haiku-4-5",
+            family: "openai",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 2,
+            quality_group: 3,
+            speed_group: 5,
+            thinking_effort: "low",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: false,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 4,
+            costTarget: 3,
+            thinkingLevel: 4,
+            taskKind: "debugging",
+            stepShape: { shape: "read_heavy", gate: "plan_split" },
+          },
+          messages: [{ role: "user", content: "Debug the routing failure with provider logs." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(calls.length, 2);
+        assert.match(calls[0], /sonnet/i);
+        assert.match(calls[1], /haiku/i);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
     }
   });
 });

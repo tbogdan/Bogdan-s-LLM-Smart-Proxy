@@ -50,6 +50,15 @@ WINDSURF_API_KEY=
 ENABLE_CLAUDE=true
 CLAUDE_CODE_OAUTH_TOKEN=
 ANTHROPIC_API_KEY=
+CLAUDE_CODE_DEVICE_ID=
+CLAUDE_CODE_ACCOUNT_UUID=
+CLAUDE_CODE_ORGANIZATION_UUID=
+CLAUDE_CODE_SESSION_ID=
+CLAUDE_CODE_VERSION=
+CLAUDE_CODE_MAX_TOKENS=
+CLAUDE_CODE_STAINLESS_PACKAGE_VERSION=
+CLAUDE_CODE_BETAS=
+CLAUDE_CODE_OUTPUT_EFFORT=
 ENABLE_CODEX=true
 ENABLE_COPILOT=true
 COPILOT_GITHUB_TOKEN=
@@ -72,7 +81,7 @@ cp ~/.codex/auth.json data/codex-auth.json
 node github-copilot-auth.js --env-file .env
 ```
 
-For Claude, choose the Anthropic Console account. The helper reads Claude Code's local login-managed API key and writes `ANTHROPIC_API_KEY`; manual fallback: create a key at `https://platform.claude.com/settings/keys` and set it as `ANTHROPIC_API_KEY`.
+For Claude, choose the Anthropic Console account. The helper reads Claude Code's local login-managed API key, writes `ANTHROPIC_API_KEY`, extracts Claude Code identity metadata from `~/.claude.json`, and runs a local CLI probe to capture request defaults such as beta headers and max token shape. Pass `--session-id <uuid>` if you want to pin a session id in `.env`; otherwise proxied Claude Code requests can override it per request with `x-claude-code-session-id`.
 For Copilot, the helper uses GitHub device-flow auth with VS Code GitHub Authentication's public OAuth client id by default, accepts `--client-id`, writes `COPILOT_GITHUB_TOKEN`, and the proxy exchanges it for a short-lived Copilot runtime token.
 
 Start Docker with the Codex profile when Codex is enabled:
@@ -453,7 +462,7 @@ Port variables:
 ## Troubleshooting
 
 - Missing `WINDSURF_API_KEY`: run `node windsurf-auth.js --env-file .env`, then restart the proxy.
-- Missing Claude credentials: run `claude auth login --console`, choose Anthropic Console, then run `node claude-auth.js --env-path .env` and restart the proxy. If the helper says you are logged in with a subscription account, run `claude auth logout` and repeat the Console login.
+- Missing Claude credentials or Claude Code profile metadata: run `claude auth login --console`, choose Anthropic Console, then run `node claude-auth.js --env-path .env` and restart the proxy. If the helper says you are logged in with a subscription account, run `claude auth logout` and repeat the Console login.
 - Missing `data/codex-auth.json`: run `npx @openai/codex login`, then rerun `./setup.sh`; setup copies the auth file into Docker's bind mount target.
 - Empty `/v1/models`: confirm at least one provider family is enabled in `.env`, required credentials are present, and the matching Docker profile is running for Codex.
 

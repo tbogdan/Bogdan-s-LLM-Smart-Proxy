@@ -82,6 +82,24 @@ test("providerMaxRoutingLevel reserves level 5 for frontier high-thinking models
   }
 });
 
+test("providerMaxRoutingLevel keeps Opus effort variants at complex or frontier tiers", () => {
+  for (const version of ["4-6", "4-7", "4-8"]) {
+    for (const [effort, expected] of [["low", 4], ["medium", 4], ["high", 5], ["xhigh", 5]]) {
+      const suffix = effort === "xhigh" ? "max" : effort;
+      const provider = {
+        name: `Windsurf-ClaudeOpus${version.replace("-", "")}${suffix}`,
+        model: `windsurf/claude-opus-${version}-${suffix}`,
+        upstream_model: `claude-opus-${version}-${suffix}`,
+        quality_group: 5,
+        cost_group: 4,
+        thinking_effort: effort,
+      };
+
+      assert.equal(policy.providerMaxRoutingLevel(provider), expected, provider.model);
+    }
+  }
+});
+
 test("seed Haiku providers stay capped at standard routing tier", () => {
   const haikuProviders = (seedProviders.providers || []).filter((provider) => {
     const text = `${provider.name || ""} ${provider.model || ""} ${provider.upstream_model || ""}`.toLowerCase();
@@ -935,6 +953,65 @@ test("difficulty marker stripping consumes standalone legacy speed-only assessme
   assert.equal(sentinelMarker.effort, "medium");
   assert.equal(sentinel.content, "");
   assert.equal(sentinel.changed, true);
+});
+
+test("difficulty marker stripping removes orphan reason continuation lines", () => {
+  const stripped = policy.stripDifficultyMarkerFromText(
+    "LLM_PROXY_INTERNAL_ROUTING effort=high speed=4 reason=review\n-and-broader-verify\n-response\nAm verificat si restul.",
+  );
+  const quoted = policy.stripDifficultyMarkerFromText(
+    "LLM_PROXY_INTERNAL_ROUTING effort=high speed=4 reason=inventory\n_needed\n-current-diff\n\"-current-diff]\nReading changed paths around inventory flow.",
+  );
+
+  assert.equal(stripped.marker.reason, "review");
+  assert.equal(stripped.content, "Am verificat si restul.");
+  assert.equal(stripped.changed, true);
+  assert.equal(quoted.marker.reason, "inventory");
+  assert.equal(quoted.content, "Reading changed paths around inventory flow.");
+  assert.equal(quoted.changed, true);
+});
+
+test("effective request profile keeps thinking effort aligned with policy-adjusted level", () => {
+  const originalEnv = {
+    LLM_COST_TARGET: process.env.LLM_COST_TARGET,
+    LLM_SPEED_TARGET: process.env.LLM_SPEED_TARGET,
+    LLM_THINKING_TARGET: process.env.LLM_THINKING_TARGET,
+    LLM_ROUTING_POLICY: process.env.LLM_ROUTING_POLICY,
+  };
+
+  try {
+    process.env.LLM_COST_TARGET = "3";
+    process.env.LLM_SPEED_TARGET = "4";
+    process.env.LLM_THINKING_TARGET = "high";
+    process.env.LLM_ROUTING_POLICY = "balanced";
+
+    const profile = policy.effectiveRequestProfile({
+      messages: [{ role: "user", content: "review and broader verify" }],
+      _llmProxyDifficulty: {
+        level: 4,
+        label: "complex",
+        taskLevel: 4,
+        contextLevel: 4,
+        taskKind: "edit_recovery",
+        stepShape: { shape: "read_heavy", gate: "plan_split" },
+        effort: "low",
+        thinkingEffort: "low",
+        thinkingLevel: 2,
+        speedTarget: 4,
+        costTarget: 4,
+        source: "assessment",
+      },
+    });
+
+    assert.equal(profile.thinkingLevel, 4);
+    assert.equal(profile.thinkingEffort, "high");
+    assert.equal(profile.effort, "high");
+  } finally {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("providerPolicyBonus favors right-sized models by task complexity", () => {

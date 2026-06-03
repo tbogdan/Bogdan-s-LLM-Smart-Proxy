@@ -17,7 +17,7 @@ test("fallback providers are namespaced and belong to supported families", () =>
   assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.FALLBACK_MODELS).map(([family, models]) => [family, models.length])),
-    { windsurf: 102, claude: 10, codex: 6, copilot: 33 },
+    { windsurf: 114, claude: 10, codex: 6, copilot: 33 },
   );
 
   for (const provider of seed.providers) {
@@ -74,6 +74,8 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
     "windsurf/adaptive",
     "windsurf/swe-1.6-fast",
     "windsurf/gpt-5-5-low",
+    "windsurf/claude-opus-4-8-low",
+    "windsurf/claude-opus-4-8-max",
     "windsurf/gpt-5-4-none-priority",
     "windsurf/gpt-5-2-codex-xhigh-priority",
     "windsurf/private-9",
@@ -97,6 +99,18 @@ test("fallback catalog includes current discovered and Windsurf picker models", 
   assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "gpt-4.1"), true);
   assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "claude-sonnet-4.6"), true);
   assert.equal(config.FALLBACK_MODELS.copilot.some((model) => model.upstream === "gpt-5.4"), true);
+});
+
+test("Copilot model traits include the OpenAI-compatible tools array limit", () => {
+  const traits = config.modelTraitsFor("copilot", "gpt-5.4", {});
+
+  assert.equal(traits.max_tools, 128);
+});
+
+test("Gemini model traits include the Windsurf Connect tools array limit", () => {
+  const traits = config.modelTraitsFor("windsurf", "gemini-3-1-pro-high", { id: "gemini-3-1-pro-high" });
+
+  assert.equal(traits.max_tools, 128);
 });
 
 test("contextForModel uses explicit provider limits before catalog defaults", () => {
@@ -313,6 +327,14 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
         upstream_model: "adaptive",
       },
       {
+        name: "Windsurf-Gemini31ProHighThinking",
+        family: "windsurf",
+        protocol: "windsurf",
+        key_env: "WINDSURF_API_KEY",
+        model: "windsurf/gemini-3-1-pro-high",
+        upstream_model: "gemini-3-1-pro-high",
+      },
+      {
         name: "Claude-Discovered",
         family: "claude",
         protocol: "anthropic",
@@ -351,10 +373,13 @@ test("hydrateProvidersFile supplies runtime URLs for discovered providers missin
 
   assert.deepEqual(hydrated.providers.map((provider) => provider.url), [
     "windsurf",
+    "windsurf",
     "claude",
     "http://codex-proxy:10531/v1/chat/completions",
     "https://api.githubcopilot.com/chat/completions",
   ]);
+  const gemini = hydrated.providers.find((provider) => provider.model === "windsurf/gemini-3-1-pro-high");
+  assert.equal(gemini.max_tools, 128);
   const codex = hydrated.providers.find((provider) => provider.model === "codex/gpt-5.4");
   assert.equal(codex.context_window, 272000);
   assert.equal(codex.max_context_window, 1000000);
