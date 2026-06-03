@@ -261,6 +261,95 @@ test("routeToProvider converts imitated tool-call text into real tool calls", as
   });
 });
 
+test("routeToProvider converts XML function-call text into real tool calls", async () => {
+  await withRoutingState(async () => {
+    const xmlToolText = [
+      "<function_calls>",
+      "<invoke name=\"Skill\">",
+      "<parameter name=\"skill\">mempalace:search</parameter>",
+      "<parameter name=\"args\">community avatar profile picture frontend architecture</parameter>",
+      "</invoke>",
+      "</function_calls>",
+      "<function_calls>",
+      "<invoke name=\"Read\">",
+      "<parameter name=\"file_path\">/Users/bogdan/PhpstormProjects/Events/frontend/src/components/CommunityHeaderCard.vue</parameter>",
+      "<parameter name=\"offset\">1</parameter>",
+      "<parameter name=\"limit\">60</parameter>",
+      "</invoke>",
+      "</function_calls>",
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-xml-tool-text",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: xmlToolText,
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Search memory and read the component." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "Skill",
+              parameters: {
+                type: "object",
+                required: ["skill", "args"],
+                properties: {
+                  skill: { type: "string" },
+                  args: { type: "string" },
+                },
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: {
+                type: "object",
+                required: ["file_path"],
+                properties: {
+                  file_path: { type: "string" },
+                  offset: { type: "number" },
+                  limit: { type: "number" },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+      const firstArgs = JSON.parse(message.tool_calls[0].function.arguments);
+      const secondArgs = JSON.parse(message.tool_calls[1].function.arguments);
+
+      assert.equal(message.content, null);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.deepEqual(message.tool_calls.map((call) => call.function.name), ["Skill", "Read"]);
+      assert.deepEqual(firstArgs, {
+        skill: "mempalace:search",
+        args: "community avatar profile picture frontend architecture",
+      });
+      assert.equal(secondArgs.file_path, "/Users/bogdan/PhpstormProjects/Events/frontend/src/components/CommunityHeaderCard.vue");
+      assert.equal(secondArgs.offset, 1);
+      assert.equal(secondArgs.limit, 60);
+      assert.doesNotMatch(resp.body, /<function_calls>|<invoke name=/);
+    });
+  });
+});
+
 test("routeToProvider converts embedded edit argument text into a real tool call", async () => {
   await withRoutingState(async () => {
     const textOnlyEdit = [
@@ -362,7 +451,7 @@ test("routeToProvider rejects echoed historical tool transcripts when tools are 
         }),
         (err) => {
           assert.equal(err.status, 422);
-          assert.equal(err.stalling, true);
+          assert.match(String(err.body || err.message), /tool_history_replay|invalid text tool output/);
           return true;
         },
       );
@@ -6608,6 +6697,137 @@ test("handleChatCompletion skips direct Claude peers after generic rate limit", 
   });
 });
 
+test("handleChatCompletion does not cool direct Claude peers after native stream stall", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const calls = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (/^claude-opus-4-[78]$/.test(String(body.model || ""))) {
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.end([
+              "event: message_start",
+              'data: {"type":"message_start","message":{"id":"msg_empty","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}',
+              "",
+              "event: message_stop",
+              'data: {"type":"message_stop"}',
+              "",
+            ].join("\n"));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-stall-fallback",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "Fallback ok after native stall." }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Opus47",
+            model: "claude/claude-opus-4-7",
+            upstream_model: "claude-opus-4-7",
+            family: "claude",
+            protocol: "anthropic",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 4,
+            quality_group: 5,
+            speed_group: 3,
+            thinking_effort: "xhigh",
+          },
+          {
+            name: "Claude-Opus48",
+            model: "claude/claude-opus-4-8",
+            upstream_model: "claude-opus-4-8",
+            family: "claude",
+            protocol: "anthropic",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 4,
+            quality_group: 5,
+            speed_group: 3,
+            thinking_effort: "xhigh",
+          },
+          {
+            name: "Windsurf-ClaudeOpus48Low",
+            model: "windsurf/claude-opus-4-8-low",
+            family: "windsurf",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 4,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "low",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: true,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 5,
+            label: "deep",
+            taskLevel: 4,
+            contextLevel: 5,
+            taskKind: "edit_recovery",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+            effort: "xhigh",
+            thinkingEffort: "xhigh",
+            thinkingLevel: 5,
+            speedTarget: 2,
+            costTarget: 5,
+            source: "heuristic",
+          },
+          _inputTokens: 457102,
+          _estimatedTokens: 489102,
+          messages: [
+            { role: "assistant", content: null, tool_calls: [{ id: "toolu_1", type: "function", function: { name: "Read", arguments: "{}" } }] },
+            { role: "tool", tool_call_id: "toolu_1", content: "old tool output" },
+            { role: "user", content: "termina de verificat si fixat claude api pt opus" },
+          ],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude-opus-4-8", "claude-opus-4-7", "windsurf/claude-opus-4-8-low"]);
+        assert.equal(scoring.isOnCooldown("Claude-Opus48"), false);
+        assert.equal(scoring.isOnCooldown("Claude-Opus47"), false);
+        assert.match(fake.body, /Fallback ok after na/);
+        assert.match(fake.body, /tive stall/);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
 test("handleChatCompletion retries explicit Claude model on equivalent provider after rate limit", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -6681,6 +6901,99 @@ test("handleChatCompletion retries explicit Claude model on equivalent provider 
         assert.equal(fake.status, 200);
         assert.deepEqual(calls, ["claude/claude-sonnet-4-6", "compat/claude-sonnet-4.6"]);
         assert.match(JSON.parse(fake.body).choices[0].message.content, /fallback ok/i);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+    }
+  });
+});
+
+test("handleChatCompletion retries explicit Claude model on equivalent provider after native stream stall", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const calls = [];
+
+    try {
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          calls.push(body.model);
+          if (body.model === "claude-opus-4-8") {
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.end([
+              "event: message_start",
+              'data: {"type":"message_start","message":{"id":"msg_empty_direct","role":"assistant","usage":{"input_tokens":1,"output_tokens":0}}}',
+              "",
+              "event: message_stop",
+              'data: {"type":"message_stop"}',
+              "",
+            ].join("\n"));
+            return;
+          }
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.end([
+            'data: {"id":"chatcmpl-direct-stall-fallback","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Explicit native "},"finish_reason":null}]}',
+            "",
+            'data: {"id":"chatcmpl-direct-stall-fallback","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"stall fallback ok."},"finish_reason":null}]}',
+            "",
+            'data: {"id":"chatcmpl-direct-stall-fallback","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Opus48",
+            model: "claude/claude-opus-4-8",
+            upstream_model: "claude-opus-4-8",
+            family: "claude",
+            protocol: "anthropic",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 4,
+            quality_group: 5,
+            speed_group: 3,
+            thinking_effort: "xhigh",
+          },
+          {
+            name: "Windsurf-ClaudeOpus48Low",
+            model: "windsurf/claude-opus-4-8-low",
+            family: "windsurf",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking", "max"],
+            context: 1000000,
+            tier: 1,
+            cost_group: 4,
+            quality_group: 5,
+            speed_group: 4,
+            thinking_effort: "low",
+          },
+        ];
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "claude/claude-opus-4-8",
+          stream: true,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          messages: [{ role: "user", content: "Fix routing after Claude native stream stalls." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } } } }],
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.deepEqual(calls, ["claude-opus-4-8", "windsurf/claude-opus-4-8-low"]);
+        assert.match(fake.body, /Explicit native/);
+        assert.match(fake.body, /fallback ok/);
       });
     } finally {
       state.PROVIDERS = originalProviders;
@@ -7688,6 +8001,131 @@ test("routing assessment log separates provider route level from request level",
   assert.doesNotMatch(line, /ASSESS: Windsurf-ClaudeSonnet46 level=5/);
 });
 
+test("response expectation matrix treats post-route fallback run behavior stalls as log-only with optional tools", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "continua implementarea" }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 3,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 4,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 3,
+      reason: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+      _assessmentProvider: {
+        origin: "post_route_fallback",
+        maxTokens: 0,
+        stream: true,
+        responseProvider: "Claude-Sonnet45",
+      },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Continuing.",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.equal(row.task_kind, "agentic_coding");
+  assert.equal(row.shape, "write_heavy");
+  assert.equal(row.gate, "run_behavior");
+  assert.equal(row.assessment_origin, "post_route_fallback");
+  assert.equal(row.assessment_max_tokens, 0);
+  assert.equal(row.assessment_stream, true);
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "inert_continuation");
+  assert.equal(row.stall_class, "possible_stall");
+  assert.equal(row.action, "log_only");
+});
+
+test("response expectation matrix fails over bare continue in read-heavy plan routes", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "Continue debugging the Playwright click failure." }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "debugging",
+      costTarget: 4,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 3,
+      reason: "debugging",
+      stepShape: { shape: "read_heavy", gate: "plan_split" },
+      _assessmentProvider: {
+        origin: "post_route_fallback",
+        maxTokens: 0,
+        stream: true,
+        responseProvider: "Claude-Sonnet45",
+      },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "continue",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.equal(row.task_kind, "debugging");
+  assert.equal(row.expected_response, "analysis_or_plan");
+  assert.equal(row.output_kind, "inert_continuation");
+  assert.equal(row.stall_class, "real_stall");
+  assert.equal(row.action, "failover_stall");
+});
+
+test("response expectation matrix rejects text-only output only when tools are required", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: "required",
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "Use Read to inspect README.md." }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskKind: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "I will inspect README.md now.",
+    hasToolCalls: false,
+    stallingHeuristic: true,
+  });
+
+  assert.equal(row.expected_response, "required_tool_call");
+  assert.equal(row.output_kind, "action_prelude");
+  assert.equal(row.stall_class, "contract_failure");
+  assert.equal(row.action, "reject_required_tools");
+});
+
+test("response expectation matrix accepts short direct identity answers", () => {
+  const row = routing.classifyResponseExpectation({
+    model: "auto-coding",
+    messages: [{ role: "user", content: "cum te numesti?" }],
+  }, {
+    content: "Project LLM Smart Proxy.",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.task_kind, "direct_answer");
+  assert.equal(row.expected_response, "direct_text");
+  assert.equal(row.output_kind, "short_text");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
 test("auto-coding routes direct identity answers by task shape instead of available tools", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -7825,7 +8263,7 @@ test("group routing keeps providers eligible when only requested max_tokens need
   });
 });
 
-test("routing skips providers with recent unresolved chronic stalling", async () => {
+test("routing does not skip providers solely for recent chronic stalling", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -7870,8 +8308,7 @@ test("routing skips providers with recent unresolved chronic stalling", async ()
         tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", required: ["command"] } } }],
       });
 
-      assert.equal(providers.some((provider) => provider.name === "Chronic-Staller"), false);
-      assert.equal(providers[0].name, "Reliable-Coder");
+      assert.equal(providers.some((provider) => provider.name === "Chronic-Staller"), true);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;

@@ -352,8 +352,11 @@ test("routeStreamToProvider strips split legacy bare speed-only markers from str
   });
 });
 
-test("routeStreamToProvider reports inert continuation text before IDE-visible success", async () => {
+test("routeStreamToProvider logs inert continuation as possible stall without retrying", async () => {
   await withNoScoreWrites(async () => {
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of ["Con", "tinu", "ing."]) {
@@ -368,18 +371,26 @@ test("routeStreamToProvider reports inert continuation text before IDE-visible s
         messages: [{ role: "user", content: "Continue implementing the change." }],
       };
 
-      await assert.rejects(
-        routing.routeStreamToProvider(streamProvider(url), req, clientRes),
-        (err) => err.statusCode === 422 && err.headersSent === false && err.hiddenContinuation === true,
-      );
-      assert.equal(clientRes.status, null);
-      assert.equal(clientRes.ended, false);
+      try {
+        await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+      } finally {
+        state.log = originalLog;
+      }
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.equal(clientRes.ended, true);
+      assert.match(output, /Con[\s\S]*tinu[\s\S]*ing\./);
+      assert.match(logs.join("\n"), /POSSIBLE-STALL: Stream-Test .*output=inert_continuation.*action=log_only/);
+      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
     });
   });
 });
 
-test("routeStreamToProvider treats file-check Go prelude as hidden continuation", async () => {
+test("routeStreamToProvider logs file-check Go prelude as possible stall without retrying", async () => {
   await withNoScoreWrites(async () => {
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
@@ -398,12 +409,17 @@ test("routeStreamToProvider treats file-check Go prelude as hidden continuation"
         messages: [{ role: "user", content: "continue implementing the visual comparison fix" }],
       };
 
-      await assert.rejects(
-        routing.routeStreamToProvider(streamProvider(url), req, clientRes),
-        (err) => err.statusCode === 422 && err.headersSent === false && err.hiddenContinuation === true,
-      );
-      assert.equal(clientRes.status, null);
-      assert.equal(clientRes.ended, false);
+      try {
+        await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+      } finally {
+        state.log = originalLog;
+      }
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.equal(clientRes.ended, true);
+      assert.match(output, /Local screenshot/);
+      assert.match(logs.join("\n"), /POSSIBLE-STALL: Stream-Test .*output=action_prelude.*action=log_only/);
+      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
     });
   });
 });
@@ -1017,14 +1033,17 @@ test("handleChatCompletion still rejects native text-only output when tool_choic
   });
 });
 
-test("handleChatCompletion adds hidden continue user message after native inert continuation", async () => {
+test("handleChatCompletion fails over native bare continue without hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalRouteNativeStream = providerAdapters.routeNativeStream;
     const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const logs = [];
     process.env.LLM_PROXY_AI_ASSESSMENT = "off";
     const calls = [];
+    state.log = (message) => logs.push(String(message));
     routing.init({
       sendError: (res, status, message, extra = {}) => {
         res.writeHead(status, { "Content-Type": "application/json" });
@@ -1057,7 +1076,7 @@ test("handleChatCompletion adds hidden continue user message after native inert 
       const userMessages = body.messages?.filter((m) => m.role === "user") || [];
       calls.push({ provider: provider.name, userCount: userMessages.length, lastUser: userMessages.at(-1)?.content });
       if (provider.name === "Native-Stall-Continuation" && calls.length === 1) {
-        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "Continuing." }, finish_reason: null }] })}\n\n`);
+        handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { content: "continue" }, finish_reason: null }] })}\n\n`);
         handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
         handlers.onChunk("data: [DONE]\n\n");
         return;
@@ -1082,33 +1101,57 @@ test("handleChatCompletion adds hidden continue user message after native inert 
       await routing.handleChatCompletion({
         model: "auto-coding",
         stream: true,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 4,
+          taskKind: "debugging",
+          costTarget: 4,
+          thinkingLevel: 4,
+          thinkingEffort: "high",
+          speedTarget: 3,
+          reason: "debugging",
+          stepShape: { shape: "read_heavy", gate: "plan_split" },
+          _assessmentProvider: {
+            origin: "post_route_fallback",
+            maxTokens: 0,
+            stream: true,
+            responseProvider: "Claude-Sonnet45",
+          },
+        },
         messages: [{ role: "user", content: "continue" }],
         tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"] } } }],
-      }, clientRes);
+      }, clientRes, { internal: true });
 
       const output = clientRes.chunks.join("");
       assert.deepEqual(calls, [
         { provider: "Native-Stall-Continuation", userCount: 1, lastUser: "continue" },
-        { provider: "Native-Stall-Continuation", userCount: 2, lastUser: "continue" },
+        { provider: "Native-Action-Fallback", userCount: 1, lastUser: "continue" },
       ]);
       assert.equal(clientRes.status, 200);
-      assert.equal(output.includes("Continuing."), false);
+      assert.equal(output.includes("continue"), false);
       assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /REAL-STALL-NATIVE: Native-Stall-Continuation .*output=inert_continuation.*action=failover_stall/);
+      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });
 });
 
-test("handleChatCompletion adds hidden continue after native file-check Go prelude", async () => {
+test("handleChatCompletion logs native file-check Go prelude as possible stall without hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
     const calls = [];
+    state.log = (message) => logs.push(String(message));
     routing.init({
       sendError: (res, status, message, extra = {}) => {
         res.writeHead(status, { "Content-Type": "application/json" });
@@ -1173,28 +1216,33 @@ test("handleChatCompletion adds hidden continue after native file-check Go prelu
       const output = clientRes.chunks.join("");
       assert.deepEqual(calls, [
         { provider: "Native-Prelude-Continuation", userCount: 1, lastUser: "continue implementing the visual comparison fix" },
-        { provider: "Native-Prelude-Continuation", userCount: 2, lastUser: "continue" },
       ]);
       assert.equal(clientRes.status, 200);
-      assert.equal(output.includes("Local screenshot"), false);
-      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.equal(output.includes("Local screenshot"), true);
+      assert.equal(output.includes("\"tool_calls\""), false);
+      assert.match(logs.join("\n"), /POSSIBLE-STALL: Native-Prelude-Continuation .*output=action_prelude.*action=log_only/);
+      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
     }
   });
 });
 
-test("handleChatCompletion continues native active tool work after short text-only progress", async () => {
+test("handleChatCompletion logs native short text-only progress as possible stall without hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
     const originalRouteNativeStream = providerAdapters.routeNativeStream;
     const originalAiAssessment = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
     process.env.LLM_PROXY_AI_ASSESSMENT = "off";
     const calls = [];
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
     routing.init({
       sendError: (res, status, message, extra = {}) => {
         res.writeHead(status, { "Content-Type": "application/json" });
@@ -1275,15 +1323,17 @@ test("handleChatCompletion continues native active tool work after short text-on
       }, clientRes);
 
       const output = clientRes.chunks.join("");
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 1);
       assert.equal(clientRes.status, 200);
-      assert.equal(output.includes("dry-run only rendered"), false);
-      assert.equal(output.includes("\"tool_calls\""), true);
-      assert.equal(output.includes("chaosctl.cli run reports/startup-experiment.yml"), true);
+      assert.equal(output.includes("dry-run only rendered"), true);
+      assert.equal(output.includes("\"tool_calls\""), false);
+      assert.match(logs.join("\n"), /POSSIBLE-STALL: Native-Short-Progress .*output=premature_progress.*action=log_only/);
+      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
       if (originalAiAssessment === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
       else process.env.LLM_PROXY_AI_ASSESSMENT = originalAiAssessment;
       routing.init({ sendError: () => {}, trackSessionTokens: () => {} });

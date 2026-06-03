@@ -33,20 +33,21 @@ test("setCooldown records the reason used by routing diagnostics", () => {
   });
 });
 
-test("recordStalling cools providers only after three stalls in five minutes", () => {
+test("recordStalling logs possible stalls without cooldown", () => {
   withIsolatedScoring(() => {
     scoring.recordStalling("Windsurf-Test");
     scoring.recordStalling("Windsurf-Test");
-
     assert.equal(scoring.isOnCooldown("Windsurf-Test"), false);
 
     scoring.recordStalling("Windsurf-Test");
 
-    assert.equal(scoring.isOnCooldown("Windsurf-Test"), true);
+    assert.equal(scoring.isOnCooldown("Windsurf-Test"), false);
+    assert.equal(scoring.getScore("Windsurf-Test").stalling || 0, 0);
+    assert.deepEqual(state.stallingTracker["Windsurf-Test"] || [], []);
   });
 });
 
-test("recordStalling renews cooldown immediately for providers with chronic stalling history", () => {
+test("recordStalling does not renew stale chronic stall cooldowns", () => {
   withIsolatedScoring(() => {
     const provider = "Chronic-Staller";
     state.scores[provider] = {
@@ -62,7 +63,9 @@ test("recordStalling renews cooldown immediately for providers with chronic stal
 
     scoring.recordStalling(provider);
 
-    assert.equal(scoring.isOnCooldown(provider), true);
+    assert.equal(scoring.isOnCooldown(provider), false);
+    assert.equal(state.scores[provider].stalling, 5);
+    assert.deepEqual(state.stallingTracker[provider], []);
   });
 });
 
@@ -377,7 +380,7 @@ test("generic Anthropic rate_limit_error is treated as temporary rate limit", ()
   );
 });
 
-test("providerScore applies decaying stalling penalty", () => {
+test("providerScore ignores historical stalling counters", () => {
   withIsolatedScoring(() => {
     const provider = { name: "Claude-Test", tier: 1 };
     const score = scoring.getScore(provider.name);
@@ -388,10 +391,13 @@ test("providerScore applies decaying stalling penalty", () => {
     score.stalling = 4;
     score.last_stall_time = Date.now() - 2 * 3600_000;
 
-    const decayed = scoring.providerScore(provider);
+    const withStallingHistory = scoring.providerScore(provider);
 
-    assert.ok(decayed > 1.2);
-    assert.ok(decayed < 1.4);
+    score.stalling = 0;
+    score.last_stall_time = 0;
+    const clean = scoring.providerScore(provider);
+
+    assert.equal(withStallingHistory, clean);
   });
 });
 
