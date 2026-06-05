@@ -230,6 +230,31 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
   });
 });
 
+test("routeStreamToProvider strips split private task status marker from streamed content", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_TASK_STATUS state=work",
+        "ing reason=tests_pending\n",
+        "Continuing with verification.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_TASK_STATUS"), false);
+      assert.equal(output.includes("tests_pending"), false);
+      assert.equal(output.includes("Continuing with verification."), true);
+    });
+  });
+});
+
 test("routeStreamToProvider strips split sentinel effort markers from streamed content", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -443,7 +468,7 @@ test("routeStreamToProvider logs inert continuation as possible stall without re
   });
 });
 
-test("routeStreamToProvider logs file-check Go prelude as possible stall without retrying", async () => {
+test("routeStreamToProvider signals hidden continue for file-check Go prelude before flushing", async () => {
   await withNoScoreWrites(async () => {
     const originalLog = state.log;
     const logs = [];
@@ -466,17 +491,19 @@ test("routeStreamToProvider logs file-check Go prelude as possible stall without
         messages: [{ role: "user", content: "continue implementing the visual comparison fix" }],
       };
 
+      let err = null;
       try {
         await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+      } catch (error) {
+        err = error;
       } finally {
         state.log = originalLog;
       }
-      const output = clientRes.chunks.join("");
-      assert.equal(clientRes.status, 200);
-      assert.equal(clientRes.ended, true);
-      assert.match(output, /Local screenshot/);
-      assert.match(logs.join("\n"), /POSSIBLE-STALL: Stream-Test .*output=action_prelude.*action=log_only/);
-      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
+      assert.equal(err?.statusCode, 409);
+      assert.equal(err?.hiddenContinuation, true);
+      assert.equal(clientRes.status, null);
+      assert.match(err?.continuationText || "", /Local screenshot/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-STREAM: Stream-Test .*output=action_prelude.*action=hidden_continue/);
     });
   });
 });
@@ -1244,6 +1271,109 @@ test("handleChatCompletion retries OpenAI SSE bare continue during active tool w
   });
 });
 
+test("handleChatCompletion holds first-turn OpenAI SSE action prelude and retries with hidden continue", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalCompat = state.providerCompat["OpenAI-SSE-First-Turn-Prelude"]
+      ? { ...state.providerCompat["OpenAI-SSE-First-Turn-Prelude"] }
+      : null;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        if (requests.length === 1) {
+          for (const text of ["I'll inspect ", "lib/routing.js and ", "run the routing tests now."]) {
+            res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`);
+          }
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [{
+        name: "OpenAI-SSE-First-Turn-Prelude",
+        model: "openai/sse-first-turn-prelude",
+        url,
+        key: "test",
+        protocol: "openai",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 131072,
+        tier: 1,
+        stream_only: true,
+      }];
+      scoring.getCompat("OpenAI-SSE-First-Turn-Prelude").stream_only = true;
+      try {
+        const clientRes = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 2,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 4,
+            thinkingEffort: "high",
+            speedTarget: 3,
+            reason: "agentic_coding",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+          messages: [{ role: "user", content: "Fix the routing loop issue and run the tests." }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: {
+                type: "object",
+                required: ["file_path"],
+                properties: { file_path: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          }],
+        }, clientRes, { internal: true });
+
+        const output = clientRes.chunks.join("");
+        assert.equal(clientRes.status, 200);
+        assert.equal(requests.length, 2);
+        assert.match(requests[1].messages.filter((message) => message.role === "user").at(-1).content, /first incomplete step/);
+        assert.match(output, /"tool_calls"/);
+        assert.doesNotMatch(output, /inspect lib\/routing\.js/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        if (originalCompat) state.providerCompat["OpenAI-SSE-First-Turn-Prelude"] = originalCompat;
+        else delete state.providerCompat["OpenAI-SSE-First-Turn-Prelude"];
+      }
+    });
+  });
+});
+
 test("handleChatCompletion estimates output tokens for native streaming providers", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
@@ -1934,7 +2064,7 @@ test("handleChatCompletion retries native bare continue once as hidden user cont
         {
           provider: "Native-Hidden-Continue",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);
@@ -2060,7 +2190,7 @@ test("handleChatCompletion failovers repeated native continue after hidden nudge
   });
 });
 
-test("handleChatCompletion logs native file-check Go prelude as possible stall without hidden continue", async () => {
+test("handleChatCompletion retries native file-check Go prelude as hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -2133,12 +2263,17 @@ test("handleChatCompletion logs native file-check Go prelude as possible stall w
       const output = clientRes.chunks.join("");
       assert.deepEqual(calls, [
         { provider: "Native-Prelude-Continuation", userCount: 1, lastUser: "continue implementing the visual comparison fix" },
+        {
+          provider: "Native-Prelude-Continuation",
+          userCount: 2,
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
+        },
       ]);
       assert.equal(clientRes.status, 200);
-      assert.equal(output.includes("Local screenshot"), true);
-      assert.equal(output.includes("\"tool_calls\""), false);
-      assert.match(logs.join("\n"), /POSSIBLE-STALL: Native-Prelude-Continuation .*output=action_prelude.*action=log_only/);
-      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
+      assert.equal(output.includes("Local screenshot"), false);
+      assert.equal(output.includes("\"tool_calls\""), true);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE: Native-Prelude-Continuation .*output=action_prelude.*action=hidden_continue/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Prelude-Continuation retry=1/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
@@ -2249,7 +2384,7 @@ test("handleChatCompletion retries native action prelude during active tool work
         {
           provider: "Native-Active-Prelude",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);
@@ -2374,12 +2509,12 @@ test("handleChatCompletion keeps native active loop alive after repeated progres
         {
           provider: "Native-Repeated-Progress",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
         {
           provider: "Native-Repeated-Progress",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);
@@ -2626,7 +2761,7 @@ test("handleChatCompletion retries native short text-only progress during active
         {
           provider: "Native-Short-Progress",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);
@@ -2733,7 +2868,7 @@ test("handleChatCompletion retries native premature progress after TodoWrite res
         {
           provider: "Native-Todo-Progress",
           userCount: 2,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);
@@ -2854,7 +2989,7 @@ test("handleChatCompletion retries native premature progress after automatic Tod
         {
           provider: "Native-Todo-Nudge",
           userCount: 3,
-          lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+          lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
         },
       ]);
       assert.equal(clientRes.status, 200);

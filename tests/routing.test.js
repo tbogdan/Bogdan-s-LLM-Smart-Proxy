@@ -2815,6 +2815,50 @@ test("routeToProvider does not forward tool schemas for direct identity answers"
   });
 });
 
+test("routeToProvider strips Copilot tool_choice when tools are empty", async () => {
+  await withRoutingState(async () => {
+    let forwarded;
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "Continuing from context." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+        }));
+      });
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url, {
+        name: "Copilot-gpt54",
+        family: "openai-compatible-test",
+        model: "gpt-5.4",
+        upstream_model: "gpt-5.4",
+      }), {
+        model: "gpt-5.4",
+        tool_choice: "auto",
+        function_call: "auto",
+        parallel_tool_calls: true,
+        tools: [],
+        functions: [],
+        messages: [
+          { role: "system", content: "You are a coding assistant." },
+          { role: "user", content: "Continue from the latest context." },
+        ],
+      });
+
+      assert.equal(resp.status, 200);
+      assert.equal(forwarded.model, "gpt-5.4");
+      assert.equal(forwarded.tools, undefined);
+      assert.equal(forwarded.functions, undefined);
+      assert.equal(forwarded.tool_choice, undefined);
+      assert.equal(forwarded.function_call, undefined);
+      assert.equal(forwarded.parallel_tool_calls, undefined);
+    });
+  });
+});
+
 test("routeToProvider accepts passive discussion text when optional tools are available", async () => {
   await withRoutingState(async () => {
     let forwarded;
@@ -4165,6 +4209,176 @@ test("handleChatCompletion retries one hidden user continue when assistant echoe
   });
 });
 
+test("handleChatCompletion retries hidden continue for first-turn action prelude on continuable tool work", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: { role: "assistant", content: "I'll inspect lib/routing.js and run the routing tests now." },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 16, completion_tokens: 4, total_tokens: 20 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "First-Turn-Prelude-Test",
+          model: "test/first-turn-prelude",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [{ role: "user", content: "Fix the routing loop issue and run the tests." }],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 2,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "Read");
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /first incomplete step/);
+        assert.doesNotMatch(fake.body, /inspect lib\/routing\.js and run/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion retries hidden continue for detected cognitive stall on continuable tool work", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "This is a massive task and the next steps will include checking routing, editing the classifier, and running tests in subsequent turns.",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_tests",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 16, completion_tokens: 4, total_tokens: 20 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Heuristic-Stall-Continue-Test",
+          model: "test/heuristic-stall-continue",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [{ role: "user", content: "Implement the routing loop fix and verify it." }],
+          tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } }],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 4,
+            contextLevel: 2,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "exec_command");
+        assert.doesNotMatch(fake.body, /subsequent turns/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
 test("handleChatCompletion retries one hidden user continue when assistant echoes tool-result separator", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -4228,6 +4442,281 @@ test("handleChatCompletion retries one hidden user continue when assistant echoe
         assert.equal(requests[1].messages.at(-1).role, "user");
         assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
         assert.match(requests[1].messages.at(-1).content, /call the next appropriate tool now/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion continues hidden when an active tool loop returns an incomplete substantive report", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const requests = [];
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: [
+                  "Analysis:",
+                  "- Found likely root cause in `lib/routing.js`: progress reports can be accepted as substantive text.",
+                  "- Evidence: the previous `Read` tool completed, but the requested implementation and verification are still active.",
+                  "- Next step: run `npm test` and patch `lib/routing.js`; this is not complete yet.",
+                ].join("\n"),
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 60, total_tokens: 80 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_test",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Incomplete-Report-Loop-Test",
+          model: "test/incomplete-report-loop",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the routing loop fix and verify it." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+          ],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "exec_command");
+        assert.doesNotMatch(fake.body, /progress reports can be accepted/);
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
+        assert.match(requests[1].messages.at(-1).content, /plan\/goal\/todo tools/);
+        assert.match(logs.join("\n"), /HIDDEN-CONTINUE: Incomplete-Report-Loop-Test .*output=premature_progress.*action=hidden_continue/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion converts cached tail assistant continue into hidden user continue", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_next",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Tail-Assistant-Continue-Test",
+          model: "test/tail-assistant-continue",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue fixing the routing loop." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+            { role: "assistant", content: "continue" },
+          ],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        const upstreamMessages = requests[0].messages || [];
+        assert.equal(upstreamMessages.at(-1).role, "user");
+        assert.match(upstreamMessages.at(-1).content, /^continue the active task\./);
+        assert.equal(upstreamMessages.some((message) => message.role === "assistant" && message.content === "continue"), false);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion uses private working task status as a hidden continuation signal", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "LLM_PROXY_TASK_STATUS state=working reason=tests_pending\nDone. I found the likely issue in lib/routing.js.",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 12, total_tokens: 32 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_test",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 24, completion_tokens: 4, total_tokens: 28 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Task-Status-Working-Test",
+          model: "test/task-status-working",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the routing loop fix and verify it." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+          ],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "exec_command");
+        assert.doesNotMatch(fake.body, /LLM_PROXY_TASK_STATUS|tests_pending|likely issue/);
       } finally {
         state.PROVIDERS = originalProviders;
         state.GROUPS = originalGroups;
@@ -7756,7 +8245,7 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
               message: {
                 role: "assistant",
                 content: windsurfAttempts === 1
-                  ? "Fallback ok after native stall."
+                  ? "LLM_PROXY_TASK_STATUS state=working reason=native_stall_fallback\nFallback ok after native stall."
                   : "Done. Verified Claude Opus fallback after native stall.",
               },
               finish_reason: "stop",
@@ -9520,6 +10009,30 @@ test("response expectation matrix rejects text-only output only when tools are r
   assert.equal(row.action, "reject_required_tools");
 });
 
+test("response expectation matrix ignores required tool_choice without tool schemas", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: "required",
+    tools: [],
+    messages: [{ role: "user", content: "Continue from the latest context." }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskKind: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Continuing from context.",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "text");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
 test("response expectation matrix accepts short direct identity answers", () => {
   const row = routing.classifyResponseExpectation({
     model: "auto-coding",
@@ -9640,6 +10153,59 @@ test("auto-coding excludes text-only long-context providers from tool-heavy requ
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("group routing leaves headroom for learned provider context limits", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalCompat = state.providerCompat;
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      provider("http://127.0.0.1/v1/chat/completions", {
+        name: "Copilot-claudesonnet45",
+        model: "copilot/claude-sonnet-4.5",
+        family: "copilot",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      }),
+      provider("http://127.0.0.1/v1/chat/completions", {
+        name: "Codex-GPT54",
+        model: "codex/gpt-5.4",
+        family: "codex",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 272000,
+        cost_group: 3,
+        quality_group: 5,
+        speed_group: 4,
+        thinking_effort: "medium",
+      }),
+    ];
+    state.providerCompat = {
+      "Copilot-claudesonnet45": { real_context: 168000 },
+    };
+
+    try {
+      const req = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "List the current changed paths and summarize the status." }],
+        _inputTokens: 156000,
+        _estimatedTokens: 156000,
+      };
+      const providers = routing.getProvidersForGroup("auto-coding", 156000, req);
+
+      assert.equal(providers.some((candidate) => candidate.name === "Copilot-claudesonnet45"), false);
+      assert.equal(providers[0].name, "Codex-GPT54");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      state.providerCompat = originalCompat;
     }
   });
 });

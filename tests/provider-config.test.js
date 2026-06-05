@@ -579,6 +579,35 @@ test("provider adapters use max_completion_tokens for Copilot GPT-5.4 chat compl
   assert.equal(body.max_completion_tokens, 123);
 });
 
+test("provider adapters strip tool controls when no tool schemas are present", () => {
+  const adapters = require("../lib/provider-adapters");
+  const body = adapters.prepareOpenAICompatibleRequest(
+    {
+      name: "Copilot-gpt54",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-5.4",
+      upstream_model: "gpt-5.4",
+    },
+    {
+      model: "copilot/gpt-5.4",
+      tool_choice: "auto",
+      function_call: "auto",
+      parallel_tool_calls: true,
+      tools: [],
+      functions: [],
+      messages: [{ role: "user", content: "Hello" }],
+    },
+    false,
+  );
+
+  assert.equal(body.tool_choice, undefined);
+  assert.equal(body.function_call, undefined);
+  assert.equal(body.parallel_tool_calls, undefined);
+  assert.equal(body.tools, undefined);
+  assert.equal(body.functions, undefined);
+});
+
 test("provider adapters convert Windsurf status errors to route responses", () => {
   const adapters = require("../lib/provider-adapters");
   const body = JSON.stringify({ error: "quota exceeded" });

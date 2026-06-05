@@ -488,7 +488,7 @@ test("handleResponsesHTTP keeps Codex loop alive by returning function_call afte
       {
         provider: "Responses-Native-Loop",
         userCount: 2,
-        lastUser: "continue the active task. If more work remains, call the next appropriate tool now. Do not stop after narrating progress or next steps; only provide a final answer when the task is complete.",
+        lastUser: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.",
       },
     ]);
     assert.deepEqual(output.map((item) => item.type), ["function_call"]);

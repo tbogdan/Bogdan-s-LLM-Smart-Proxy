@@ -257,6 +257,20 @@ test("detectIncompatibility learns context from Copilot max input length errors"
   });
 });
 
+test("detectIncompatibility learns exact context from Copilot prompt limit errors", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-claudesonnet45",
+      400,
+      '{"error":{"message":"prompt token count of 281721 exceeds the limit of 168000","code":"model_max_prompt_tokens_exceeded"}}',
+      { inputTokens: 156000, estimatedTokens: 281721, providerContext: 200000 },
+    );
+
+    const compat = scoring.getCompat("Copilot-claudesonnet45");
+    assert.equal(compat.real_context, 168000);
+  });
+});
+
 test("detectIncompatibility learns conservative context from prompt-too-long errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(

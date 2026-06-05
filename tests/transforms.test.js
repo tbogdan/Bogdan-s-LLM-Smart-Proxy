@@ -442,10 +442,13 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /Tool result received \/ continue \/ next-step-only progress while useful tool work remains/);
   assert.match(system, /ONLY ask user when: destructive\/irreversible action/);
   assert.match(system, /ROUTING ASSESSMENT.*next route/i);
-  assert.match(system, /likely next route after the current response or tool call/i);
+  assert.match(system, /immediate next route after the current response or tool call/i);
+  assert.match(system, /next actionable step, not a retrospective score/i);
   assert.match(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
   assert.match(system, /sentinel mandatory/i);
   assert.match(system, /never bare effort=\.\.\., speed=\.\.\., or reason=\.\.\./i);
+  assert.match(system, /TASK STATUS - private completion hint/i);
+  assert.match(system, /LLM_PROXY_TASK_STATUS state=<working\|complete\|blocked> reason=<slug>/);
   assert.match(system, /never marker-only/i);
   assert.match(system, /EFFICIENT FILE READING:/);
   assert.match(system, /Read files in chunks using offset\/limit parameters/);
@@ -453,6 +456,9 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   assert.match(system, /If a file was already read and not modified, do NOT re-read it/);
   assert.match(system, /CLIENT CAPABILITY CONTRACT:/);
   assert.match(system, /Subagents: no dedicated subagent tool detected/i);
+  assert.match(system, /GENERIC CLIENT PROFILE:/);
+  assert.match(system, /CONTEXT AND MEMORY CONTRACT:/);
+  assert.match(system, /preserve lineage in summaries/i);
   assert.doesNotMatch(system, /You must use subagents whenever possible/i);
   assert.match(system, /PARALLEL EXECUTION:/);
   assert.match(system, /Keep this project-specific instruction\./);
@@ -555,10 +561,40 @@ test("transformRequest scopes goal plan and subagent instructions to current IDE
 
   assert.match(codexSystem, /CLIENT CAPABILITY CONTRACT:/);
   assert.match(codexSystem, /Detected client: codex/i);
+  assert.match(codexSystem, /CODEX PROFILE:/);
+  assert.match(codexSystem, /forked thread\/subagent work/i);
+  assert.match(codexSystem, /close completed agents/i);
   assert.match(codexSystem, /Plan\/progress: use update_plan/i);
   assert.match(codexSystem, /Goals: available via get_goal, update_goal/i);
+  assert.match(codexSystem, /pursu(?:e|ing) .*long-running/i);
+  assert.match(codexSystem, /Goal state is available via get_goal, update_goal; use it as the durable completion contract/i);
   assert.match(codexSystem, /Subagents: available via multi_agent_v1\.spawn_agent/i);
   assert.match(codexSystem, /Use subagents whenever possible/i);
+
+  const copilot = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "copilot",
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "Review the failure and explain the next fix." }],
+  });
+  const copilotSystem = copilot.messages[0].content;
+  assert.match(copilotSystem, /Detected client: copilot/i);
+  assert.match(copilotSystem, /COPILOT PROFILE:/);
+  assert.match(copilotSystem, /not claim to create Copilot subagents/i);
+
+  const claude = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "claude_code",
+    tools: [
+      { type: "function", function: { name: "Task", parameters: { type: "object" } } },
+      { type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } },
+    ],
+    messages: [{ role: "user", content: "Investigate logs and split independent checks." }],
+  });
+  const claudeSystem = claude.messages[0].content;
+  assert.match(claudeSystem, /Detected client: claude_code/i);
+  assert.match(claudeSystem, /CLAUDE CODE PROFILE:/);
+  assert.match(claudeSystem, /Task\/agent\/background-agent affordances/i);
 });
 
 test("transformRequest skips difficulty marker contract for direct exact replies", async () => {
@@ -939,6 +975,27 @@ test("transformRequest preserves required tool contracts for direct-looking requ
   assert.equal(transformed.tool_choice, "required");
   assert.equal(transformed.tools.length, 1);
   assert.match(transformed.messages[0].content, /TOOL STRATEGY.*MUST use tools/);
+});
+
+test("transformRequest strips tool controls when no valid tool schemas remain", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    tool_choice: "required",
+    function_call: { name: "missing_tool" },
+    parallel_tool_calls: true,
+    tools: [{ type: "function", function: { parameters: { type: "object" } } }],
+    functions: [],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Continue the investigation from the existing context." },
+    ],
+  });
+
+  assert.equal(transformed.tools, undefined);
+  assert.equal(transformed.functions, undefined);
+  assert.equal(transformed.tool_choice, undefined);
+  assert.equal(transformed.function_call, undefined);
+  assert.equal(transformed.parallel_tool_calls, undefined);
 });
 
 test("transformRequest keeps required local prompt when provider rejects tool_choice", async () => {

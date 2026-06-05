@@ -213,6 +213,55 @@ test("providerPolicyBonus nudges frontier requests toward Opus 4.8 over older Op
   assert.equal(policy.providerPolicyBonus(opus48, req) > policy.providerPolicyBonus(opus47, req), true);
 });
 
+test("providerPolicyBonus orders newer Opus and GPT frontier peers above older versions", () => {
+  const req = {
+    messages: [{ role: "user", content: "Debug a hard production incident with tests and a careful implementation plan." }],
+    _inputTokens: 90000,
+    _estimatedTokens: 120000,
+    _llmProxyDifficulty: {
+      level: 5,
+      label: "deep",
+      taskKind: "debugging",
+      taskLevel: 5,
+      contextLevel: 4,
+      costTarget: 4,
+      qualityTarget: 5,
+      thinkingLevel: 4,
+      speedTarget: 3,
+      stepShape: { shape: "read_heavy", posture: "think_expensive", gate: "plan_split" },
+    },
+  };
+  const opusBase = {
+    family: "claude",
+    context: 1000000,
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const gptBase = {
+    family: "codex",
+    context: 272000,
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const opus46 = { ...opusBase, name: "Claude-Opus46", model: "claude/claude-opus-4-6" };
+  const opus47 = { ...opusBase, name: "Claude-Opus47", model: "claude/claude-opus-4-7" };
+  const opus48 = { ...opusBase, name: "Claude-Opus48", model: "claude/claude-opus-4-8" };
+  const gpt53 = { ...gptBase, name: "Codex-GPT53", model: "codex/gpt-5.3" };
+  const gpt54 = { ...gptBase, name: "Codex-GPT54", model: "codex/gpt-5.4" };
+  const gpt55 = { ...gptBase, name: "Codex-GPT55", model: "codex/gpt-5.5" };
+
+  assert.equal(policy.providerPolicyBonus(opus47, req) > policy.providerPolicyBonus(opus46, req), true);
+  assert.equal(policy.providerPolicyBonus(opus48, req) > policy.providerPolicyBonus(opus47, req), true);
+  assert.equal(policy.providerPolicyBonus(gpt54, req) > policy.providerPolicyBonus(gpt53, req), true);
+  assert.equal(policy.providerPolicyBonus(gpt55, req) > policy.providerPolicyBonus(gpt54, req), true);
+});
+
 test("routing targets parse elastic env budgets", () => {
   const targets = policy.getPolicyTargets({
     LLM_COST_TARGET: "2",
@@ -740,6 +789,25 @@ test("sentinel private effort markers are parsed, stripped, and kept as route hi
   assert.equal(result.marker.speed, 3);
   assert.equal(result.marker.reason, "followup");
   assert.equal(JSON.parse(result.body).choices[0].message.content, "Local test-vm yes; run bash scripts/startup.sh");
+});
+
+test("task status markers are parsed and stripped from OpenAI responses", () => {
+  const body = JSON.stringify({
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: "LLM_PROXY_TASK_STATUS state=working reason=tests_pending\nI found the root cause.",
+        },
+      },
+    ],
+  });
+
+  const result = policy.stripTaskStatusMarkerFromResponseBody(body);
+
+  assert.equal(result.marker.state, "working");
+  assert.equal(result.marker.reason, "tests_pending");
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "I found the root cause.");
 });
 
 test("sentinel private effort markers can request higher rerouting levels", () => {
@@ -2060,6 +2128,53 @@ test("context-only write-heavy continuations keep task quality target standard",
   assert.equal(profile.costTarget, 3);
   assert.equal(profile.thinkingLevel, 3);
   assert.equal(profile.speedTarget, 4);
+});
+
+test("large list summaries keep text-only cost and thinking targets", () => {
+  const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "List the current changed paths and summarize the status." }],
+    _inputTokens: 170000,
+    _estimatedTokens: 190000,
+  };
+
+  const profile = policy.effectiveRequestProfile(req, env);
+
+  assert.equal(profile.taskKind, "list_summary");
+  assert.equal(profile.taskLevel, 2);
+  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.qualityTarget, 3);
+  assert.equal(profile.costTarget <= 2, true);
+  assert.equal(profile.thinkingLevel <= 2, true);
+  assert.equal(profile.speedTarget, 5);
+});
+
+test("trusted assessments cannot turn large list summaries into expensive reasoning", () => {
+  const env = { LLM_ROUTING_POLICY: "balanced", LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const req = {
+    messages: [{ role: "user", content: "List the current changed paths and summarize the status." }],
+    _inputTokens: 170000,
+    _estimatedTokens: 190000,
+  };
+  const assessed = policy.profileFromTrustedTaskAssessment(req, {
+    level: 5,
+    effort: "high",
+    speed: 3,
+    reason: "list_summary",
+    taskKind: "list_summary",
+    thinkingLevel: 4,
+    costTarget: 5,
+  });
+
+  const profile = policy.effectiveRequestProfile({ ...req, _llmProxyDifficulty: assessed }, env);
+
+  assert.equal(profile.taskKind, "list_summary");
+  assert.equal(profile.taskLevel, 2);
+  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.qualityTarget, 3);
+  assert.equal(profile.costTarget <= 2, true);
+  assert.equal(profile.thinkingLevel <= 2, true);
+  assert.equal(profile.speedTarget, 5);
 });
 
 test("context-only write-heavy continuations prefer medium thinking over higher thinking", () => {
