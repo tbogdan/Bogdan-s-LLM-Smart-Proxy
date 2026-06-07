@@ -5433,6 +5433,1302 @@
       "quality_group": 4,
       "speed_group": 4,
       "thinking_level": 3
+    },
+    {
+      "name": "Copilot-GPT4o",
+      "url": "https://api.individual.githubcopilot.com/chat/completions",
+      "key_env": "COPILOT_TOKEN",
+      "model": "gpt-4o",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Copilot-GPT5mini",
+      "url": "https://api.individual.githubcopilot.com/chat/completions",
+      "key_env": "COPILOT_TOKEN",
+      "model": "gpt-5-mini",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "GitHubModels-GPT4o",
+      "url": "https://models.inference.ai.azure.com/chat/completions",
+      "key_env": "COPILOT_TOKEN",
+      "model": "gpt-4o",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "GitHubModels-GPT41",
+      "url": "https://models.inference.ai.azure.com/chat/completions",
+      "key_env": "COPILOT_TOKEN",
+      "model": "gpt-4.1",
+      "context": 8000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Mistral-Small",
+      "url": "https://api.mistral.ai/v1/chat/completions",
+      "key_env": "MISTRAL_API_KEY",
+      "model": "mistral-small-latest",
+      "context": 32768,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Mistral-Medium",
+      "url": "https://api.mistral.ai/v1/chat/completions",
+      "key_env": "MISTRAL_API_KEY",
+      "model": "mistral-medium-latest",
+      "context": 32768,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-Llama70B",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "llama-3.3-70b-versatile",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-GPTOSS120B",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "openai/gpt-oss-120b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-Qwen332B",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "qwen/qwen3-32b",
+      "context": 131072,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-Llama4Scout",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Cerebras-Qwen235B",
+      "url": "https://api.cerebras.ai/v1/chat/completions",
+      "key_env": "CEREBRAS_API_KEY",
+      "model": "qwen-3-235b-a22b-instruct-2507",
+      "context": 8192,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SambaNova-Llama70B",
+      "url": "https://api.sambanova.ai/v1/chat/completions",
+      "key_env": "SAMBANOVA_API_KEY",
+      "model": "Meta-Llama-3.3-70B-Instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SambaNova-GPTOSS120B",
+      "url": "https://api.sambanova.ai/v1/chat/completions",
+      "key_env": "SAMBANOVA_API_KEY",
+      "model": "gpt-oss-120b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SambaNova-DSV32",
+      "url": "https://api.sambanova.ai/v1/chat/completions",
+      "key_env": "SAMBANOVA_API_KEY",
+      "model": "DeepSeek-V3.2",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SambaNova-Maverick",
+      "url": "https://api.sambanova.ai/v1/chat/completions",
+      "key_env": "SAMBANOVA_API_KEY",
+      "model": "Llama-4-Maverick-17B-128E-Instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-Llama70B",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "meta/llama-3.3-70b-instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-Nemotron120B",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "nvidia/llama-3.3-nemotron-super-49b-v1",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-DSV4Flash",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "deepseek-ai/deepseek-v4-flash",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Gemini-2.5-Flash",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "key_env": "GEMINI_API_KEY",
+      "model": "gemini-2.5-flash",
+      "context": 1048576,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "video",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Gemini-2.5-Pro",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "key_env": "GEMINI_API_KEY",
+      "model": "gemini-2.5-pro",
+      "context": 1048576,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "video",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Gemini-3-Flash",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "key_env": "GEMINI_API_KEY",
+      "model": "gemini-3-flash-preview",
+      "context": 1048576,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "video",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "LLM7-Auto",
+      "url": "https://api.llm7.io/v1/chat/completions",
+      "key_env": "LLM7_API_KEY",
+      "model": "llm7/auto",
+      "context": 2000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OVH-Llama70B",
+      "url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+      "key_env": "",
+      "model": "Meta-Llama-3_3-70B-Instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OVH-Qwen332B",
+      "url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+      "key_env": "",
+      "model": "Qwen3-32B",
+      "context": 131072,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OVH-Qwen3Coder",
+      "url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+      "key_env": "",
+      "model": "Qwen3-Coder-30B-A3B-Instruct",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OVH-GPTOSS120B",
+      "url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+      "key_env": "",
+      "model": "gpt-oss-120b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OVH-MistralSmall",
+      "url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+      "key_env": "",
+      "model": "Mistral-Small-3.2-24B-Instruct-2506",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {},
+      "no_auth": true
+    },
+    {
+      "name": "OR-Qwen3Coder",
+      "url": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": "OPENROUTER_API_KEY",
+      "model": "qwen/qwen3-coder:free",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OR-GPTOSS120B",
+      "url": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": "OPENROUTER_API_KEY",
+      "model": "openai/gpt-oss-120b:free",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OR-Nemotron120B",
+      "url": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": "OPENROUTER_API_KEY",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OpenRouter-Free",
+      "url": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": "OPENROUTER_API_KEY",
+      "model": "openrouter/auto",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OR-MiniMaxM25",
+      "url": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": "OPENROUTER_API_KEY",
+      "model": "minimax/minimax-m2.5:free",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Cloudflare-Llama70B",
+      "url": "https://api.cloudflare.com/client/v4/accounts/me/ai/v1/chat/completions",
+      "key_env": "CLOUDFLARE_API_KEY",
+      "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "context": 24000,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "BigModel-GLM4",
+      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "key_env": "BIGMODEL_API_KEY",
+      "model": "glm-4-flash-250414",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text",
+        "coding",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SiliconFlow-DSV4Flash",
+      "url": "https://api.siliconflow.com/v1/chat/completions",
+      "key_env": "SILICONFLOW_API_KEY",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "SiliconFlow-Qwen8B",
+      "url": "https://api.siliconflow.com/v1/chat/completions",
+      "key_env": "SILICONFLOW_API_KEY",
+      "model": "Qwen/Qwen3-8B",
+      "context": 32768,
+      "tier": 3,
+      "tc": true,
+      "caps": [
+        "tools",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "DeepSeek-V4Flash",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-v4-flash",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "DeepSeek-V3",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Kilo-DSV4Flash",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "deepseek/deepseek-v4-flash:free",
+      "context": 256000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-Nemotron120B",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "context": 262144,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-NemotronReasoning",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "context": 256000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "text",
+        "thinking"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-Ring1T",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "inclusionai/ring-2.6-1t:free",
+      "context": 262144,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-LagunaM1",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "poolside/laguna-m.1:free",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-LagunaXS2",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "poolside/laguna-xs.2:free",
+      "context": 131072,
+      "tier": 3,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-Cobuddy",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "baidu/cobuddy:free",
+      "context": 131072,
+      "tier": 3,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Kilo-Auto",
+      "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
+      "key_env": "",
+      "model": "openrouter/free",
+      "context": 131072,
+      "tier": 3,
+      "tc": false,
+      "caps": [
+        "text"
+      ],
+      "headers": {
+        "User-Agent": "Kilo-Code/7.2.0",
+        "HTTP-Referer": "https://kilocode.ai",
+        "X-Title": "Kilo Code"
+      },
+      "kilo": true,
+      "default_key": "anonymous",
+      "no_auth": true
+    },
+    {
+      "name": "Alibaba-QwenMax",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen-max",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Alibaba-QwenPlus",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen-plus",
+      "context": 131072,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Alibaba-QwenTurbo",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen-turbo",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Alibaba-Qwen3-235B",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen3-235b-a22b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Alibaba-Qwen3-32B",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen3-32b",
+      "context": 131072,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Alibaba-Qwen3Coder",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": "ALIBABA_API_KEY",
+      "model": "qwen3-coder-plus",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Cohere-CommandA",
+      "url": "https://api.cohere.ai/compatibility/v1/chat/completions",
+      "key_env": "COHERE_API_KEY",
+      "model": "command-a-03-2025",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Cohere-CommandRPlus",
+      "url": "https://api.cohere.ai/compatibility/v1/chat/completions",
+      "key_env": "COHERE_API_KEY",
+      "model": "command-r-plus",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Cohere-CommandR7B",
+      "url": "https://api.cohere.ai/compatibility/v1/chat/completions",
+      "key_env": "COHERE_API_KEY",
+      "model": "command-r7b",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Ollama-GPTOSS120B",
+      "url": "https://ollama.com/v1/chat/completions",
+      "key_env": "OLLAMA_API_KEY",
+      "model": "gpt-oss:120b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Ollama-Qwen3Coder",
+      "url": "https://ollama.com/v1/chat/completions",
+      "key_env": "OLLAMA_API_KEY",
+      "model": "qwen3-coder:480b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Ollama-DSV31",
+      "url": "https://ollama.com/v1/chat/completions",
+      "key_env": "OLLAMA_API_KEY",
+      "model": "deepseek-v3.1:671b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "HF-GPTOSS120B",
+      "url": "https://router.huggingface.co/v1/chat/completions",
+      "key_env": "HF_TOKEN",
+      "model": "openai/gpt-oss-120b",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "HF-Qwen3Coder",
+      "url": "https://router.huggingface.co/v1/chat/completions",
+      "key_env": "HF_TOKEN",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "HF-DeepSeekR1",
+      "url": "https://router.huggingface.co/v1/chat/completions",
+      "key_env": "HF_TOKEN",
+      "model": "deepseek-ai/DeepSeek-R1",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OpenAI-GPT4oMini",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o-mini",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "OpenAI-GPT4o",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "context": 128000,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Kiro-ClaudeSonnet",
+      "url": "http://kiro-gateway:10088/v1/chat/completions",
+      "key_env": "KIRO_API_KEY",
+      "model": "claude-sonnet-4",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "images",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": false,
+      "alive": null
+    },
+    {
+      "name": "Kiro-ClaudeHaiku45",
+      "url": "http://kiro-gateway:10088/v1/chat/completions",
+      "key_env": "KIRO_API_KEY",
+      "model": "claude-haiku-4-5",
+      "context": 200000,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "headers": {},
+      "no_auth": false,
+      "alive": null
+    },
+    {
+      "name": "Cline-OwlAlpha",
+      "model": "openrouter/owl-alpha",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-NemotronReasoning",
+      "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "context": 256000,
+      "tier": 2,
+      "tc": true,
+      "caps": [
+        "tools",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-LagunaM1",
+      "model": "poolside/laguna-m.1:free",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "Cline-LagunaXS2",
+      "model": "poolside/laguna-xs.2:free",
+      "context": 131072,
+      "tier": 3,
+      "tc": false,
+      "caps": [
+        "coding"
+      ],
+      "url": "https://api.cline.bot/api/v1/chat/completions",
+      "key_env": "CLINE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-DSV32",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-DSV4Flash",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-Qwen3Coder",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "max",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "MS-DSR1",
+      "model": "deepseek-ai/DeepSeek-R1-0528",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "url": "https://api-inference.modelscope.ai/v1/chat/completions",
+      "key_env": "MODELSCOPE_API_KEY",
+      "no_auth": false,
+      "headers": {},
+      "seed": true
+    },
+    {
+      "name": "NVIDIA-KimiK26",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "moonshotai/kimi-k2.6",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-MistralNemotron",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "mistralai/mistral-nemotron",
+      "context": 131072,
+      "tier": 1,
+      "tc": true,
+      "caps": [
+        "tools",
+        "coding",
+        "text",
+        "thinking"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "NVIDIA-SeedOSS36B",
+      "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "key_env": "NVIDIA_API_KEY",
+      "model": "bytedance/seed-oss-36b-instruct",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Mistral-Large",
+      "url": "https://api.mistral.ai/v1/chat/completions",
+      "key_env": "MISTRAL_API_KEY",
+      "model": "mistral-large-2411",
+      "context": 131072,
+      "tier": 1,
+      "tc": false,
+      "caps": [
+        "tools",
+        "coding",
+        "text"
+      ],
+      "headers": {}
+    },
+    {
+      "name": "Groq-CompoundMini",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "key_env": "GROQ_API_KEY",
+      "model": "groq/compound-mini",
+      "context": 131072,
+      "tier": 2,
+      "tc": false,
+      "caps": [
+        "tools",
+        "text"
+      ],
+      "headers": {}
     }
   ],
   "groups": {
