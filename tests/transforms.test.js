@@ -1538,6 +1538,49 @@ test("transformRequest flattens compacted Windsurf tool history into text", asyn
   assert.equal(transformed.tools.length, 1);
 });
 
+test("transformRequest keeps active tool-loop routing before flattening Windsurf history", async () => {
+  const originalThreshold = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_THRESHOLD;
+  process.env.WINDSURF_FLATTEN_TOOL_HISTORY_THRESHOLD = "1";
+  try {
+    const windsurfProvider = {
+      name: "Windsurf-MinimaxM25",
+      model: "windsurf/minimax-m2.5",
+      protocol: "windsurf",
+      family: "windsurf",
+      key: "test",
+      caps: ["tools", "coding"],
+      context: 200000,
+      tier: 1,
+    };
+    const transformed = await transforms.transformRequest(windsurfProvider, {
+      model: "auto-coding",
+      tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", properties: { file_path: { type: "string" } } } } }],
+      messages: [
+        { role: "system", content: "You are a coding assistant." },
+        { role: "user", content: "Fix the active issue and keep going until complete." },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_read_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_read_1", content: "README contents after previous inspection." },
+        { role: "user", content: "continua pana termini tot si nu te opri" },
+      ],
+    });
+
+    const system = String(transformed.messages[0].content || "");
+    const serialized = JSON.stringify(transformed.messages);
+    assert.match(system, /Route profile: task=agentic_coding/);
+    assert.match(system, /MODE LANE: Implement/);
+    assert.equal(transformed.tools?.length || 0, 1);
+    assert.match(serialized, /Historical tool invocation \(already executed\): Read/);
+    assert.match(serialized, /Historical tool result \(already observed\) for Read/);
+  } finally {
+    if (originalThreshold === undefined) delete process.env.WINDSURF_FLATTEN_TOOL_HISTORY_THRESHOLD;
+    else process.env.WINDSURF_FLATTEN_TOOL_HISTORY_THRESHOLD = originalThreshold;
+  }
+});
+
 test("transformRequest compacts large Windsurf flattened tool history", async () => {
   const originalThreshold = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_COMPACT_THRESHOLD;
   const originalKeep = process.env.WINDSURF_FLATTEN_TOOL_HISTORY_KEEP_EVENTS;

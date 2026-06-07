@@ -1352,6 +1352,23 @@ test("providerPolicyBonus treats SWE as the preferred exact-answer benchmark run
   assert.equal(policy.providerPolicyBonus(swe, req, { env }) > policy.providerPolicyBonus(haiku, req, { env }), true);
 });
 
+test("flattened historical tool replay keeps continuation requests agentic instead of list summaries", () => {
+  const req = {
+    messages: [
+      { role: "assistant", content: "Historical tool invocation (already executed): Read {\"file_path\":\"README.md\"}" },
+      { role: "user", content: "Historical tool result (already observed) for Read (call_read_1): README contents." },
+      { role: "user", content: "continua pana termini tot si nu te opri" },
+    ],
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    _estimatedTokens: 70000,
+  };
+
+  const assessment = policy.assessRequestDifficulty(req.messages, req);
+
+  assert.equal(assessment.taskKind, "agentic_coding");
+  assert.equal(policy.isPassiveNoToolRequest(req, assessment), false);
+});
+
 test("providerPolicyBonus prefers Codex auto-review after a task completion report", () => {
   const review = { name: "Codex-AutoReview", family: "codex", model: "codex/codex-auto-review", caps: ["text", "coding", "tools", "thinking"], tc: true };
   const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };

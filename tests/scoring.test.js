@@ -326,6 +326,37 @@ test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as 
   });
 });
 
+test("detectIncompatibility learns bare Copilot Bad Request on streaming payloads as no_stream", () => {
+  withIsolatedScoring(() => {
+    const compat = scoring.getCompat("Copilot-claudesonnet46");
+    compat.stream_only = true;
+
+    scoring.detectIncompatibility(
+      "Copilot-claudesonnet46",
+      400,
+      "Bad Request",
+      { isStreaming: true, hasTools: true },
+    );
+
+    assert.equal(compat.no_stream, true);
+    assert.equal(compat.stream_only, undefined);
+    assert.equal(compat.no_tools, undefined);
+  });
+});
+
+test("detectIncompatibility learns unsupported Copilot models", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-gpt52",
+      400,
+      "{\"error\":{\"message\":\"The requested model is not supported.\",\"code\":\"model_not_supported\",\"param\":\"model\",\"type\":\"invalid_request_error\"}}",
+    );
+
+    const compat = scoring.getCompat("Copilot-gpt52");
+    assert.equal(compat.unsupported_model, true);
+  });
+});
+
 test("detectIncompatibility learns Copilot maximum tools length errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(

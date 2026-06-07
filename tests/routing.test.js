@@ -7469,6 +7469,120 @@ test("handleChatCompletion does not reuse stale completion-review heuristic duri
   });
 });
 
+test("handleChatCompletion does not reuse stale passive heuristic during active tool continuation", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const originalEffective = routingPolicy.effectiveRequestProfile;
+    const logs = [];
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_next",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"src/fix-next.ts\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 30, completion_tokens: 5, total_tokens: 35 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Continuation-Passive-Test",
+          model: "test/continuation-passive",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          quality_group: 4,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+      state.log = (msg) => logs.push(String(msg));
+      routingPolicy.effectiveRequestProfile = (reqBody) => {
+        if (reqBody?._llmProxyDifficulty) return reqBody._llmProxyDifficulty;
+        const lastUser = reqBody.messages?.findLast?.((m) => m.role === "user");
+        const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : "";
+        if (/continue/i.test(lastUserText)) {
+          return {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "list_summary",
+            reason: "list_summary",
+            costTarget: 3,
+            speedTarget: 4,
+            thinkingLevel: 3,
+            thinkingEffort: "medium",
+            stepShape: { shape: "write_heavy", gate: "none" },
+          };
+        }
+        return originalEffective(reqBody);
+      };
+
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "system", content: "Project /Users/test/continuation-passive" },
+            { role: "user", content: "Fix the wallet route and keep going until the admin scanner passes." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_prev",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"src/wallet-route.ts\"}" },
+              }],
+            },
+            { role: "tool", tool_call_id: "call_prev", content: "route source" },
+            { role: "user", content: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step and keep working until complete." },
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+            },
+          }],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        assert.match(fake.body, /call_next/);
+        assert.match(logs.join("\n"), /AI-ASSESS-CONTINUATION-SKIP: ignored stale passive heuristic/);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /task=list_summary|Route profile: task=list_summary/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        routingPolicy.effectiveRequestProfile = originalEffective;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
 test("post-route marker with usable response is cached for next route without rerouting current response", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
