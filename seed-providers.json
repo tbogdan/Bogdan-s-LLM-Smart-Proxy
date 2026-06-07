@@ -2264,7 +2264,7 @@
       "source": "windsurf_app"
     },
     {
-      "name": "Windsurf-SWE15Fast",
+      "name": "Windsurf-SWE15Alt",
       "family": "windsurf",
       "protocol": "windsurf",
       "url": "windsurf",
@@ -2567,7 +2567,7 @@
       "source": "windsurf_app"
     },
     {
-      "name": "Windsurf-GrokCodeFast1",
+      "name": "Windsurf-Private4",
       "family": "windsurf",
       "protocol": "windsurf",
       "url": "windsurf",
@@ -3724,7 +3724,7 @@
       "source": "windsurf_app"
     },
     {
-      "name": "Windsurf-SWE15",
+      "name": "Windsurf-SWE15Slow",
       "family": "windsurf",
       "protocol": "windsurf",
       "url": "windsurf",
