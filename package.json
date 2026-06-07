@@ -10,7 +10,8 @@
     "claude-auth": "node claude-auth.js",
     "copilot-auth": "node github-copilot-auth.js",
     "windsurf-auth": "node windsurf-auth.js",
-    "smoke:core": "node -e \"require('./lib/routing-policy'); require('./lib/provider-config'); require('./lib/provider-adapters'); require('./lib/anthropic-gateway'); require('./lib/embeddings'); require('./lib/http-home'); console.log('core smoke ok')\""
+    "smoke:core": "node -e \"require('./lib/routing-policy'); require('./lib/provider-config'); require('./lib/provider-adapters'); require('./lib/anthropic-gateway'); require('./lib/embeddings'); require('./lib/http-home'); console.log('core smoke ok')\"",
+    "test": "npm run smoke:core"
   },
   "dependencies": {
     "ws": "^8.18.0"
