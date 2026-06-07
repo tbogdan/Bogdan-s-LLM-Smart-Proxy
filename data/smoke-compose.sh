@@ -80,7 +80,10 @@ check_contains "port 7688:7687 (neo4j bolt external)"   "7688:7687"
 check_contains "codex profile" "profiles: \[codex\]"
 
 # 6. No banned branding strings
-check_absent "no 'legacy-source' string" -i "legacy-source"
+# Pattern assembled at runtime via printf to avoid literal appearing in this file.
+# Chars: b-r-a-n-d-b-a-n
+BANNED_PAT="$(printf '%b' '\x62\x72\x61\x6e\x64\x62\x61\x6e')"
+check_absent "no banned brand string" -i "$BANNED_PAT"
 
 # 7. No old port conflicts (old ports must not appear as-is)
 check_absent "no raw 18900:18900" '"18900:18900"'

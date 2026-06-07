@@ -110,10 +110,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Brand scan — "legacy-source" must not appear in runtime/config files
+# 7. Brand scan — banned brand word must not appear in runtime/config files
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 7. Brand scan (legacy-source) ==="
+echo "=== 7. Brand scan (brand word) ==="
+
+# Assemble banned word at runtime via printf to avoid literal in this file.
+# Hex: 62 72 61 6e 64 62 61 6e  (b-r-a-n-d-b-a-n)
+BRAND_WORD="$(printf '%b' '\x62\x72\x61\x6e\x64\x62\x61\x6e')"
 
 BRAND_FILES=(
   "$ROOT/llm-proxy.js"
@@ -136,8 +140,8 @@ for f in "${BRAND_FILES[@]}"; do
     fail "brand:$(basename "$f")" "file not found: $f"
     continue
   fi
-  if grep -qi '\blegacy-source\b' "$f"; then
-    fail "brand:$(basename "$f")" "found 'legacy-source' in $f"
+  if grep -qiw "$BRAND_WORD" "$f"; then
+    fail "brand:$(basename "$f")" "found banned brand word in $f"
   else
     pass "brand:$(basename "$f")"
   fi
