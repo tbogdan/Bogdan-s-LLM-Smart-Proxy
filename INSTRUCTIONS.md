@@ -24,6 +24,17 @@ Edit `.env`. 14 models work without keys (Kilo, OVH, LLM7). Add more:
 
 Full list in `.env.example`.
 
+## Provider Family Auth
+
+The proxy supports four provider families. Each requires a one-time auth step to extract tokens into `.env`:
+
+| Family | Auth Command | Required credential |
+|--------|--------------|---------------------|
+| `claude` | `node claude-auth.js` | Claude Code subscription (`claude auth login --console`) |
+| `copilot` | `node github-copilot-auth.js` | GitHub Copilot subscription |
+| `windsurf` | `node windsurf-auth.js` | Windsurf account |
+| `codex` | `npx @openai/codex login` | ChatGPT subscription |
+
 ## Gateway Proxies (optional)
 
 | Gateway | Enable | Auth | Models |
@@ -56,9 +67,6 @@ experimental_realtime_ws_base_url = "ws://HOST:18900/v1"
 ## Optional Tools
 
 ```bash
-# MemPalace — persistent AI memory (runs as Docker service on :8891)
-pip install mempalace && mempalace init .
-
 # RTK — token compression (60-90% savings)
 brew install rtk-ai/tap/rtk && rtk init --global
 

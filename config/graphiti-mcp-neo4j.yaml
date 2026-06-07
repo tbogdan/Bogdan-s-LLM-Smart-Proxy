@@ -1,0 +1,35 @@
+server:
+  transport: "http"
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  provider: "openai"
+  model: "${GRAPHITI_MCP_MODEL_NAME:auto-memory}"
+  max_tokens: 2048
+  providers:
+    openai:
+      api_key: "${OPENAI_API_KEY:llm-proxy}"
+      api_url: "${OPENAI_API_URL:http://llm-proxy:18900/v1}"
+
+embedder:
+  provider: "openai"
+  model: "${GRAPHITI_MCP_EMBEDDING_MODEL:llm-proxy-hash-embedding-1536}"
+  dimensions: "${GRAPHITI_MCP_EMBEDDING_DIMENSIONS:1536}"
+  providers:
+    openai:
+      api_key: "${OPENAI_API_KEY:llm-proxy}"
+      api_url: "${OPENAI_API_URL:http://llm-proxy:18900/v1}"
+
+database:
+  provider: "neo4j"
+  providers:
+    neo4j:
+      uri: "${NEO4J_URI:bolt://neo4j:7687}"
+      username: "${NEO4J_USER:neo4j}"
+      password: "${NEO4J_PASSWORD:graphiti-memory-local}"
+      database: "${NEO4J_DATABASE:neo4j}"
+
+graphiti:
+  group_id: "${GRAPHITI_GROUP_ID:llm-proxy}"
+  user_id: "llm_proxy"

@@ -89,6 +89,44 @@ experimental_realtime_ws_base_url = "ws://YOUR_SERVER:18900/v1"
 
 Full list: see `.env.example` for all supported providers.
 
+## Provider Families
+
+The core runtime supports four provider families, each with its own protocol and auth flow:
+
+| Family | Protocol | Auth Script | Models |
+|--------|----------|-------------|--------|
+| `claude` | Anthropic Messages API | `node claude-auth.js` | Claude Sonnet 4, Haiku 4.5, Opus |
+| `codex` | OpenAI Responses API | `npx @openai/codex login` | GPT-5.5/5.4/5.3/5.2 |
+| `copilot` | OpenAI Chat Completions | `node github-copilot-auth.js` | GPT-4o, o1, o3, Claude |
+| `windsurf` | Windsurf Cloud API | `node windsurf-auth.js` | Claude Sonnet 4, GPT-4o |
+
+Auth scripts extract OAuth tokens from installed clients and write them to `.env` automatically.
+
+### Auth Script Usage
+
+```bash
+# Claude Code subscription (extracts token from `claude auth login --console`)
+node claude-auth.js [--env-path .env] [--allow-claude-ai]
+
+# GitHub Copilot (extracts token from ~/.config/github-copilot/*)
+node github-copilot-auth.js [--env-path .env]
+
+# Windsurf (extracts token from Windsurf config)
+node windsurf-auth.js [--env-path .env]
+```
+
+## Routing Policy and Model Scoring
+
+Provider selection uses multi-factor scoring at request time:
+
+- **Task kind detection** — 24 task categories (direct_answer, code_generation, explanation, documentation, etc.) mapped to provider capability requirements
+- **Effort levels** — none / minimal / low / medium / high / xhigh; controls context budget and model tier selection
+- **Cost multiplier** — per-provider cost weight balanced against quality score
+- **Stalling decay** — providers penalized for slow or stalled streams; score recovers over time
+- **Emergency release** — if only 2 providers remain, bans are temporarily lifted to maintain availability
+
+Scoring formula: `base_benchmark + capability_match_bonus + cost_group_bonus - stalling_penalty - error_decay`
+
 ## Architecture
 
 ```
@@ -109,13 +147,97 @@ Client (IDE / Codex CLI / API)
      │
      └── /health, /scores, /banned, /ban, /unban, /stats
 
-Modules: state.js, scoring.js, providers.js, compaction.js,
-         transforms.js, routing.js, responses.js
+Core modules: lib/routing-policy.js, lib/provider-config.js,
+              lib/provider-adapters.js, lib/anthropic-gateway.js,
+              lib/embeddings.js, lib/http-home.js
+Legacy modules: state.js, scoring.js, providers.js, compaction.js,
+                transforms.js, routing.js, responses.js
 
-[MemPalace MCP :8891]  — persistent memory (optional)
-[Kiro Gateway :10088]  — free Claude (optional)
-[Codex Proxy :10531]   — GPT-5.x (optional)
+[Graphiti MCP :8001]   — graph memory sidecar (Neo4j backend)
+[Codex Proxy :10532]   — GPT-5.x (optional, profile: codex)
 [Discovery Daemon]     — scans /models every 6h
+```
+
+## Validation
+
+Run after install to confirm core runtime is healthy:
+
+```bash
+# Smoke test all core runtime modules
+npm run smoke:core
+
+# Verify providers load and export expected families/groups
+node -e "
+  const pc = require('./lib/provider-config');
+  const fam = pc.SUPPORTED_FAMILIES.join(', ');
+  const grp = Object.keys(pc.GROUPS).join(', ');
+  console.log('providers ok — families:', fam);
+  console.log('providers ok — groups:', grp);
+"
+
+# Verify routing policy loads and exports task kinds
+node -e "
+  const rp = require('./lib/routing-policy');
+  const kinds = Object.keys(rp.TASK_KIND_TARGETS).length;
+  const effort = Object.keys(rp.EFFORT_LEVELS).join(', ');
+  console.log('routing ok —', kinds, 'task kinds, effort levels:', effort);
+"
+
+# Verify auth scripts load
+node -e "
+  require('./claude-auth');
+  require('./github-copilot-auth');
+  require('./windsurf-auth');
+  console.log('auth ok — claude-auth, github-copilot-auth, windsurf-auth');
+"
+```
+
+## Deploy Config
+
+### Docker Compose
+
+```bash
+# Isolate stack from other compose projects on the host
+COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
+
+# Enable optional gateway profiles
+COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile codex up -d   # adds Codex proxy :10532
+```
+
+### Ports
+
+| Service | Port | Notes |
+|---------|------|-------|
+| llm-proxy | 18920 | Main proxy, OpenAI-compatible |
+| codex-proxy | 10532 | GPT-5.x via ChatGPT OAuth (profile: codex) |
+| graphiti-mcp | 8001 | Graph memory sidecar |
+| neo4j | 7475 / 7688 | Graph DB for Graphiti |
+
+### Neo4j / Graphiti Memory (optional)
+
+Persistent semantic memory using a local Neo4j graph store and Graphiti MCP.
+
+**.env settings:**
+
+```env
+MEMORY_ENABLED=true
+MEMORY_BACKEND=graphiti          # or: local (session-only), neo4j (direct)
+
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=graphiti-memory-local
+
+GRAPHITI_MCP_ENABLED=true
+GRAPHITI_MCP_URL=http://localhost:8001
+```
+
+**Config file:** `config/graphiti-mcp-neo4j.yaml` — customise model, embedding dimensions,
+Neo4j connection, and Graphiti group ID.
+
+**Start (neo4j and graphiti-mcp run by default):**
+
+```bash
+COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
 ```
 
 ## Credits
@@ -124,7 +246,7 @@ Modules: state.js, scoring.js, providers.js, compaction.js,
 |------|----------|
 | [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) | Free Claude via AWS |
 | [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) | ChatGPT OAuth proxy |
-| [MemPalace](https://github.com/MemPalace/mempalace) | Persistent AI memory |
+| [Graphiti](https://github.com/getzep/graphiti) | Graph-based persistent memory |
 | [RTK](https://github.com/rtk-ai/rtk) | CLI output compression |
 
 ## License
