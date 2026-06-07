@@ -153,7 +153,7 @@ Core modules: lib/routing-policy.js, lib/provider-config.js,
 Legacy modules: state.js, scoring.js, providers.js, compaction.js,
                 transforms.js, routing.js, responses.js
 
-[MemPalace MCP :8891]  — persistent memory (optional)
+[Graphiti MCP :8000]   — graph memory sidecar (optional, Neo4j backend)
 [Kiro Gateway :10088]  — free Claude (optional)
 [Codex Proxy :10531]   — GPT-5.x (optional)
 [Discovery Daemon]     — scans /models every 6h
@@ -193,13 +193,63 @@ node -e "
 "
 ```
 
+## Deploy Config
+
+### Docker Compose
+
+```bash
+# Isolate stack from other compose projects on the host
+COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
+
+# Enable optional gateway profiles
+COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile kiro up -d    # adds Kiro gateway :10088
+COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile codex up -d   # adds Codex proxy :10531
+```
+
+### Ports
+
+| Service | Port | Notes |
+|---------|------|-------|
+| llm-proxy | 18900 | Main proxy, OpenAI-compatible |
+| kiro-gateway | 10088 | Free Claude (profile: kiro) |
+| codex-proxy | 10531 | GPT-5.x via ChatGPT OAuth (profile: codex) |
+| graphiti-mcp | 8000 | Graph memory sidecar (profile: memory) |
+| neo4j | 7474 / 7687 | Graph DB for Graphiti (profile: memory) |
+
+### Neo4j / Graphiti Memory (optional)
+
+Persistent semantic memory using a local Neo4j graph store and Graphiti MCP.
+
+**.env settings:**
+
+```env
+MEMORY_ENABLED=true
+MEMORY_BACKEND=graphiti          # or: local (session-only), neo4j (direct)
+
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=graphiti-memory-local
+
+GRAPHITI_MCP_ENABLED=true
+GRAPHITI_MCP_URL=http://localhost:8000
+```
+
+**Config file:** `config/graphiti-mcp-neo4j.yaml` — customise model, embedding dimensions,
+Neo4j connection, and Graphiti group ID.
+
+**Start with memory profile:**
+
+```bash
+COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile memory up -d
+```
+
 ## Credits
 
 | Tool | Used for |
 |------|----------|
 | [kiro-openai-gateway](https://pypi.org/project/kiro-openai-gateway/) | Free Claude via AWS |
 | [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) | ChatGPT OAuth proxy |
-| [MemPalace](https://github.com/MemPalace/mempalace) | Persistent AI memory |
+| [Graphiti](https://github.com/getzep/graphiti) | Graph-based persistent memory |
 | [RTK](https://github.com/rtk-ai/rtk) | CLI output compression |
 
 ## License
