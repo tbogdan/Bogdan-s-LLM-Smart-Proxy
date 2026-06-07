@@ -67,9 +67,6 @@ experimental_realtime_ws_base_url = "ws://HOST:18900/v1"
 ## Optional Tools
 
 ```bash
-# MemPalace — persistent AI memory (runs as Docker service on :8891)
-pip install mempalace && mempalace init .
-
 # RTK — token compression (60-90% savings)
 brew install rtk-ai/tap/rtk && rtk init --global
 

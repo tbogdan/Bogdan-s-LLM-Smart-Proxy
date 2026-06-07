@@ -4,7 +4,7 @@
 const http = require("http");
 const fs = require("fs");
 const { URL } = require("url");
-const mempalace = require("./llm-mempalace");
+const session = require("./lib/session");
 
 const state = require("./lib/state");
 const scoring = require("./lib/scoring");
@@ -189,7 +189,6 @@ function handleHealth() {
     })),
     quota_disabled: Object.keys(state.quotaDisabled).length > 0 ? state.quotaDisabled : undefined,
     compat_overrides: Object.keys(state.providerCompat).length > 0 ? Object.keys(state.providerCompat).length : undefined,
-    mempalace: mempalace.mempalaceHealth(),
     scores_file: fs.existsSync(state.SCORES_FILE),
     discovery_file: fs.existsSync(state.DISCOVERY_FILE),
     providers_file: fs.existsSync(state.PROVIDERS_FILE),
@@ -335,7 +334,7 @@ const server = http.createServer(async (req, res) => {
       }
       const est = compaction.estimateTokens(parsed.messages);
       const model = parsed.model || "auto";
-      const sid = mempalace.getSession(parsed.messages).id;
+      const sid = session.getSession(parsed.messages).id;
       const ss = state.sessionStats[sid];
       const sessionInfo = ss ? ` session[reqs=${ss.requests} in=${Math.round(ss.totalInputTokens/1000)}K out=${Math.round(ss.totalOutputTokens/1000)}K age=${Math.round((Date.now()-ss.startTime)/60000)}min]` : "";
       if (model === "auto") {

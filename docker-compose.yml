@@ -5,12 +5,9 @@ services:
       - "18900:18900"
     env_file: .env
     environment:
-      - MEMPALACE_URL=http://mempalace-mcp:8891
     volumes:
       - ./data:/data
     restart: unless-stopped
-    depends_on:
-      - mempalace-mcp
 
   llm-discovery:
     build: .
@@ -18,17 +15,6 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
-    restart: unless-stopped
-
-  mempalace-mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile.mempalace
-    volumes:
-      - ./palace:/palace
-      - ./data:/data
-    ports:
-      - "8891:8891"
     restart: unless-stopped
 
   kiro-gateway:
