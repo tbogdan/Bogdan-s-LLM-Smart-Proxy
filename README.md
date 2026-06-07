@@ -89,31 +89,32 @@ experimental_realtime_ws_base_url = "ws://YOUR_SERVER:18900/v1"
 
 Full list: see `.env.example` for all supported providers.
 
-## Provider Families
+## Auth Helpers
 
-The core runtime supports four provider families, each with its own protocol and auth flow:
-
-| Family | Protocol | Auth Script | Models |
-|--------|----------|-------------|--------|
-| `claude` | Anthropic Messages API | `node claude-auth.js` | Claude Sonnet 4, Haiku 4.5, Opus |
-| `codex` | OpenAI Responses API | `npx @openai/codex login` | GPT-5.5/5.4/5.3/5.2 |
-| `copilot` | OpenAI Chat Completions | `node github-copilot-auth.js` | GPT-4o, o1, o3, Claude |
-| `windsurf` | Windsurf Cloud API | `node windsurf-auth.js` | Claude Sonnet 4, GPT-4o |
-
-Auth scripts extract OAuth tokens from installed clients and write them to `.env` automatically.
-
-### Auth Script Usage
+Use these npm scripts to extract OAuth tokens from installed clients:
 
 ```bash
-# Claude Code subscription (extracts token from `claude auth login --console`)
-node claude-auth.js [--env-path .env] [--allow-claude-ai]
-
-# GitHub Copilot (extracts token from ~/.config/github-copilot/*)
-node github-copilot-auth.js [--env-path .env]
-
-# Windsurf (extracts token from Windsurf config)
-node windsurf-auth.js [--env-path .env]
+npm run claude-auth    # Claude Code subscription
+npm run copilot-auth   # GitHub Copilot subscription
+npm run windsurf-auth  # Windsurf IDE subscription
+npm run kiro-auth      # Kiro free tier (AWS ID required)
 ```
+
+Each script opens browser OAuth flow, auto-captures token, and writes to `.env`.
+
+## Supported Sources
+
+OpenAI-compatible APIs, Claude direct, Copilot, Windsurf, Cursor, Claudeweb, Kiro.
+
+**Provider Families:**
+
+| Family | Protocol | Auth Script | Models |
+| ------- | -------- | ----------- | ------ |
+| `claude` | Anthropic Messages API | `npm run claude-auth` | Claude Sonnet 4, Haiku 4.5, Opus |
+| `codex` | OpenAI Responses API | `npx @openai/codex login` | GPT-5.5/5.4/5.3/5.2 |
+| `copilot` | OpenAI Chat Completions | `npm run copilot-auth` | GPT-4o, o1, o3, Claude |
+| `windsurf` | Windsurf Cloud API | `npm run windsurf-auth` | Claude Sonnet 4, GPT-4o |
+| `kiro` | Kiro Gateway | `npm run kiro-auth` | Claude Sonnet 4, Haiku 4.5 |
 
 ## Routing Policy and Model Scoring
 

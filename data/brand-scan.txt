@@ -1,0 +1,4 @@
+Brand scan completed: no 'legacy-source' mentions found in llm-proxy.js, lib/*.js, README.md, .env.example
+
+Scan command: grep -rni 'legacy-source' llm-proxy.js lib/*.js README.md .env.example
+Result: clean (no matches)
