@@ -153,9 +153,8 @@ Core modules: lib/routing-policy.js, lib/provider-config.js,
 Legacy modules: state.js, scoring.js, providers.js, compaction.js,
                 transforms.js, routing.js, responses.js
 
-[Graphiti MCP :8000]   — graph memory sidecar (optional, Neo4j backend)
-[Kiro Gateway :10088]  — free Claude (optional)
-[Codex Proxy :10531]   — GPT-5.x (optional)
+[Graphiti MCP :8001]   — graph memory sidecar (Neo4j backend)
+[Codex Proxy :10532]   — GPT-5.x (optional, profile: codex)
 [Discovery Daemon]     — scans /models every 6h
 ```
 
@@ -202,19 +201,17 @@ node -e "
 COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
 
 # Enable optional gateway profiles
-COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile kiro up -d    # adds Kiro gateway :10088
-COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile codex up -d   # adds Codex proxy :10531
+COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile codex up -d   # adds Codex proxy :10532
 ```
 
 ### Ports
 
 | Service | Port | Notes |
 |---------|------|-------|
-| llm-proxy | 18900 | Main proxy, OpenAI-compatible |
-| kiro-gateway | 10088 | Free Claude (profile: kiro) |
-| codex-proxy | 10531 | GPT-5.x via ChatGPT OAuth (profile: codex) |
-| graphiti-mcp | 8000 | Graph memory sidecar (profile: memory) |
-| neo4j | 7474 / 7687 | Graph DB for Graphiti (profile: memory) |
+| llm-proxy | 18920 | Main proxy, OpenAI-compatible |
+| codex-proxy | 10532 | GPT-5.x via ChatGPT OAuth (profile: codex) |
+| graphiti-mcp | 8001 | Graph memory sidecar |
+| neo4j | 7475 / 7688 | Graph DB for Graphiti |
 
 ### Neo4j / Graphiti Memory (optional)
 
@@ -231,16 +228,16 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=graphiti-memory-local
 
 GRAPHITI_MCP_ENABLED=true
-GRAPHITI_MCP_URL=http://localhost:8000
+GRAPHITI_MCP_URL=http://localhost:8001
 ```
 
 **Config file:** `config/graphiti-mcp-neo4j.yaml` — customise model, embedding dimensions,
 Neo4j connection, and Graphiti group ID.
 
-**Start with memory profile:**
+**Start (neo4j and graphiti-mcp run by default):**
 
 ```bash
-COMPOSE_PROJECT_NAME=llm-proxy docker compose --profile memory up -d
+COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
 ```
 
 ## Credits

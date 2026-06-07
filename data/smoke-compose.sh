@@ -32,7 +32,7 @@ check_contains() {
 check_absent() {
   local label="$1"
   local pattern="$2"
-  if grep -q "$pattern" "$COMPOSE"; then
+  if grep -qi "$pattern" "$COMPOSE"; then
     echo "FAIL [$label]: banned pattern found: $pattern"
     FAIL=1
   else
@@ -83,7 +83,7 @@ check_contains "codex profile" "profiles: \[codex\]"
 # Pattern assembled at runtime via printf to avoid literal appearing in this file.
 # Chars: a-c-r-o-n-i-s
 BANNED_PAT="$(printf '%b' '\x61\x63\x72\x6f\x6e\x69\x73')"
-check_absent "no banned brand string" -i "$BANNED_PAT"
+check_absent "no banned brand string" "$BANNED_PAT"
 
 # 7. No old port conflicts (old ports must not appear as-is)
 check_absent "no raw 18900:18900" '"18900:18900"'
