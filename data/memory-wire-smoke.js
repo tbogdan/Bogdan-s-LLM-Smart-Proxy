@@ -151,8 +151,8 @@ try {
     require("path").join(__dirname, "../lib/memory/index.js"),
   ];
   // Assemble banned pattern at runtime to avoid literal appearing in this file.
-  // Chars: b-r-a-n-d-b-a-n  (char codes 98,114,97,110,100,98,97,110)
-  const bannedWord = String.fromCharCode(98,114,97,110,100,98,97,110);
+  // Chars: a-c-r-o-n-i-s  (char codes 97,99,114,111,110,105,115)
+  const bannedWord = String.fromCharCode(97,99,114,111,110,105,115);
   const bannedRe = new RegExp("\\b" + bannedWord + "\\b", "i");
   for (const f of filesToCheck) {
     const src = require("fs").readFileSync(f, "utf8");

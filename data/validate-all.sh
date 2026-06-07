@@ -116,8 +116,8 @@ echo ""
 echo "=== 7. Brand scan (brand word) ==="
 
 # Assemble banned word at runtime via printf to avoid literal in this file.
-# Hex: 62 72 61 6e 64 62 61 6e  (b-r-a-n-d-b-a-n)
-BRAND_WORD="$(printf '%b' '\x62\x72\x61\x6e\x64\x62\x61\x6e')"
+# Hex: 61 63 72 6f 6e 69 73  (a-c-r-o-n-i-s)
+BRAND_WORD="$(printf '%b' '\x61\x63\x72\x6f\x6e\x69\x73')"
 
 BRAND_FILES=(
   "$ROOT/llm-proxy.js"

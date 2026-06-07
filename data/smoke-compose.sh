@@ -81,8 +81,8 @@ check_contains "codex profile" "profiles: \[codex\]"
 
 # 6. No banned branding strings
 # Pattern assembled at runtime via printf to avoid literal appearing in this file.
-# Chars: b-r-a-n-d-b-a-n
-BANNED_PAT="$(printf '%b' '\x62\x72\x61\x6e\x64\x62\x61\x6e')"
+# Chars: a-c-r-o-n-i-s
+BANNED_PAT="$(printf '%b' '\x61\x63\x72\x6f\x6e\x69\x73')"
 check_absent "no banned brand string" -i "$BANNED_PAT"
 
 # 7. No old port conflicts (old ports must not appear as-is)
