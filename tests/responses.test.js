@@ -331,6 +331,29 @@ test("MockResponse keeps distinct output indexes for mixed text and tool call st
   assert.equal(completed.response.output[1].arguments, "{\"file_path\":\"package.json\"}");
 });
 
+test("MockResponse suppresses mixed visible text for Codex when streaming tool calls", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    { client: "codex" },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"Need plan skill before implementation."},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exec_command","arguments":"{\\"cmd\\""}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\\"echo test\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+  res.end();
+
+  assert.equal(events.some((event) => event.type === "response.output_text.delta"), false);
+  assert.equal(events.some((event) => event.type === "response.output_text.done"), false);
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.deepEqual(completed.response.output.map((item) => item.type), ["function_call"]);
+  assert.equal(completed.response.output[0].arguments, "{\"cmd\":\"echo test\"}");
+});
+
 test("MockResponse end is idempotent after routed streams close internally", () => {
   const events = [];
   let doneCalls = 0;
@@ -348,6 +371,48 @@ test("MockResponse end is idempotent after routed streams close internally", () 
 
   assert.equal(doneCalls, 1);
   assert.equal(events.filter((event) => event.type === "response.completed").length, 1);
+});
+
+test("mergeHistory trims long Responses conversations even when a system message is pinned first", () => {
+  const conversationHistory = [{ role: "system", content: "System rules." }];
+  for (let i = 0; i < 420; i += 1) {
+    conversationHistory.push({ role: "user", content: `message ${i}` });
+  }
+
+  const merged = responses.mergeHistory(
+    {
+      messages: [{ role: "user", content: "latest turn" }],
+    },
+    conversationHistory,
+  );
+
+  assert.equal(merged.length, 400);
+  assert.equal(merged[0].role, "system");
+  assert.equal(merged[1].content, "message 22");
+  assert.equal(merged.at(-1).content, "latest turn");
+});
+
+test("rememberResponseHistory trims oversized previous_response snapshots", () => {
+  const messages = [{ role: "system", content: "System rules." }];
+  for (let i = 0; i < 450; i += 1) {
+    messages.push({ role: "tool", content: `tool output ${i}: ${"x".repeat(2000)}` });
+  }
+
+  responses.rememberResponseHistory("resp_trim_test", messages, {
+    tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object" } } }],
+    tool_choice: "required",
+  });
+
+  const stored = responses.responseContextForPreviousResponse({ previous_response_id: "resp_trim_test" });
+  assert.ok(stored);
+  assert.equal(stored.messages[0].role, "system");
+  assert.ok(stored.messages.length <= 400);
+  const totalChars = stored.messages.reduce((sum, message) => {
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content || "");
+    return sum + content.length;
+  }, 0);
+  assert.ok(totalChars <= 260000);
+  assert.equal(stored.tool_choice, "required");
 });
 
 test("handleResponsesHTTP ignores duplicate internal stream closes", async () => {
@@ -590,6 +655,89 @@ test("handleResponsesHTTP returns JSON Responses output for non-streaming OpenAI
   assert.deepEqual(body.usage, { input_tokens: 7, output_tokens: 5, total_tokens: 12 });
 });
 
+test("handleResponsesHTTP suppresses mixed assistant text when Codex JSON response contains tool calls", async () => {
+  const captured = [];
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      captured.push(JSON.parse(JSON.stringify(req)));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl_codex_tool",
+        object: "chat.completion",
+        created: 1779437101,
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "Use the known login creds, then run the Playwright flow.",
+            tool_calls: [{
+              id: "call_exec",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"cmd\":\"echo test\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      }));
+    },
+  });
+
+  const makeRes = () => ({
+    statusCode: null,
+    headers: {},
+    body: "",
+    writeHead(status, headers = {}) {
+      this.statusCode = status;
+      this.headers = headers;
+    },
+    write(chunk) {
+      this.body += chunk.toString();
+    },
+    end(chunk) {
+      if (chunk) this.write(chunk);
+    },
+  });
+
+  const first = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex/1.0" } },
+    first,
+    JSON.stringify({
+      model: "gpt-5.4",
+      input: [{ role: "user", content: "Continue debugging login and run the next tool step." }],
+      tools: [{ type: "function", name: "exec_command", parameters: { type: "object" } }],
+      tool_choice: "auto",
+    }),
+  );
+
+  const firstBody = JSON.parse(first.body);
+  const functionCall = firstBody.output.find((item) => item.type === "function_call");
+  assert.equal(first.statusCode, 200);
+  assert.equal(firstBody.output_text, "");
+  assert.deepEqual(firstBody.output.map((item) => item.type), ["function_call"]);
+  assert.equal(functionCall.name, "exec_command");
+  assert.equal(functionCall.arguments, "{\"cmd\":\"echo test\"}");
+
+  const second = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex/1.0" } },
+    second,
+    JSON.stringify({
+      model: "gpt-5.4",
+      previous_response_id: firstBody.id,
+      input: [{ type: "function_call_output", call_id: functionCall.call_id, output: "ok" }],
+    }),
+  );
+
+  assert.equal(second.statusCode, 200);
+  const replay = captured[1].messages;
+  const assistantReplay = replay.find((message) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call_exec");
+  assert.equal(assistantReplay.content, null);
+  assert.equal(assistantReplay.tool_calls[0].function.name, "exec_command");
+});
+
 test("handleResponsesHTTP replays previous_response_id history for tool outputs", async () => {
   const captured = [];
   responses.init({
@@ -678,6 +826,10 @@ test("handleResponsesHTTP replays previous_response_id history for tool outputs"
   assert.equal(first.statusCode, 200);
   assert.equal(second.statusCode, 200);
   assert.equal(captured[0].tool_choice, "required");
+  assert.deepEqual(captured[1].tools, [
+    { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+  ]);
+  assert.equal(captured[1].tool_choice, "required");
   const replay = captured[1].messages;
   const assistantIndex = replay.findIndex((message) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call_read");
   const toolIndex = replay.findIndex((message) => message.role === "tool" && message.tool_call_id === "call_read");

@@ -1023,6 +1023,23 @@ test("difficulty marker stripping consumes standalone legacy speed-only assessme
   assert.equal(sentinel.changed, true);
 });
 
+test("difficulty marker stripping consumes standalone JSON assessment metadata as route hints", () => {
+  const json = "{\"level\":5,\"taskLevel\":4,\"contextLevel\":5,\"effort\":\"high\",\"speed\":2,\"reason\":\"agentic_coding\"}";
+  const markerOnly = policy.stripDifficultyMarkerFromText(json);
+  const leading = policy.stripDifficultyMarkerFromText(`${json}\nContinue fixing the wallet flow.`);
+
+  assert.equal(markerOnly.marker.reason, "agentic_coding");
+  assert.equal(markerOnly.marker.level, 5);
+  assert.equal(markerOnly.marker.taskLevel, 4);
+  assert.equal(markerOnly.marker.contextLevel, 5);
+  assert.equal(markerOnly.marker.effort, "high");
+  assert.equal(markerOnly.marker.speed, 2);
+  assert.equal(markerOnly.content, "");
+  assert.equal(markerOnly.changed, true);
+  assert.equal(leading.content, "Continue fixing the wallet flow.");
+  assert.equal(leading.marker.reason, "agentic_coding");
+});
+
 test("difficulty marker stripping removes orphan reason continuation lines", () => {
   const stripped = policy.stripDifficultyMarkerFromText(
     "LLM_PROXY_INTERNAL_ROUTING effort=high speed=4 reason=review\n-and-broader-verify\n-response\nAm verificat si restul.",
@@ -1350,6 +1367,43 @@ test("providerPolicyBonus prefers Codex auto-review after a task completion repo
 
   assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "completion_review");
   assert.equal(policy.providerPolicyBonus(review, req, { env }) > policy.providerPolicyBonus(codex, req, { env }), true);
+});
+
+test("hidden active continuations stay agentic and do not prefer auto-review", () => {
+  const review = { name: "Codex-AutoReview", family: "codex", model: "codex/codex-auto-review", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const codex = { name: "Codex-GPT54", family: "codex", model: "codex/gpt-5.4", caps: ["text", "coding", "tools", "thinking"], tc: true };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4" };
+  const hiddenContinue = "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.";
+  const req = {
+    messages: [
+      { role: "user", content: hiddenContinue },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_read", content: "routing source" },
+    ],
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    _estimatedTokens: 9000,
+  };
+  const staleReviewReq = {
+    ...req,
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 3,
+      taskKind: "completion_review",
+      reason: "completion_review",
+      costTarget: 3,
+      thinkingLevel: 4,
+      speedTarget: 4,
+      stepShape: { shape: "review", gate: "read_diff" },
+    },
+  };
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).taskKind, "agentic_coding");
+  assert.equal(policy.providerPolicyBonus(review, staleReviewReq, { env }) < policy.providerPolicyBonus(codex, staleReviewReq, { env }), true);
 });
 
 test("providerPolicyBonus keeps Codex auto-review out of normal coding and generic verification", () => {

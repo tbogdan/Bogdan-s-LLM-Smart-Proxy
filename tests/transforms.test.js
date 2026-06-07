@@ -597,6 +597,56 @@ test("transformRequest scopes goal plan and subagent instructions to current IDE
   assert.match(claudeSystem, /Task\/agent\/background-agent affordances/i);
 });
 
+test("transformRequest supports Devin Desktop as a Windsurf-like client profile", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "devin_desktop",
+    tools: [
+      { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+      { type: "function", function: { name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } } },
+    ],
+    messages: [{ role: "user", content: "Investigate logs and split independent checks." }],
+  });
+  const system = transformed.messages[0].content;
+
+  assert.match(system, /Detected client: devin_desktop/i);
+  assert.match(system, /DEVIN DESKTOP PROFILE:/);
+  assert.match(system, /Windsurf successor/i);
+  assert.match(system, /Agent Command Center/i);
+  assert.match(system, /ACP-capable surface/i);
+  assert.match(system, /Use subagents whenever possible/i);
+});
+
+test("transformRequest hidden-only prompt mode preserves IDE identity while keeping proxy control lane", async () => {
+  const original = process.env.LLM_PROXY_PROMPT_INJECTION;
+  process.env.LLM_PROXY_PROMPT_INJECTION = "off";
+  try {
+    const transformed = await transforms.transformRequest(provider, {
+      model: "auto-coding",
+      _llmProxyClient: "devin_desktop",
+      tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+      messages: [
+        { role: "system", content: "You are Devin Desktop, Cognition's official IDE agent.\nKeep this repo rule." },
+        { role: "user", content: "Continue until the fix is verified." },
+      ],
+    });
+    const system = transformed.messages[0].content;
+
+    assert.match(system, /^You are Devin Desktop, Cognition's official IDE agent\./);
+    assert.match(system, /Keep this repo rule\./);
+    assert.match(system, /LLM PROXY HIDDEN CONTROL LANE/);
+    assert.match(system, /CLIENT CAPABILITY CONTRACT:/);
+    assert.match(system, /Detected client: devin_desktop/i);
+    assert.match(system, /OUTPUT CONTRACT:/);
+    assert.match(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
+    assert.doesNotMatch(system, /You are Project LLM Smart Proxy/);
+    assert.doesNotMatch(system, /Do not answer as Claude, ChatGPT, Gemini, Codex, Windsurf/);
+  } finally {
+    if (original === undefined) delete process.env.LLM_PROXY_PROMPT_INJECTION;
+    else process.env.LLM_PROXY_PROMPT_INJECTION = original;
+  }
+});
+
 test("transformRequest skips difficulty marker contract for direct exact replies", async () => {
   const transformed = await transforms.transformRequest(provider, {
     model: "auto-coding",
@@ -1399,6 +1449,30 @@ test("transformRequest removes empty assistant messages after tool synchronizati
   assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.content && !msg.tool_calls?.length), false);
 });
 
+test("transformRequest removes whitespace-only assistant messages after tool synchronization", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Call a tool." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "answered_call", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "answered_call", content: "README contents." },
+      { role: "assistant", content: " " },
+      { role: "assistant", content: "\n\t  " },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  assert.equal(
+    transformed.messages.some((msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === ""),
+    false,
+  );
+});
+
 test("transformRequest does not add whitespace assistant separators for native Anthropic providers", async () => {
   const anthropicProvider = {
     ...provider,
@@ -1574,4 +1648,21 @@ test("transformRequest leaves internal AI summary self-calls unwrapped by proxy 
   assert.equal(transformed._llmProxyInternalSummary, undefined);
   assert.doesNotMatch(transformed.messages[0].content, /Project LLM Smart Proxy/);
   assert.match(transformed.messages[0].content, /Summarize compacted context only/);
+});
+
+test("transformRequest leaves auto-memory extraction traffic unwrapped by proxy memory prompt", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-memory",
+    _memoryInjection: "\n[LLM_PROXY_MEMORY_START]\nArchitecture note that must not feed Graphiti extraction.\n[LLM_PROXY_MEMORY_END]\n",
+    messages: [
+      { role: "system", content: "Extract entities and facts into structured memory." },
+      { role: "user", content: "Episode: user fixed routing fallback." },
+    ],
+    response_format: { type: "json_object" },
+  });
+
+  const serialized = JSON.stringify(transformed.messages);
+  assert.equal(transformed._memoryInjection, undefined);
+  assert.match(String(transformed.messages[0]?.content || ""), /Extract entities and facts/);
+  assert.doesNotMatch(serialized, /Project LLM Smart Proxy|LLM_PROXY_MEMORY_START|LLM_PROXY_RECALL|Architecture note that must not feed Graphiti extraction/);
 });

@@ -15,12 +15,14 @@ if "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n         
 
 server_path = Path("/app/mcp/src/graphiti_mcp_server.py")
 server = server_path.read_text()
-import_needle = "from mcp.server.fastmcp import FastMCP\n"
-import_replacement = "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n"
 if "from mcp.server.transport_security import TransportSecuritySettings" not in server:
-    if import_needle not in server:
+    if "from mcp.server.fastmcp import FastMCP\n" not in server:
         raise SystemExit("Graphiti MCP server import shape changed; update Dockerfile.graphiti-mcp")
-    server = server.replace(import_needle, import_replacement, 1)
+    server = server.replace(
+        "from mcp.server.fastmcp import FastMCP\n",
+        "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n",
+        1,
+    )
 
 mcp_needle = """mcp = FastMCP(
     'Graphiti Agent Memory',
@@ -31,14 +33,20 @@ mcp_replacement = """mcp = FastMCP(
     'Graphiti Agent Memory',
     instructions=GRAPHITI_MCP_INSTRUCTIONS,
     transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=['graphiti-mcp:*', 'localhost:*', '127.0.0.1:*', '[::1]:*'],
+        enable_dns_rebinding_protection=False,
+        allowed_hosts=['graphiti-mcp', 'graphiti-mcp:8000', 'localhost', 'localhost:8000', '127.0.0.1', '127.0.0.1:8000', '[::1]', '[::1]:8000'],
     ),
 )
 """
-if "graphiti-mcp:*" not in server:
+if "transport_security=TransportSecuritySettings(" not in server:
     if mcp_needle not in server:
         raise SystemExit("Graphiti MCP server FastMCP shape changed; update Dockerfile.graphiti-mcp")
     server = server.replace(mcp_needle, mcp_replacement, 1)
-    server_path.write_text(server)
+
+server_path.write_text(server)
+server_check = server_path.read_text()
+if "from mcp.server.transport_security import TransportSecuritySettings" not in server_check:
+    raise SystemExit("Graphiti MCP server transport security import patch did not apply")
+if "transport_security=TransportSecuritySettings(" not in server_check:
+    raise SystemExit("Graphiti MCP server FastMCP transport security patch did not apply")
 PY

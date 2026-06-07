@@ -12,6 +12,7 @@ const state = require("../lib/state");
 const compaction = require("../lib/compaction");
 const humanApproval = require("../lib/human-approval");
 const memory = require("../lib/memory");
+const providerAdapters = require("../lib/provider-adapters");
 
 async function withServer(handler, fn) {
   const server = http.createServer(handler);
@@ -115,6 +116,49 @@ test("stripCachedProxyArtifacts removes private routing and memory marker lines"
   assert.equal(removed, 1);
   assert.match(serialized, /Done\./);
   assert.doesNotMatch(serialized, /LLM_PROXY_TASK_DIFFICULTY|LLM_PROXY_MEMORY|LLM_PROXY_RECALL|LLM_PROXY_CONTEXT_COMPACTION_REQUIRED|too_large_for_best_context|effort=low/);
+});
+
+test("stripHistoricalUserTransportMetadata removes stale file and browser envelopes from old user turns", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          "# Files mentioned by the user:",
+          "## Screenshot 1.png: /Users/bogdan/Desktop/Screenshot 1.png",
+          "## My request for Codex:",
+          "fix the membership wallet flow",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          "# In app browser:",
+          "- The user has the in-app browser open.",
+          "- Current URL: http://localhost:56734/",
+          "## My request for Codex:",
+          "continua",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          "# In app browser:",
+          "- The user has the in-app browser open.",
+          "- Current URL: http://localhost:18900/health",
+          "## My request for Codex:",
+          "check health and continue",
+        ].join("\n"),
+      },
+    ],
+  };
+
+  const changed = routing.stripHistoricalUserTransportMetadata(reqBody);
+
+  assert.equal(changed, 2);
+  assert.equal(reqBody.messages[0].content, "fix the membership wallet flow");
+  assert.equal(reqBody.messages[1].content, "continua");
+  assert.match(String(reqBody.messages[2].content), /Current URL: http:\/\/localhost:18900\/health/);
 });
 
 test("human approval ignores assessed security signoff without current security intent", async () => {
@@ -763,6 +807,55 @@ test("routeToProvider converts bare tool-call text into real tool calls", async 
   });
 });
 
+test("routeToProvider fills missing finish_reason for tool-call responses", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-missing-tool-finish",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "exec_command",
+                arguments: "{\"cmd\":\"pwd\"}",
+              },
+            }],
+          },
+          finish_reason: null,
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Run pwd." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "exec_command");
+    });
+  });
+});
+
 test("routeToProvider converts embedded edit argument text into a real tool call", async () => {
   await withRoutingState(async () => {
     const textOnlyEdit = [
@@ -1009,6 +1102,54 @@ test("auto-memory routing profile log reports the internal memory source", () =>
   assert.match(assessLine, /ASSESS: Memory-Test/);
   assert.match(assessLine, /source=memory_route/);
   assert.match(assessLine, /reason=memory_ingestion/);
+});
+
+test("handleChatCompletion does not recall memory for auto-memory extraction traffic", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalRecallMemories = memory.recallMemories;
+    let recallCalls = 0;
+    let capturedRequest = null;
+    memory.recallMemories = async () => {
+      recallCalls += 1;
+      return "\n[LLM_PROXY_MEMORY_START]\nDo not inject this into Graphiti extraction.\n[LLM_PROXY_MEMORY_END]\n";
+    };
+
+    try {
+      await withServer((req, res) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          capturedRequest = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "memory extracted" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+          }));
+        });
+      }, async (url) => {
+        state.GROUPS = { "auto-memory": "memory" };
+        state.PROVIDERS = [provider(url, { name: "AutoMemory-Route-Test", model: "test-memory-model", caps: ["text"] })];
+
+        const clientRes = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-memory",
+          messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+          max_tokens: 128,
+        }, clientRes);
+
+        const serialized = JSON.stringify(capturedRequest?.messages || []);
+        assert.equal(clientRes.status, 200);
+        assert.equal(recallCalls, 0);
+        assert.doesNotMatch(serialized, /LLM_PROXY_MEMORY_START|Do not inject this into Graphiti extraction|Project LLM Smart Proxy/);
+      });
+    } finally {
+      memory.recallMemories = originalRecallMemories;
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
 });
 
 async function withRoutingState(fn) {
@@ -2894,6 +3035,279 @@ test("routeToProvider accepts passive discussion text when optional tools are av
   });
 });
 
+test("routeToProvider canonicalizes multi-choice tool responses before text-only validation", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [
+            {
+              finish_reason: "tool_calls",
+              message: {
+                role: "assistant",
+                content: "Keys are `token` and `user`. Now set localStorage and navigate to community page:",
+              },
+            },
+            {
+              finish_reason: "tool_calls",
+              message: {
+                role: "assistant",
+                tool_calls: [{
+                  id: "tooluse_1",
+                  type: "function",
+                  function: {
+                    name: "exec_command",
+                    arguments: "{\"cmd\":\"export PWCLI=\\\"/tmp/pwcli\\\" && $PWCLI open http://localhost:5173/account\"}",
+                  },
+                }],
+              },
+            },
+          ],
+          usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 },
+        }));
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Multi-Choice-Tool-Test",
+          model: "test/multi-choice-tool",
+        }), {
+          model: "auto-coding",
+          tool_choice: { type: "auto" },
+          tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } }],
+          messages: [
+            { role: "user", content: "Continue fixing auth persistence and open the account page." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"rg -n \\\"localStorage|auth\\\" frontend src\"}" } }] },
+            { role: "tool", tool_call_id: "call_1", content: "frontend/src/stores/auth.ts:42 token\nfrontend/src/stores/auth.ts:51 user" },
+          ],
+        });
+
+        const parsed = JSON.parse(resp.body);
+        assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+        assert.equal(parsed.choices[0].message.content, null);
+        assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "exec_command");
+        assert.match(logs.join("\n"), /TOOL-CHOICE-NORMALIZE: Multi-Choice-Tool-Test merged multi-choice tool response/);
+        assert.doesNotMatch(logs.join("\n"), /TEXT-ONLY-OK: Multi-Choice-Tool-Test/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
+  });
+});
+
+test("handleChatCompletion hidden-continues substantive reports during active tool work", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    const requests = [];
+    state.log = (line) => logs.push(String(line));
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: [
+                  "**Current status**",
+                  "",
+                  "I inspected the routing loop behavior around optional tool execution.",
+                  "- The latest request already has successful tool history for `Read` and `exec_command`.",
+                  "- Evidence points to a permissive text-only acceptance path in `lib/routing.js`.",
+                  "- The provider can stop after returning a coherent diagnostic report even though the requested implementation and verification flow is still active.",
+                  "",
+                  "Recommended fix:",
+                  "1. Tighten the continuation classifier for active tool work.",
+                  "2. Re-run the next tool step instead of accepting this report as final output.",
+                ].join("\n"),
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 90, total_tokens: 110 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_patch",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"npm test -- routing\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Substantive-Report-Loop-Test",
+          model: "test/substantive-report-loop",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue implementing the routing loop fix and verify it." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"lib/routing.js\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read lib/routing.js." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_exec", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test -- routing\"}" } }] },
+            { role: "tool", tool_call_id: "call_exec", content: "2 tests failed; routing text-only acceptance is too permissive." },
+          ],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "exec_command");
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
+        assert.match(logs.join("\n"), /HIDDEN-CONTINUE: Substantive-Report-Loop-Test .*output=substantive_report.*action=hidden_continue/);
+        assert.doesNotMatch(fake.body, /Current status/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+      }
+    });
+  });
+});
+
+test("handleChatCompletion hidden-continues short next-step nudges during active tool work", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    const requests = [];
+    state.log = (line) => logs.push(String(line));
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (requests.length === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "Need correct route and auth storage keys. Search frontend auth/account routes fast.",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 18, total_tokens: 38 },
+          }));
+          return;
+        }
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_patch",
+                type: "function",
+                function: { name: "exec_command", arguments: "{\"cmd\":\"rg -n \\\"auth|account\\\" frontend src\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 25, completion_tokens: 5, total_tokens: 30 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Short-Work-Nudge-Loop-Test",
+          model: "test/short-work-nudge-loop",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "user", content: "Continue fixing the broken auth route and verify it end to end." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_read", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"frontend/src/router.ts\"}" } }] },
+            { role: "tool", tool_call_id: "call_read", content: "Read frontend/src/router.ts." },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_exec", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"rg -n \\\"auth|account\\\" frontend src\"}" } }] },
+            { role: "tool", tool_call_id: "call_exec", content: "Found auth/account route references in frontend and account store." },
+          ],
+          tools: [
+            { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+            { type: "function", function: { name: "exec_command", parameters: { type: "object", required: ["cmd"] } } },
+          ],
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "agentic_coding",
+            costTarget: 3,
+            thinkingLevel: 3,
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+          },
+        }, fake);
+
+        const message = JSON.parse(fake.body).choices[0].message;
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 2);
+        assert.equal(message.tool_calls[0].function.name, "exec_command");
+        assert.equal(requests[1].messages.at(-1).role, "user");
+        assert.match(requests[1].messages.at(-1).content, /^continue the active task\./);
+        assert.match(logs.join("\n"), /HIDDEN-CONTINUE: Short-Work-Nudge-Loop-Test .*output=premature_progress.*action=hidden_continue/);
+        assert.doesNotMatch(fake.body, /Need correct route and auth storage keys/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+      }
+    });
+  });
+});
+
 test("routeToProvider keeps required tool schemas and rejects text-only responses", async () => {
   await withRoutingState(async () => {
     let forwarded;
@@ -3225,6 +3639,37 @@ test("routeToProvider caches legacy bare marker-only replies as route hints", as
   });
 });
 
+test("routeToProvider rejects JSON-only assessment marker replies because the proxy strips the marker", async () => {
+  await withRoutingState(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "{\"level\":5,\"taskLevel\":4,\"contextLevel\":5,\"effort\":\"high\",\"speed\":2,\"reason\":\"agentic_coding\"}",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    }, async (url) => {
+      const reqBody = {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "continue fixing the active wallet and scanner regressions" }],
+      };
+      const sessionId = memory.getSession(reqBody.messages).id;
+      await assert.rejects(
+        () => routing.routeToProvider(provider(url), reqBody),
+        (error) => error.status === 422 && error.stalling === true,
+      );
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.reason, "agentic_coding");
+      assert.equal(state.sessionAssessmentCache[sessionId].profile.level, 5);
+      assert.equal(state.sessionAssessmentCache[sessionId].origin, "post_route_marker_only");
+    });
+  });
+});
+
 test("routeToProvider strips sentinel effort markers from assistant content", async () => {
   await withRoutingState(async () => {
     await withServer((_req, res) => {
@@ -3342,6 +3787,26 @@ test("stripCachedProxyArtifacts removes proxy assistant diagnostics from IDE rep
   assert.deepEqual(reqBody.messages, [
     { role: "user", content: "run pwd" },
     { role: "user", content: "continue" },
+  ]);
+});
+
+test("stripCachedProxyArtifacts removes historical tool replay artifacts across assistant and user messages", () => {
+  const reqBody = {
+    messages: [
+      { role: "user", content: "Fix the wallet regressions." },
+      { role: "assistant", content: "Historical tool invocation (already executed): exec_command {\"cmd\":\"git status --short\"}" },
+      { role: "user", content: "Historical tool result (already observed) for exec_command (abc123):\n M frontend/src/views/account/AccountMembershipCard.vue" },
+      { role: "user", content: "Earlier native tool history omitted for compatibility: 12 tool call(s) and 12 tool result(s) were already executed or observed. Continue from the latest retained tool evidence and the latest user request. Do not replay omitted history." },
+      { role: "user", content: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step." },
+    ],
+  };
+
+  const removed = routing.stripCachedProxyArtifacts(reqBody);
+
+  assert.equal(removed, 3);
+  assert.deepEqual(reqBody.messages, [
+    { role: "user", content: "Fix the wallet regressions." },
+    { role: "user", content: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step." },
   ]);
 });
 
@@ -5817,6 +6282,113 @@ test("internal assessment responses are not rejected as proxy identity mismatche
   });
 });
 
+test("internal assessment accepts marker-only replies instead of skipping providers", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "LLM_PROXY_INTERNAL_ROUTING level=5 effort=high speed=2 reason=agentic_coding",
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+          }));
+        });
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Windsurf-Gemini3FlashMinimal",
+          family: "windsurf",
+          model: "windsurf/google-gemini-3-0-flash-minimal",
+          caps: ["text"],
+        }), {
+          model: "auto-assess",
+          _llmProxyInternalAssessment: true,
+          _llmProxyBypassOptimizations: true,
+          messages: [
+            { role: "system", content: "You are an LLM proxy routing classifier." },
+            { role: "user", content: "Current user message:\ncontinue implementation" },
+          ],
+          max_tokens: 48,
+          stream: false,
+        });
+
+        const parsed = JSON.parse(resp.body);
+        const content = parsed.choices?.[0]?.message?.content || "";
+        assert.match(content, /"level":5/);
+        assert.match(content, /"reason":"agentic_coding"/);
+        assert.match(logs.join("\n"), /AI-ASSESS-MARKER-ONLY: Windsurf-Gemini3FlashMinimal accepted internal assessment marker/);
+        assert.doesNotMatch(logs.join("\n"), /MARKER-ONLY: Windsurf-Gemini3FlashMinimal returned assessment without assistant content/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
+  });
+});
+
+test("internal assessment accepts marker replies even when visible text remains after strip", async () => {
+  await withRoutingState(async () => {
+    const logs = [];
+    const originalLog = state.log;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: [
+                  "LLM_PROXY_INTERNAL_ROUTING level=4 effort=medium speed=4 reason=agentic_coding",
+                  "Next provider should be strong enough for tools and edits.",
+                ].join("\n"),
+              },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 20, completion_tokens: 12, total_tokens: 32 },
+          }));
+        });
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url, {
+          name: "Claude-Haiku45",
+          family: "claude",
+          model: "claude/claude-haiku-4-5-20251001",
+          caps: ["text"],
+        }), {
+          model: "auto-assess",
+          _llmProxyInternalAssessment: true,
+          _llmProxyBypassOptimizations: true,
+          messages: [
+            { role: "system", content: "You are an LLM proxy routing classifier." },
+            { role: "user", content: "Current user message:\nfix the membership wallet regressions" },
+          ],
+          max_tokens: 48,
+          stream: false,
+        });
+
+        const parsed = JSON.parse(resp.body);
+        const content = parsed.choices?.[0]?.message?.content || "";
+        assert.match(content, /"level":4/);
+        assert.match(content, /"reason":"agentic_coding"/);
+        assert.match(logs.join("\n"), /AI-ASSESS-MARKER-ONLY: Claude-Haiku45 accepted internal assessment marker/);
+        assert.doesNotMatch(logs.join("\n"), /returned unparsable assessment/);
+      });
+    } finally {
+      state.log = originalLog;
+    }
+  });
+});
+
 test("auto-memory transcript identity snippets are not public identity probes", async () => {
   await withRoutingState(async () => {
     const logs = [];
@@ -6781,6 +7353,122 @@ test("handleChatCompletion reuses fallback assessment when transcript has not ad
   });
 });
 
+test("handleChatCompletion does not reuse stale completion-review heuristic during active tool continuation", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalLog = state.log;
+    const originalEffective = routingPolicy.effectiveRequestProfile;
+    const logs = [];
+    const requests = [];
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        requests.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_next",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"src/next-step.ts\"}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 30, completion_tokens: 5, total_tokens: 35 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Continuation-Guard-Test",
+          model: "test/continuation-guard",
+          caps: ["text", "coding", "tools", "thinking"],
+          cost_group: 2,
+          quality_group: 4,
+          speed_group: 4,
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+      state.log = (msg) => logs.push(String(msg));
+      routingPolicy.effectiveRequestProfile = (reqBody) => {
+        if (reqBody?._llmProxyDifficulty) {
+          return reqBody._llmProxyDifficulty;
+        }
+        const lastUser = reqBody.messages?.findLast?.((m) => m.role === "user");
+        const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : "";
+        if (/continue/i.test(lastUserText)) {
+          return {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 4,
+            taskKind: "completion_review",
+            reason: "completion_review",
+            costTarget: 3,
+            speedTarget: 4,
+            thinkingLevel: 3,
+            thinkingEffort: "medium",
+            stepShape: { shape: "review", gate: "read_diff" },
+          };
+        }
+        return originalEffective(reqBody);
+      };
+
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          messages: [
+            { role: "system", content: "Project /Users/test/continuation-guard" },
+            { role: "user", content: "Continue fixing the wallet flow and verify it." },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_prev",
+                type: "function",
+                function: { name: "Read", arguments: "{\"file_path\":\"src/wallet.ts\"}" },
+              }],
+            },
+            { role: "tool", tool_call_id: "call_prev", content: "wallet source" },
+            { role: "user", content: "continue" },
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: "Read",
+              parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } },
+            },
+          }],
+          max_tokens: 64,
+        }, fake);
+
+        assert.equal(fake.status, 200);
+        assert.equal(requests.length, 1);
+        assert.match(fake.body, /call_next/);
+        assert.match(logs.join("\n"), /AI-ASSESS-CONTINUATION-SKIP: ignored stale review heuristic/);
+        assert.doesNotMatch(JSON.stringify(requests[0]), /task=completion_review|Route profile: task=completion_review/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        routingPolicy.effectiveRequestProfile = originalEffective;
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
 test("post-route marker with usable response is cached for next route without rerouting current response", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -7056,6 +7744,7 @@ test("handleChatCompletion emits IDE-specific context guidance for known clients
   for (const [userAgent, clientId] of [
     ["Claude-Code/2.1.89", "claude_code"],
     ["Codex/0.9", "codex"],
+    ["Devin Desktop/2.0", "devin_desktop"],
     ["Windsurf Cascade", "windsurf"],
     ["GitHubCopilotChat/1.0 VSCode", "copilot"],
   ]) {
@@ -7512,6 +8201,86 @@ test("routeToProvider strips hidden memory markers from assistant content", asyn
       assert.equal(parsed.choices[0].message.content, "Visible answer.");
       assert.equal(resp.body.includes("LLM_PROXY_MEMORY"), false);
     });
+  });
+});
+
+test("routeToProvider strips but suppresses auto-memory memory side effects", async () => {
+  await withRoutingState(async () => {
+    const originalApplyMemoryOps = memory.applyMemoryOps;
+    const originalTriggerSaves = memory.triggerSaves;
+    let applied = 0;
+    let saved = 0;
+    memory.applyMemoryOps = () => { applied += 1; };
+    memory.triggerSaves = () => { saved += 1; };
+
+    try {
+      await withServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "LLM_PROXY_MEMORY v=1 op=save_fact target=graphiti type=decision confidence=high\nVisible extraction.",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        }));
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url), {
+          model: "auto-memory",
+          messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+        });
+
+        const parsed = JSON.parse(resp.body);
+        assert.equal(parsed.choices[0].message.content, "Visible extraction.");
+        assert.equal(resp.body.includes("LLM_PROXY_MEMORY"), false);
+        assert.equal(applied, 0);
+        assert.equal(saved, 0);
+      });
+    } finally {
+      memory.applyMemoryOps = originalApplyMemoryOps;
+      memory.triggerSaves = originalTriggerSaves;
+    }
+  });
+});
+
+test("routeToProvider strips but ignores auto-memory recall markers", async () => {
+  await withRoutingState(async () => {
+    const originalTriggerSaves = memory.triggerSaves;
+    let saved = 0;
+    let calls = 0;
+    memory.triggerSaves = () => { saved += 1; };
+
+    try {
+      await withServer((_req, res) => {
+        calls += 1;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "LLM_PROXY_RECALL v=1 q=\"routing architecture\" types=architecture budget=800 reason=architecture_lookup",
+            },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }));
+      }, async (url) => {
+        const resp = await routing.routeToProvider(provider(url), {
+          model: "auto-memory",
+          messages: [{ role: "user", content: "Extract durable memory facts from this episode." }],
+        });
+
+        const parsed = JSON.parse(resp.body);
+        assert.equal(parsed.choices[0].message.content.trim(), "");
+        assert.equal(resp.body.includes("LLM_PROXY_RECALL"), false);
+        assert.equal(calls, 1);
+        assert.equal(saved, 0);
+      });
+    } finally {
+      memory.triggerSaves = originalTriggerSaves;
+    }
   });
 });
 
@@ -9718,7 +10487,7 @@ test("routing assessment log separates provider route level from request level",
   assert.doesNotMatch(line, /ASSESS: Windsurf-ClaudeSonnet46 level=5/);
 });
 
-test("response expectation matrix treats post-route fallback run behavior stalls as log-only with optional tools", () => {
+test("response expectation matrix hidden-continues post-route fallback run behavior stalls with optional tools", () => {
   const reqBody = {
     model: "auto-coding",
     tool_choice: { type: "auto" },
@@ -9758,11 +10527,11 @@ test("response expectation matrix treats post-route fallback run behavior stalls
   assert.equal(row.assessment_stream, true);
   assert.equal(row.expected_response, "tool_or_substantive_text");
   assert.equal(row.output_kind, "inert_continuation");
-  assert.equal(row.stall_class, "possible_stall");
-  assert.equal(row.action, "log_only");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
 });
 
-test("log-only possible stalls emit one contextual diagnostic without observed stall marker", async () => {
+test("inert tool-loop continuations trigger hidden continue before visible success", async () => {
   await withRoutingState(async () => {
     const logs = [];
     const originalLog = state.log;
@@ -9781,39 +10550,46 @@ test("log-only possible stalls emit one contextual diagnostic without observed s
           }));
         });
       }, async (url) => {
-        const resp = await routing.routeToProvider(provider(url, {
-          name: "Log-Only-Stall-Test",
-          family: "codex",
-          model: "codex/gpt-5.4-mini",
-        }), {
-          model: "auto-coding",
-          tool_choice: { type: "auto" },
-          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
-          messages: [{ role: "user", content: "continua implementarea" }],
-          _llmProxyDifficulty: {
-            level: 4,
-            taskLevel: 3,
-            contextLevel: 4,
-            taskKind: "agentic_coding",
-            costTarget: 4,
-            thinkingLevel: 4,
-            thinkingEffort: "high",
-            speedTarget: 3,
-            reason: "agentic_coding",
-            stepShape: { shape: "write_heavy", gate: "run_behavior" },
-            _assessmentProvider: {
-              origin: "post_route_fallback",
-              maxTokens: 0,
-              stream: true,
-              responseProvider: "Claude-Sonnet45",
+        await assert.rejects(
+          routing.routeToProvider(provider(url, {
+            name: "Hidden-Continue-Stall-Test",
+            family: "codex",
+            model: "codex/gpt-5.4-mini",
+          }), {
+            model: "auto-coding",
+            tool_choice: { type: "auto" },
+            tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+            messages: [{ role: "user", content: "continua implementarea" }],
+            _llmProxyDifficulty: {
+              level: 4,
+              taskLevel: 3,
+              contextLevel: 4,
+              taskKind: "agentic_coding",
+              costTarget: 4,
+              thinkingLevel: 4,
+              thinkingEffort: "high",
+              speedTarget: 3,
+              reason: "agentic_coding",
+              stepShape: { shape: "write_heavy", gate: "run_behavior" },
+              _assessmentProvider: {
+                origin: "post_route_fallback",
+                maxTokens: 0,
+                stream: true,
+                responseProvider: "Claude-Sonnet45",
+              },
             },
+          }),
+          (err) => {
+            assert.equal(err.hiddenContinuation, true);
+            assert.equal(err.continuationText, "Continuing.");
+            assert.match(err.body, /hidden continuation: inert_continuation/);
+            return true;
           },
-        });
+        );
 
-        assert.equal(resp.status, 200);
         const joined = logs.join("\n");
-        assert.match(joined, /POSSIBLE-STALL: Log-Only-Stall-Test .*action=log_only/);
-        assert.doesNotMatch(joined, /POSSIBLE-STALL: Log-Only-Stall-Test observed/);
+        assert.match(joined, /HIDDEN-CONTINUE: Hidden-Continue-Stall-Test .*action=hidden_continue/);
+        assert.doesNotMatch(joined, /POSSIBLE-STALL: Hidden-Continue-Stall-Test observed/);
       });
     } finally {
       state.log = originalLog;
@@ -9860,6 +10636,177 @@ test("response expectation matrix retries generic progress during active tool wo
   });
 
   assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix hidden-continues substantive reports during active tool work", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Continue implementing the routing loop fix and verify it." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"rg text-only lib/routing.js\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "lib/routing.js:4147 function allowsTextOnlyAnswer" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_2",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"npm test -- routing\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_2", content: "Routing regression reproduced." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 3,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 4,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 3,
+      reason: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "**Current status**",
+      "",
+      "I traced the premature stop to optional-tool response handling in `lib/routing.js`.",
+      "- The last tool results already confirm the bug.",
+      "- The current response is a coherent diagnostic summary, not the requested implementation or verification work.",
+      "- The next valid step is another tool call that patches the classifier and reruns tests.",
+      "",
+      "Recommended fix:",
+      "1. Tighten acceptance for substantive reports during active tool loops.",
+      "2. Continue the task instead of ending on this report.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "substantive_report");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix hidden-continues short next-step nudges during active tool work", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Continue fixing the broken auth route and verify it end to end." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "Bash", arguments: "{\"command\":\"rg -n \\\"auth|account\\\" frontend src\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "Found auth/account route references in frontend and account store." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 3,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 4,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 3,
+      reason: "agentic_coding",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Need correct route and auth storage keys. Search frontend auth/account routes fast.",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix does not treat partially fixed reports as completed during active tool work", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "exec_command", parameters: { type: "object" } } }],
+    _hiddenContinuationRetries: 1,
+    _llmProxyOriginalLastUserText: "continua pana termini tot si nu te opri",
+    messages: [
+      { role: "user", content: "continua pana termini tot si nu te opri" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "exec_command", arguments: "{\"cmd\":\"php -l /app/src/routes.php\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "No syntax errors detected in /app/src/routes.php" },
+      { role: "user", content: "continue the active task. do not stop after reporting progress. use the next best tool call or concrete action now." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "test_generation",
+      costTarget: 3,
+      thinkingLevel: 3,
+      thinkingEffort: "medium",
+      speedTarget: 4,
+      reason: "e2e_test_fix",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "`playwright-cli` scripting here is clumsy, but core backend fix is identified and partially fixed.",
+      "What I verified:",
+      "- `405` root cause: wrong route group in `/Users/bogdan/PhpstormProjects/Events/backend/src/routes.php:681` before fix.",
+      "- `401` root cause: signed route placed inside `/api/user` auth group in `/Users/bogdan/PhpstormProjects/Events/backend/src/routes.php`.",
+      "- Current fix: moved signed membership Apple Wallet route to top-level signed-download section in `/Users/bogdan/PhpstormProjects/Events/backend/src/routes.php`.",
+      "- Syntax check passes: `php -l /app/src/routes.php`.",
+      "What remains:",
+      "- Full browser E2E on member account, not platform admin.",
+      "- Need either working member creds or clean impersonation via UI/API to finish exact wallet open verification.",
+      "- Current chat-provided password `Tbogdan@05` is invalid; real admin password is `test1234`.",
+      "Self-review:",
+      "- Main regression fixed at routing/auth layer.",
+      "- Risk left: Apple pass content may still trigger download instead of Wallet open on some browsers.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.notEqual(row.output_kind, "completed_work_report");
   assert.equal(row.output_kind, "premature_progress");
   assert.equal(row.stall_class, "continuation_needed");
   assert.equal(row.action, "hidden_continue");
@@ -9912,6 +10859,224 @@ test("response expectation matrix keeps nudging active work after hidden continu
   assert.equal(row.action, "hidden_continue");
 });
 
+test("response expectation matrix hidden-continues completed reports while tracked todo items remain open", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Continue fixing the wallet route and verify the scanner end to end." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_todo",
+          type: "function",
+          function: {
+            name: "TodoWrite",
+            arguments: "{\"todos\":[{\"content\":\"Fix wallet route\",\"status\":\"completed\"},{\"content\":\"Verify scanner dialog\",\"status\":\"in_progress\"},{\"content\":\"Run end to end verification\",\"status\":\"pending\"}]}",
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_todo", content: "Todos have been modified successfully." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 4,
+      reason: "edit_recovery",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Done. Fixed the wallet route and updated the scanner flow.",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "tool_or_substantive_text");
+  assert.equal(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
+});
+
+test("response expectation matrix allows completed reports after tracked update_plan is fully completed", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "update_plan", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Finish the routing fix and verify everything." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_plan",
+          type: "function",
+          function: {
+            name: "update_plan",
+            arguments: "{\"plan\":[{\"step\":\"Patch routing classifier\",\"status\":\"completed\"},{\"step\":\"Run targeted tests\",\"status\":\"completed\"},{\"step\":\"Deploy and verify health\",\"status\":\"completed\"}]}",
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_plan", content: "Plan updated." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 4,
+      thinkingEffort: "high",
+      speedTarget: 4,
+      reason: "edit_recovery",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Done. Patched the routing classifier, ran the targeted tests, and verified deploy health.",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.output_kind, "completed_work_report");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
+test("response expectation matrix allows definitive completion summaries after hidden-continue limit even with stale open tracked tasks", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } }],
+    _hiddenContinuationRetries: 3,
+    messages: [
+      { role: "user", content: "continua pana termini tot si nu te opri" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_todo",
+          type: "function",
+          function: {
+            name: "TodoWrite",
+            arguments: "{\"todos\":[{\"content\":\"Patch membership wallet route\",\"status\":\"completed\"},{\"content\":\"Verify membership wallet flow\",\"status\":\"in_progress\"}]}",
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_todo", content: "Todos have been modified successfully." },
+      { role: "user", content: "continue the active task. do not stop after reporting progress. use the next best tool call or concrete action now." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 3,
+      thinkingEffort: "medium",
+      speedTarget: 4,
+      reason: "edit_recovery",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "**Membership wallet fix complete and verified**",
+      "",
+      "- Fixed the wallet membership route and verified the working download/open flow.",
+      "- Re-ran the targeted checks and confirmed the membership wallet button now works.",
+      "- Verified the final behavior against the current implementation and route wiring.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.output_kind, "substantive_report");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
+test("retryWithHiddenContinue cools provider after hidden-continue retry budget is exhausted", async () => {
+  await withRoutingState(async () => {
+    const clientRes = new FakeClientResponse();
+    const reqBody = {
+      model: "auto-coding",
+      messages: [{ role: "user", content: "continua pana termini tot si nu te opri" }],
+      _hiddenContinuationRetries: 3,
+    };
+    const result = await routing.retryWithHiddenContinue(
+      reqBody,
+      clientRes,
+      {},
+      { name: "Looping-Hidden-Continue-Provider" },
+      { continuationText: "Continuing." },
+    );
+
+    assert.equal(result, false);
+    assert.equal(scoring.isOnCooldown("Looping-Hidden-Continue-Provider"), true);
+    assert.match(String(state.scores["Looping-Hidden-Continue-Provider"]?.cooldown_reason || ""), /hidden continuation limit/i);
+  });
+});
+
+test("routeNativeStreamToProvider cools provider after invalid streamed tool arguments", async () => {
+  await withRoutingState(async () => {
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    try {
+      providerAdapters.routeNativeStream = async (_provider, _body, _handlers) => {
+        const err = new Error('tool "exec_command" missing required field "cmd"');
+        err.status = 422;
+        err.body = 'tool "exec_command" missing required field "cmd"';
+        throw err;
+      };
+
+      const clientRes = new FakeClientResponse();
+      await assert.rejects(
+        routing.routeNativeStreamToProvider(
+          provider("http://native.invalid", {
+            name: "Native-Invalid-Tool-Provider",
+            family: "windsurf",
+            model: "windsurf/gemini-2-5-pro",
+            protocol: "windsurf",
+            tier: 1,
+          }),
+          {
+            model: "auto-coding",
+            stream: true,
+            messages: [{ role: "user", content: "Check the broken wallet route and continue." }],
+            tools: [{
+              type: "function",
+              function: {
+                name: "exec_command",
+                parameters: {
+                  type: "object",
+                  required: ["cmd"],
+                  properties: { cmd: { type: "string" } },
+                },
+              },
+            }],
+          },
+          clientRes,
+        ),
+      );
+
+      assert.equal(scoring.isOnCooldown("Native-Invalid-Tool-Provider"), true);
+      assert.match(String(state.scores["Native-Invalid-Tool-Provider"]?.cooldown_reason || ""), /invalid streamed tool arguments/i);
+    } finally {
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+    }
+  });
+});
+
 test("response expectation matrix treats identity provider work as active tooling", () => {
   const reqBody = {
     model: "auto-coding",
@@ -9945,7 +11110,7 @@ test("response expectation matrix treats identity provider work as active toolin
   assert.equal(row.action, "hidden_continue");
 });
 
-test("response expectation matrix fails over bare continue in read-heavy plan routes", () => {
+test("response expectation matrix hidden-continues bare continue in read-heavy plan routes", () => {
   const reqBody = {
     model: "auto-coding",
     tool_choice: { type: "auto" },
@@ -9980,8 +11145,8 @@ test("response expectation matrix fails over bare continue in read-heavy plan ro
   assert.equal(row.task_kind, "debugging");
   assert.equal(row.expected_response, "analysis_or_plan");
   assert.equal(row.output_kind, "inert_continuation");
-  assert.equal(row.stall_class, "real_stall");
-  assert.equal(row.action, "failover_stall");
+  assert.equal(row.stall_class, "continuation_needed");
+  assert.equal(row.action, "hidden_continue");
 });
 
 test("response expectation matrix rejects text-only output only when tools are required", () => {

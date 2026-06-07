@@ -22,7 +22,9 @@ services:
       GRAPHITI_MCP_TIMEOUT_MS: "1200"
       GRAPHITI_MCP_WRITE_TIMEOUT_MS: "5000"
       GRAPHITI_MCP_SEARCH_TIMEOUT_MS: "1200"
-      GRAPHITI_MCP_OUTBOX_BATCH: "5"
+      GRAPHITI_MCP_OUTBOX_BATCH: "1"
+      GRAPHITI_MCP_OUTBOX_MAX_DRAIN_BATCHES: "1"
+      GRAPHITI_MCP_OUTBOX_DRAIN_RESCHEDULE_MS: "60000"
       LLM_PROXY_EMBEDDING_MODEL: llm-proxy-hash-embedding-1536
       LLM_PROXY_EMBEDDING_DIMENSIONS: "1536"
       LLM_PROXY_AI_SUMMARY_MODEL: auto-text
@@ -94,11 +96,52 @@ services:
       OPENAI_BASE_URL: http://llm-proxy:18900/v1
       GRAPHITI_MCP_EMBEDDING_MODEL: llm-proxy-hash-embedding-1536
       GRAPHITI_MCP_EMBEDDING_DIMENSIONS: "1536"
-      SEMAPHORE_LIMIT: "2"
+      SEMAPHORE_LIMIT: "1"
       GRAPHITI_TELEMETRY_ENABLED: "false"
       CONFIG_PATH: /app/mcp/config/config.yaml
       PATH: "/root/.local/bin:${PATH}"
     volumes:
       - ./config/graphiti-mcp-neo4j.yaml:/app/mcp/config/config.yaml:ro
-    command: ["uv", "run", "main.py"]
+    command:
+      - sh
+      - -lc
+      - |
+        python - <<'PY'
+        from pathlib import Path
+
+        server_path = Path("/app/mcp/src/graphiti_mcp_server.py")
+        server = server_path.read_text()
+
+        if "from mcp.server.transport_security import TransportSecuritySettings" not in server:
+            import_needle = "from mcp.server.fastmcp import FastMCP\n"
+            if import_needle not in server:
+                raise SystemExit("Graphiti MCP server import shape changed; update docker-compose.yml patch")
+            server = server.replace(
+                import_needle,
+                "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n",
+                1,
+            )
+
+        mcp_needle = """mcp = FastMCP(
+            'Graphiti Agent Memory',
+            instructions=GRAPHITI_MCP_INSTRUCTIONS,
+        )
+        """
+        mcp_replacement = """mcp = FastMCP(
+            'Graphiti Agent Memory',
+            instructions=GRAPHITI_MCP_INSTRUCTIONS,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+                allowed_hosts=['graphiti-mcp', 'graphiti-mcp:8000', 'localhost', 'localhost:8000', '127.0.0.1', '127.0.0.1:8000', '[::1]', '[::1]:8000'],
+            ),
+        )
+        """
+        if "transport_security=TransportSecuritySettings(" not in server:
+            if mcp_needle not in server:
+                raise SystemExit("Graphiti MCP server FastMCP shape changed; update docker-compose.yml patch")
+            server = server.replace(mcp_needle, mcp_replacement, 1)
+
+        server_path.write_text(server)
+        PY
+        exec uv run main.py
     restart: unless-stopped

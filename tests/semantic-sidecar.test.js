@@ -166,6 +166,33 @@ test("SemanticMemorySidecar drains items enqueued while a drain is active", asyn
   assert.equal(queue.every((item) => item.status === "done"), true);
 });
 
+test("SemanticMemorySidecar does not drain a quiet backlog continuously", async () => {
+  const queue = [
+    { id: "o1", project: "llm-proxy", name: "one", body: "one", source_description: "test", status: "pending" },
+    { id: "o2", project: "llm-proxy", name: "two", body: "two", source_description: "test", status: "pending" },
+  ];
+  const marked = [];
+  const ledger = {
+    claimGraphitiOutbox: async (limit) => {
+      const claimed = queue.filter((item) => item.status === "pending").slice(0, limit);
+      for (const item of claimed) item.status = "processing";
+      return claimed;
+    },
+    markGraphitiOutboxDone: async (id) => {
+      marked.push(id);
+      const item = queue.find((entry) => entry.id === id);
+      if (item) item.status = "done";
+    },
+  };
+  const client = { addEpisode: async () => {}, health: () => ({ available: true }) };
+  const sidecar = new SemanticMemorySidecar({ GRAPHITI_MCP_ENABLED: "true", GRAPHITI_MCP_OUTBOX_BATCH: "1" }, { ledger, client });
+
+  await sidecar.drainOnce();
+
+  assert.deepEqual(marked, ["o1"]);
+  assert.equal(queue.find((item) => item.id === "o2").status, "pending");
+});
+
 test("SemanticMemorySidecar formats semantic search as memory hints", async () => {
   const client = { search: async () => ["Fact: project recall uses project name."], health: () => ({ available: true }) };
   const sidecar = new SemanticMemorySidecar({ GRAPHITI_MCP_ENABLED: "true" }, { client });

@@ -434,7 +434,7 @@ test("routeStreamToProvider strips malformed internal routing token fragments", 
   });
 });
 
-test("routeStreamToProvider logs inert continuation as possible stall without retrying", async () => {
+test("routeStreamToProvider turns inert tool-loop continuation into hidden continue", async () => {
   await withNoScoreWrites(async () => {
     const originalLog = state.log;
     const logs = [];
@@ -454,16 +454,23 @@ test("routeStreamToProvider logs inert continuation as possible stall without re
       };
 
       try {
-        await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+        await assert.rejects(
+          () => routing.routeStreamToProvider(streamProvider(url), req, clientRes),
+          (err) => {
+            assert.equal(err.hiddenContinuation, true);
+            assert.equal(err.continuationText, "Continuing.");
+            assert.match(err.error?.message || "", /hidden continuation: inert_continuation/);
+            return true;
+          },
+        );
       } finally {
         state.log = originalLog;
       }
       const output = clientRes.chunks.join("");
-      assert.equal(clientRes.status, 200);
-      assert.equal(clientRes.ended, true);
-      assert.match(output, /Con[\s\S]*tinu[\s\S]*ing\./);
-      assert.match(logs.join("\n"), /POSSIBLE-STALL: Stream-Test .*output=inert_continuation.*action=log_only/);
-      assert.doesNotMatch(logs.join("\n"), /HIDDEN-CONTINUE/);
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.ended, false);
+      assert.equal(output, "");
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-STREAM: Stream-Test .*output=inert_continuation/);
     });
   });
 });
@@ -504,6 +511,62 @@ test("routeStreamToProvider signals hidden continue for file-check Go prelude be
       assert.equal(clientRes.status, null);
       assert.match(err?.continuationText || "", /Local screenshot/);
       assert.match(logs.join("\n"), /HIDDEN-CONTINUE-STREAM: Stream-Test .*output=action_prelude.*action=hidden_continue/);
+    });
+  });
+});
+
+test("routeStreamToProvider keeps buffering long active-work text streams until finish and hidden-continues them", async () => {
+  await withNoScoreWrites(async () => {
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "Okay, problems clear. ",
+        "Wallet 404, broken admin scanner, bad UI, ",
+        "and scanner needs manual input. ",
+        "Fixing regressions first. ",
+        "First, I'll restore the wallet functionality ",
+        "by re-adding the necessary routes ",
+        "and controller logic. ",
+        "Then I'll rerun the flow and verify the UI. ",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        messages: [
+          { role: "user", content: "Continue fixing the wallet and membership scanner flow end to end." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_prev", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"npm test\"}" } }],
+          },
+          { role: "tool", tool_call_id: "call_prev", content: "Tests failed on wallet route." },
+          { role: "user", content: "continua pana termini tot si nu te opri" },
+        ],
+      };
+
+      let err = null;
+      try {
+        await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+      } catch (error) {
+        err = error;
+      } finally {
+        state.log = originalLog;
+      }
+
+      assert.equal(err?.statusCode, 409);
+      assert.equal(err?.hiddenContinuation, true);
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.chunks.join(""), "");
+      assert.match(err?.continuationText || "", /Wallet 404/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-STREAM: Stream-Test .*output=premature_progress.*action=hidden_continue/);
     });
   });
 });
