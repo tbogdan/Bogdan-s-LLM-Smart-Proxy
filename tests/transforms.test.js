@@ -601,6 +601,21 @@ test("transformRequest scopes goal plan and subagent instructions to current IDE
   assert.match(codexSystem, /Subagents: available via multi_agent_v1\.spawn_agent/i);
   assert.match(codexSystem, /Use subagents whenever possible/i);
 
+  const codexNoSubagents = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "codex",
+    tools: [
+      { type: "function", function: { name: "update_plan", parameters: { type: "object" } } },
+      { type: "function", function: { name: "functions.exec_command", parameters: { type: "object" } } },
+    ],
+    messages: [{ role: "user", content: "Check whether subagents work in this session." }],
+  });
+  const codexNoSubagentsSystem = codexNoSubagents.messages[0].content;
+  assert.match(codexNoSubagentsSystem, /Detected client: codex/i);
+  assert.match(codexNoSubagentsSystem, /Subagents: no dedicated subagent tool detected/i);
+  assert.match(codexNoSubagentsSystem, /Do not infer Codex subagent\/thread tools from app-context docs/i);
+  assert.doesNotMatch(codexNoSubagentsSystem, /Use subagents whenever possible/i);
+
   const copilot = await transforms.transformRequest(provider, {
     model: "auto-coding",
     _llmProxyClient: "copilot",

@@ -217,6 +217,7 @@ test("public env only exposes operator-owned source and routing settings", () =>
     "CLAUDE_CODE_BETAS",
     "CLAUDE_CODE_OUTPUT_EFFORT",
     "ENABLE_CODEX",
+    "LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS",
     "ENABLE_COPILOT",
     "COPILOT_GITHUB_TOKEN",
     "LLM_COST_TARGET",

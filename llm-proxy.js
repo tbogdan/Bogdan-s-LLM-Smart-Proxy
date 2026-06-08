@@ -106,17 +106,117 @@ function handleModels(query) {
     ...providersList.map((p) => scoring.getEffectiveContext(p)),
     0,
   );
+  const isPresentValue = (value) => (
+    value !== undefined &&
+    value !== null &&
+    (typeof value !== "string" || value.trim() !== "")
+  );
+  const valueKey = (value) => {
+    if (value && typeof value === "object") return JSON.stringify(value, Object.keys(value).sort());
+    return String(value);
+  };
+  const valueSortKey = (value) => (
+    value && typeof value === "object"
+      ? String(value.id || value.name || value.slug || value.label || valueKey(value))
+      : String(value)
+  );
+  const uniqueSorted = (values) => [...new Set((values || []).filter(isPresentValue).map(String))].sort();
+  const uniqueProviderValues = (values = []) => {
+    const byKey = new Map();
+    for (const value of values.flat().filter(isPresentValue)) {
+      byKey.set(valueKey(value), value);
+    }
+    return [...byKey.values()].sort((a, b) => valueSortKey(a).localeCompare(valueSortKey(b)));
+  };
+  const unionProviderField = (providersList, field) => uniqueProviderValues(providersList.flatMap((p) => Array.isArray(p[field]) ? p[field] : (p[field] !== undefined ? [p[field]] : [])));
+  const thinkingRank = { none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6 };
+  const smartAliasReferenceFamily = (groupName) => (
+    groupName === "auto" || groupName === "auto-coding" || groupName === "auto-thinking"
+      ? "codex"
+      : null
+  );
+  const preferredProviderScore = (provider, groupName) => {
+    const family = smartAliasReferenceFamily(groupName);
+    if (!family || provider.family !== family) return 0;
+    if (/gpt[-_.]?5[-_.]?5/i.test(`${provider.model || ""} ${provider.name || ""}`)) return 3;
+    if ((provider.caps || []).includes("max") && (provider.caps || []).includes("thinking")) return 2;
+    return 1;
+  };
+  const representativeProvider = (providersList, groupName) => [...providersList].sort((a, b) => {
+    const ap = routingPolicy.classifyProvider(a);
+    const bp = routingPolicy.classifyProvider(b);
+    return (
+      preferredProviderScore(b, groupName) - preferredProviderScore(a, groupName) ||
+      (bp.quality_group || 0) - (ap.quality_group || 0) ||
+      (thinkingRank[bp.thinking_effort] || 0) - (thinkingRank[ap.thinking_effort] || 0) ||
+      scoring.getEffectiveContext(b) - scoring.getEffectiveContext(a) ||
+      (ap.cost_group || 9) - (bp.cost_group || 9) ||
+      String(a.name || a.model || "").localeCompare(String(b.name || b.model || ""))
+    );
+  })[0] || null;
+  const groupModelMetadata = (groupName, groupProviders) => {
+    const supported = new Set(["chat", "tools", "parallel_tool_calls", "context_compaction", "smart_routing"]);
+    const capabilities = new Set(state.GROUPS[groupName] === null ? ["all"] : [state.GROUPS[groupName]]);
+    for (const p of groupProviders) {
+      for (const cap of Array.isArray(p.caps) ? p.caps : []) capabilities.add(cap);
+      for (const cap of ideCapabilities.modelSupportedCapabilityList(p)) supported.add(cap);
+    }
+    const reference = representativeProvider(groupProviders, groupName);
+    const referenceProfile = reference ? routingPolicy.classifyProvider(reference) : {};
+    return {
+      capabilities: uniqueSorted([...capabilities]),
+      supported_capabilities: uniqueSorted([...supported]),
+      capability_reference_model: reference?.model,
+      capability_reference_provider: reference?.name,
+      llm_proxy_transform: {
+        wire_protocol: "smart_group",
+        routes_to_provider_transform: true,
+        capability_reference_model: reference?.model,
+      },
+      context_length: maxContext(groupProviders),
+      context_window: maxContext(groupProviders),
+      max_context_window: maxContext(groupProviders),
+      max_tokens: Math.max(...groupProviders.map((p) => Number(p.max_tokens || 0)), 0) || undefined,
+      thinking_capable: groupName === "auto-thinking" || groupProviders.some((p) => p.tc || (p.caps || []).includes("thinking")),
+      cost_group: referenceProfile.cost_group,
+      quality_group: referenceProfile.quality_group,
+      speed_group: referenceProfile.speed_group,
+      thinking_effort: referenceProfile.thinking_effort,
+      supported_thinking_efforts: unionProviderField(groupProviders, "supported_thinking_efforts"),
+      input_modalities: unionProviderField(groupProviders, "input_modalities"),
+      supports_parallel_tool_calls: groupProviders.some((p) => p.supports_parallel_tool_calls !== false),
+      supports_search_tool: groupProviders.some((p) => p.supports_search_tool === true),
+      supports_code_execution: groupProviders.some((p) => p.supports_code_execution === true),
+      supports_context_compaction: true,
+      supports_adaptive_thinking: groupProviders.some((p) => p.supports_adaptive_thinking === true),
+      supports_verbosity: groupProviders.some((p) => p.supports_verbosity === true),
+      default_verbosity: reference?.default_verbosity,
+      default_service_tier: reference?.default_service_tier,
+      service_tiers: unionProviderField(groupProviders, "service_tiers"),
+      additional_speed_tiers: unionProviderField(groupProviders, "additional_speed_tiers"),
+      priority: reference?.priority,
+      source: "smart_group",
+    };
+  };
 
-  const models = list.map((p) => {
+  const providerModelRow = (p, options = {}) => {
     const profile = routingPolicy.classifyProvider(p);
     return Object.fromEntries(Object.entries({
-      id: p.model,
+      id: options.id || p.model,
       object: "model",
       created: 0,
       owned_by: p.name,
       capabilities: p.caps,
       supported_capabilities: ideCapabilities.modelSupportedCapabilityList(p),
-      llm_proxy_transform: ideCapabilities.providerTransformCapabilityMetadata(p),
+      llm_proxy_transform: {
+        ...ideCapabilities.providerTransformCapabilityMetadata(p),
+        ...(options.alias_for ? { alias_for: options.alias_for } : {}),
+        ...(options.alias_target ? { alias_target: options.alias_target } : {}),
+      },
+      is_alias: options.is_alias,
+      alias_target: options.alias_target,
+      capability_reference_model: options.capability_reference_model,
+      capability_reference_provider: options.capability_reference_provider,
       context_length: scoring.getEffectiveContext(p),
       max_tokens: p.max_tokens,
       tier: p.tier,
@@ -143,43 +243,59 @@ function handleModels(query) {
       input_modalities: p.input_modalities,
       priority: p.priority,
       visibility: p.visibility,
-      source: p.source,
+      source: options.source || p.source,
     }).filter(([, value]) => value !== undefined));
-  });
+  };
+
+  const models = list.map((p) => providerModelRow(p));
+  const advertisedIds = new Set(models.map((model) => model.id));
+  for (const p of list) {
+    if (p.family !== "codex" || !String(p.model || "").startsWith("codex/")) continue;
+    const alias = String(p.upstream_model || p.model.replace(/^codex\//, "") || "").trim();
+    if (!alias || alias === p.model || advertisedIds.has(alias)) continue;
+    models.push(providerModelRow(p, {
+      id: alias,
+      is_alias: true,
+      alias_for: p.model,
+      alias_target: "auto-coding",
+      capability_reference_model: p.model,
+      capability_reference_provider: p.name,
+      source: "codex_alias",
+    }));
+    advertisedIds.add(alias);
+  }
 
   // Add smart groups
   const groups = Object.keys(state.GROUPS).map((g) => {
     const groupProviders = routing.getProvidersForGroup(g);
+    const groupMeta = groupModelMetadata(g, groupProviders);
     return {
       id: g,
       object: "model",
       created: 0,
       owned_by: "llm-proxy",
-      capabilities: state.GROUPS[g] === null ? ["all"] : [state.GROUPS[g]],
-      supported_capabilities: ["chat", "tools", "parallel_tool_calls", "context_compaction", "smart_routing"],
-      llm_proxy_transform: { wire_protocol: "smart_group", routes_to_provider_transform: true },
-      context_length: maxContext(groupProviders),
+      ...Object.fromEntries(Object.entries(groupMeta).filter(([, value]) => value !== undefined && !(Array.isArray(value) && value.length === 0))),
       tier: 0,
-      thinking_capable: g === "auto-thinking",
       is_group: true,
       provider_count: groupProviders.length,
     };
   });
 
   // Add auto group (smart use-case detection)
+  const autoProviders = state.PROVIDERS.filter((p) => p.key && p.alive !== false);
+  const autoMeta = groupModelMetadata("auto", autoProviders);
   groups.unshift({
     id: "auto",
     object: "model",
     created: 0,
     owned_by: "llm-proxy",
-    capabilities: ["all", "auto-detect"],
-    supported_capabilities: ["chat", "tools", "parallel_tool_calls", "context_compaction", "smart_routing", "auto_assessment"],
-    llm_proxy_transform: { wire_protocol: "smart_group", routes_to_provider_transform: true },
-    context_length: maxContext(state.PROVIDERS.filter((p) => p.key && p.alive !== false)),
+    ...Object.fromEntries(Object.entries(autoMeta).filter(([, value]) => value !== undefined && !(Array.isArray(value) && value.length === 0))),
+    capabilities: uniqueSorted([...(autoMeta.capabilities || []), "all", "auto-detect"]),
+    supported_capabilities: uniqueSorted([...(autoMeta.supported_capabilities || []), "auto_assessment"]),
     tier: 0,
     thinking_capable: true,
     is_group: true,
-    provider_count: state.PROVIDERS.filter((p) => p.key && p.alive !== false).length,
+    provider_count: autoProviders.length,
     description: "Auto-detects use case (coding, thinking, images, tools) and routes to best provider with full fallback",
   });
 

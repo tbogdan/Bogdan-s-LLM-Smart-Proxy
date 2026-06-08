@@ -1029,6 +1029,56 @@ test("routeStreamToProvider canonicalizes structured _command tool calls", async
   });
 });
 
+test("routeStreamToProvider buffers repairable command alias streamed tool calls until canonical output", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_cmd_alias",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"command\":\"pwd\"}" },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /\\"cmd\\":\\"pwd\\"/);
+      assert.doesNotMatch(output, /\\"command\\":\\"pwd\\"/);
+    });
+  });
+});
+
 test("routeStreamToProvider repairs streamed update_plan aliases before validation", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -1313,7 +1363,15 @@ test("routeStreamToProvider rejects invalid streamed tool calls before sending c
 
       await assert.rejects(
         routing.routeStreamToProvider(streamProvider(url), req, clientRes),
-        (err) => err.statusCode === 422 && /missing required field "command"/.test(err.error?.message || err.message || ""),
+        (err) => {
+          assert.equal(err.statusCode, 409);
+          assert.equal(err.hiddenContinuation, true);
+          assert.equal(err.invalidToolRetry, true);
+          assert.match(err.body || "", /hidden continuation: invalid streamed tool arguments/);
+          assert.match(err.continuationMessage || "", /missing required field "command"/);
+          assert.match(err.continuationMessage || "", /Bash\(command required\)/);
+          return true;
+        },
       );
       assert.equal(clientRes.status, null);
       assert.equal(clientRes.ended, false);
@@ -1592,6 +1650,70 @@ test("handleChatCompletion estimates output tokens for native streaming provider
       assert.equal(clientRes.status, 200);
       assert.ok(state.sessionStats[sid].totalOutputTokens > 0);
       assert.ok(state.sessionStats[sid].providers["Native-Stream-Test"].output > 0);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion buffers native repairable command alias tool calls until canonical output", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    routing.init({ sendError: () => {}, trackSessionTokens });
+    state.PROVIDERS = [{
+      name: "Native-Command-Alias",
+      model: "native-command-alias-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({ choices: [{ delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_cmd_alias",
+              type: "function",
+              function: { name: "exec_command", arguments: "{\"command\":\"pwd\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-command-alias-model",
+        stream: true,
+        messages: [{ role: "user", content: "Run pwd." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: { cmd: { type: "string" } },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /\\"cmd\\":\\"pwd\\"/);
+      assert.doesNotMatch(output, /\\"command\\":\\"pwd\\"/);
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
@@ -2723,7 +2845,7 @@ test("handleChatCompletion keeps native active loop alive after repeated progres
   });
 });
 
-test("handleChatCompletion reroutes native invalid tool calls after action prelude before flushing", async () => {
+test("handleChatCompletion retries native invalid tool calls with schema-aware hidden continue before flushing", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -2742,37 +2864,23 @@ test("handleChatCompletion reroutes native invalid tool calls after action prelu
       trackSessionTokens,
     });
     state.GROUPS = { "auto-coding": "coding" };
-    state.PROVIDERS = [
-      {
-        name: "Native-Prelude-InvalidTool",
-        model: "windsurf/native-prelude-invalid-tool",
-        protocol: "windsurf",
-        key: "test",
-        caps: ["text", "coding", "tools", "thinking"],
-        context: 131072,
-        tier: 1,
-        cost_group: 2,
-        quality_group: 4,
-        speed_group: 5,
-        thinking_effort: "high",
-      },
-      {
-        name: "Native-Tool-Fallback",
-        model: "windsurf/native-tool-fallback",
-        protocol: "windsurf",
-        key: "test",
-        caps: ["text", "coding", "tools", "thinking"],
-        context: 131072,
-        tier: 1,
-        cost_group: 2,
-        quality_group: 3,
-        speed_group: 5,
-        thinking_effort: "high",
-      },
-    ];
-    providerAdapters.routeNativeStream = async (provider, _body, handlers) => {
-      calls.push(provider.name);
-      if (provider.name === "Native-Prelude-InvalidTool") {
+    state.PROVIDERS = [{
+      name: "Native-Prelude-InvalidTool",
+      model: "windsurf/native-prelude-invalid-tool",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 131072,
+      tier: 1,
+      cost_group: 2,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "high",
+    }];
+    providerAdapters.routeNativeStream = async (provider, body, handlers) => {
+      const userMessages = body.messages?.filter((message) => message.role === "user") || [];
+      calls.push({ provider: provider.name, lastUser: userMessages.at(-1)?.content || "" });
+      if (calls.length === 1) {
         handlers.onChunk(`data: ${JSON.stringify({
           choices: [{
             delta: {
@@ -2797,6 +2905,7 @@ test("handleChatCompletion reroutes native invalid tool calls after action prelu
         handlers.onChunk("data: [DONE]\n\n");
         return;
       }
+      assert.match(userMessages.at(-1)?.content || "", /previous streamed tool call was invalid/i);
       handlers.onChunk(`data: ${JSON.stringify({
         choices: [{
           delta: {
@@ -2815,7 +2924,7 @@ test("handleChatCompletion reroutes native invalid tool calls after action prelu
     try {
       const clientRes = new FakeClientResponse();
       await routing.handleChatCompletion({
-        model: "auto-coding",
+        model: "windsurf/native-prelude-invalid-tool",
         stream: true,
         messages: [{ role: "user", content: "Continue the implementation and run the regression script." }],
         tools: [{
@@ -2833,13 +2942,14 @@ test("handleChatCompletion reroutes native invalid tool calls after action prelu
       }, clientRes);
 
       const output = clientRes.chunks.join("");
-      assert.deepEqual(calls, ["Native-Prelude-InvalidTool", "Native-Tool-Fallback"]);
+      assert.deepEqual(calls.map((call) => call.provider), ["Native-Prelude-InvalidTool", "Native-Prelude-InvalidTool"]);
       assert.equal(clientRes.status, 200);
       assert.match(output, /"name":"exec_command"/);
       assert.match(output, /\\"cmd\\":\\"pwd\\"/);
       assert.doesNotMatch(output, /I will save the script/);
-      assert.match(logs.join("\n"), /NATIVE-STREAM-ERR: Native-Prelude-InvalidTool .*status=422/);
-      assert.doesNotMatch(logs.join("\n"), /NATIVE-STREAM-ERR: Native-Prelude-InvalidTool .*headersSent=true/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-NATIVE-TOOL-ARGS: Native-Prelude-InvalidTool tool "exec_command" missing required field "cmd"/);
+      assert.match(logs.join("\n"), /HIDDEN-CONTINUE-RETRY: Native-Prelude-InvalidTool retry=1 appended hidden user message/);
+      assert.doesNotMatch(logs.join("\n"), /COMPAT: Native-Prelude-InvalidTool invalid streamed tool arguments/);
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;

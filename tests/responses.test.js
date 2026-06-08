@@ -7,6 +7,7 @@ const fs = require("node:fs");
 
 const responses = require("../lib/responses");
 const routing = require("../lib/routing");
+const transforms = require("../lib/transforms");
 const state = require("../lib/state");
 const providerAdapters = require("../lib/provider-adapters");
 
@@ -50,6 +51,18 @@ function parseSseEvents(body = "") {
     .map((data) => JSON.parse(data));
 }
 
+async function withEnv(name, value, fn) {
+  const old = process.env[name];
+  if (value == null) delete process.env[name];
+  else process.env[name] = value;
+  try {
+    return await fn();
+  } finally {
+    if (old == null) delete process.env[name];
+    else process.env[name] = old;
+  }
+}
+
 test("translateInput maps Responses API messages, tools, and model aliases to chat completions", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4",
@@ -85,6 +98,10 @@ test("translateInput maps Responses API messages, tools, and model aliases to ch
   ]);
   assert.equal(chat.tool_choice, "required");
   assert.equal(chat.parallel_tool_calls, false);
+
+  for (const model of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]) {
+    assert.equal(responses.translateInput({ model, input: "hello" }).model, "auto-coding");
+  }
 });
 
 test("translateInput maps Responses function tool_choice objects to Chat Completions shape", () => {
@@ -96,6 +113,172 @@ test("translateInput maps Responses function tool_choice objects to Chat Complet
   });
 
   assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "Read" } });
+});
+
+test("translateInput forwards Codex deferred and namespace tools as callable chat functions", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.5",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use subagents when possible." }],
+    tools: [
+      {
+        type: "tool_search",
+        description: "Search deferred tool metadata.",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" }, limit: { type: "number" } },
+          required: ["query"],
+        },
+      },
+      {
+        type: "namespace",
+        name: "multi_agent_v1",
+        tools: [
+          { type: "function", name: "spawn_agent", description: "Spawn an agent.", parameters: { type: "object" } },
+          { type: "function", name: "wait_agent", description: "Wait for agents.", parameters: { type: "object" } },
+          { type: "function", name: "close_agent", description: "Close an agent.", parameters: { type: "object" } },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "mcp__node_repl",
+        tools: [
+          { type: "function", name: "js", description: "Run JavaScript.", parameters: { type: "object" } },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "mcp__deerflow",
+        tools: [
+          { type: "function", name: "research", description: "Run Deerflow research.", parameters: { type: "object" } },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "mcp__mempalace",
+        tools: [
+          { type: "function", name: "search", description: "Search memory.", parameters: { type: "object" } },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "codex_app",
+        tools: [
+          { type: "function", name: "load_workspace_dependencies", description: "Load bundled runtime paths.", parameters: { type: "object" } },
+        ],
+      },
+      { type: "web_search", external_web_access: true },
+    ],
+  }, { client: "codex" });
+
+  assert.deepEqual(chat.tools.map((tool) => tool.function.name).slice(0, 9), [
+    "tool_search",
+    "spawn_agent",
+    "wait_agent",
+    "close_agent",
+    "js",
+    "research",
+    "search",
+    "load_workspace_dependencies",
+    "web_search",
+  ]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.deferredTools, ["tool_search"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents.slice(0, 4), [
+    "multi_agent_v1",
+    "spawn_agent",
+    "wait_agent",
+    "close_agent",
+  ]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp__node_repl", "mcp__deerflow", "mcp__mempalace"]);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.web_search.kind, "hosted");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.research.namespace, "mcp__deerflow");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.search.namespace, "mcp__mempalace");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.load_workspace_dependencies.namespace, "codex_app");
+  assert.equal(chat.tools.some((tool) => tool.function.name === "send_message_to_thread"), false);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.send_message_to_thread, undefined);
+});
+
+test("translateInput preserves custom and hosted Responses tools with registry metadata", async () => {
+  await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
+    const chat = responses.translateInput({
+    model: "gpt-5.5",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Patch and search if needed." }],
+    tools: [
+      { type: "custom", name: "apply_patch", description: "Apply a patch." },
+      { type: "web_search", external_web_access: true },
+    ],
+    tool_choice: { type: "custom", name: "apply_patch" },
+  }, { client: "codex" });
+
+  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["apply_patch", "web_search"]);
+  assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "apply_patch" } });
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.apply_patch.kind, "custom");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.web_search.kind, "hosted");
+  assert.equal(chat.tools[0].function.parameters.required[0], "input");
+  });
+});
+
+test("translateInput qualifies duplicate namespace child tools instead of dropping them", async () => {
+  await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
+    const chat = responses.translateInput({
+    model: "gpt-5.5",
+    input: [{ role: "user", content: "Use the right read tool." }],
+    tools: [
+      {
+        type: "namespace",
+        name: "mcp__one",
+        tools: [{ type: "function", name: "read", parameters: { type: "object" } }],
+      },
+      {
+        type: "namespace",
+        name: "mcp__two",
+        tools: [{ type: "function", name: "read", parameters: { type: "object" } }],
+      },
+    ],
+  }, { client: "codex" });
+
+  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["read", "mcp__two.read"]);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName["mcp__two.read"].childName, "read");
+  });
+});
+
+test("translateInput maps Responses custom tool call input/output items to chat tool history", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.5",
+    input: [
+      { type: "custom_tool_call", call_id: "call_patch", name: "apply_patch", input: "*** Begin Patch\n*** End Patch" },
+      { type: "custom_tool_call_output", call_id: "call_patch", output: "applied" },
+    ],
+    tools: [{ type: "custom", name: "apply_patch", description: "Apply a patch." }],
+  }, { client: "codex" });
+
+  assert.deepEqual(chat.messages, [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{
+        id: "call_patch",
+        type: "function",
+        function: {
+          name: "apply_patch",
+          arguments: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+        },
+      }],
+    },
+    { role: "tool", tool_call_id: "call_patch", name: "apply_patch", content: "applied" },
+  ]);
+});
+
+test("translateInput drops tool_choice selectors that do not survive translation", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.5",
+    input: [{ role: "user", content: "Use the missing tool." }],
+    tools: [{ type: "function", name: "exec_command", parameters: { type: "object" } }],
+    tool_choice: { type: "function", name: "missing_tool" },
+  }, { client: "codex" });
+
+  assert.equal(chat.tool_choice, undefined);
 });
 
 test("translateInput forwards detected IDE client metadata for prompt capability scoping", () => {
@@ -119,6 +302,8 @@ test("translateInput preserves Responses runtime capability contract for routing
       { type: "function", name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } },
       { type: "function", name: "update_plan", parameters: { type: "object" } },
       { type: "function", name: "create_goal", parameters: { type: "object" } },
+      { type: "function", name: "list_mcp_resources", parameters: { type: "object" } },
+      { type: "function", name: "mcp__node_repl", parameters: { type: "object" } },
       { type: "mcp", server_label: "mempalace" },
     ],
   }, {
@@ -137,8 +322,175 @@ test("translateInput preserves Responses runtime capability contract for routing
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, ["multi_agent_v1.spawn_agent"]);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.plans, ["update_plan"]);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.goals, ["create_goal"]);
-  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp:mempalace"]);
-  assert.equal(chat.tools.length, 3);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcpResources, ["list_mcp_resources"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp__node_repl", "mcp:mempalace"]);
+  assert.equal(chat.tools.some((tool) => tool.function.name === "multi_agent_v1.spawn_agent"), true);
+  assert.equal(chat.tools.some((tool) => tool.function.name === "spawn_agent"), false);
+});
+
+test("translateInput exposes missing Codex subagents as proxy-hosted virtual tools", async () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use subagents if helpful." }],
+    tools: [
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+      { type: "function", name: "functions.exec_command", parameters: { type: "object" } },
+      { type: "tool_search", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+    ],
+  }, {
+    client: "codex",
+    headers: {
+      "user-agent": "Codex Desktop/0.136.0-alpha.2",
+    },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("tool_search"), true);
+  assert.equal(names.includes("spawn_agent"), true);
+  assert.equal(names.includes("wait_agent"), true);
+  assert.equal(names.includes("close_agent"), true);
+  assert.equal(names.includes("send_message_to_thread"), true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.deferredTools, ["tool_search"]);
+
+  const transformed = await transforms.transformRequest({
+    name: "Codex-Test",
+    model: "test-model",
+    protocol: "openai",
+    max_context: 128000,
+  }, chat);
+  const system = transformed.messages[0].content;
+  assert.match(system, /Deferred tool discovery: available via tool_search/i);
+  assert.match(system, /Subagents: available via .*spawn_agent/i);
+  assert.doesNotMatch(system, /Subagents: no dedicated subagent tool/i);
+});
+
+test("translateInput auto-detects Codex metadata before proxy-hosting virtual subagents", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    metadata: { originator: "Codex Desktop" },
+    input: "Try a sidecar subagent.",
+    tools: [
+      { type: "function", name: "spawn_agent", parameters: { type: "object" } },
+      { type: "tool_search", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+    ],
+    tool_choice: { type: "function", name: "spawn_agent" },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("spawn_agent"), true);
+  assert.equal(names.includes("tool_search"), true);
+  assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "spawn_agent" } });
+  assert.equal(chat._llmProxyClient, "codex");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+});
+
+test("translateInput injects Codex virtual subagents even without deferred discovery", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use subagents if helpful." }],
+    tools: [
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+      { type: "function", name: "functions.exec_command", parameters: { type: "object" } },
+    ],
+  }, {
+    client: "codex",
+    headers: { "user-agent": "Codex Desktop/0.136.0-alpha.2" },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("spawn_agent"), true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+});
+
+test("translateInput keeps absent Codex subagent and goal tools conditional", async () => {
+  await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
+    const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Check whether subagents work in this session." }],
+    tools: [
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+      { type: "function", name: "functions.exec_command", parameters: { type: "object" } },
+      { type: "function", name: "list_mcp_resources", parameters: { type: "object" } },
+      { type: "function", name: "list_mcp_resource_templates", parameters: { type: "object" } },
+      { type: "function", name: "read_mcp_resource", parameters: { type: "object" } },
+    ],
+  }, {
+    client: "codex",
+    headers: {
+      "user-agent": "Codex Desktop/0.136.0-alpha.2",
+      "openai-beta": "responses_websockets=2026-02-06",
+    },
+  });
+
+  assert.equal(chat._llmProxyCapabilityContract.client.id, "codex");
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, []);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.goals, []);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, []);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcpResources, ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+  assert.equal(chat._llmProxyCapabilityContract.missing.subagents, undefined);
+  assert.equal(chat._llmProxyCapabilityContract.missing.goals, undefined);
+
+  const transformed = await transforms.transformRequest({
+    name: "Codex-Test",
+    model: "test-model",
+    protocol: "openai",
+    max_context: 128000,
+  }, chat);
+  const system = transformed.messages[0].content;
+  assert.match(system, /Subagents: no dedicated subagent tool detected/i);
+  assert.match(system, /MCP resources\/templates: listing access is available/i);
+  assert.match(system, /Empty resources\/templates output is normal/i);
+  assert.doesNotMatch(system, /MCP tools: available/i);
+  assert.match(system, /Do not infer Codex subagent\/thread tools from app-context docs/i);
+  assert.doesNotMatch(system, /Use subagents whenever possible/i);
+  assert.doesNotMatch(system, /Expected executable tools/i);
+  assert.doesNotMatch(system, /spawn_agent|create_thread|send_message_to_thread/i);
+  });
+});
+
+test("translateInput forwards Codex deferred tool discovery without inventing subagents", async () => {
+  await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
+    const chat = responses.translateInput({
+    model: "gpt-5.5",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use subagents for this if possible." }],
+    tools: [
+      { type: "function", name: "tool_search", parameters: { type: "object" } },
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+      { type: "function", name: "functions.exec_command", parameters: { type: "object" } },
+    ],
+  }, {
+    client: "codex",
+    headers: {
+      "user-agent": "Codex Desktop/0.136.0-alpha.2",
+    },
+  });
+
+  assert.equal(chat.model, "auto-coding");
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, []);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.deferredTools, ["tool_search"]);
+
+  const transformed = await transforms.transformRequest({
+    name: "Codex-Test",
+    model: "test-model",
+    protocol: "openai",
+    max_context: 128000,
+  }, chat);
+  const system = transformed.messages[0].content;
+  assert.match(system, /Deferred tool discovery: available via tool_search/i);
+  assert.match(system, /Subagents: deferred via tool_search/i);
+  assert.match(system, /first call tool_search with an exact query: spawn_agent, multi_agent_v1/i);
+  assert.doesNotMatch(system, /Use subagents whenever possible for independent research/i);
+});
 });
 
 test("translateInput maps OpenAI SDK chat-style Responses input and JSON schema format", () => {
@@ -334,6 +686,123 @@ test("MockResponse converts streaming tool call deltas into Responses function_c
   assert.equal(completed.response.output[0].arguments, "{\"path\":\"README.md\"}");
 });
 
+test("MockResponse finalizes streaming tool calls when upstream finishes with stop", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    { client: "codex" },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"tool_search","arguments":"{\\"query\\":\\"spawn_agent\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+
+  const added = events.find((event) => event.type === "response.output_item.added");
+  const argsDone = events.find((event) => event.type === "response.function_call_arguments.done");
+  const itemDone = events.find((event) => event.type === "response.output_item.done" && event.item.type === "function_call");
+  assert.equal(added.item.name, "tool_search");
+  assert.equal(argsDone.call_id, "call_search");
+  assert.equal(argsDone.arguments, "{\"query\":\"spawn_agent\"}");
+  assert.equal(itemDone.item.status, "completed");
+  assert.equal(events.filter((event) => event.type === "response.function_call_arguments.done").length, 1);
+});
+
+test("MockResponse routes streamed Codex virtual subagent calls through tool_search", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    {
+      client: "codex",
+      toolRegistry: {
+        byName: {
+          spawn_agent: { kind: "virtual_codex_subagent", discoveryQuery: "spawn_agent" },
+          tool_search: { kind: "deferred" },
+        },
+      },
+    },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_spawn","type":"function","function":{"name":"spawn_agent","arguments":"{\\"message\\":\\"Inspect logs\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+  res.end();
+
+  const added = events.find((event) => event.type === "response.output_item.added");
+  const argsDone = events.find((event) => event.type === "response.function_call_arguments.done");
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(added.item.name, "tool_search");
+  assert.equal(argsDone.call_id, "call_spawn");
+  assert.equal(argsDone.name, "tool_search");
+  assert.equal(argsDone.arguments, "{\"query\":\"spawn_agent\",\"limit\":8}");
+  assert.equal(completed.response.output[0].name, "tool_search");
+});
+
+test("MockResponse finalizes streaming tool calls when upstream only sends DONE", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    { client: "codex" },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"tool_search","arguments":"{\\"query\\":\\"create_thread\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write("data: [DONE]\n\n");
+  res.end();
+
+  const argsDone = events.find((event) => event.type === "response.function_call_arguments.done");
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(argsDone.call_id, "call_search");
+  assert.equal(argsDone.name, "tool_search");
+  assert.deepEqual(completed.response.output.map((item) => item.type), ["function_call"]);
+  assert.equal(completed.response.output[0].status, "completed");
+});
+
+test("MockResponse converts custom tool calls into Responses custom_tool_call items", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    {
+      toolRegistry: {
+        byName: { apply_patch: { kind: "custom", name: "apply_patch" } },
+      },
+    },
+  );
+
+  res.writeHead(200);
+  res.write(`data: ${JSON.stringify({
+    choices: [{
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: "call_patch",
+          type: "function",
+          function: { name: "apply_patch", arguments: "{\"input\":\"*** Begin Patch\\n*** End Patch\"}" },
+        }],
+      },
+      finish_reason: null,
+    }],
+  })}\n\n`);
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+  res.end();
+
+  const added = events.find((event) => event.type === "response.output_item.added");
+  const inputDone = events.find((event) => event.type === "response.custom_tool_call_input.done");
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(added.item.type, "custom_tool_call");
+  assert.equal(inputDone.input, "*** Begin Patch\n*** End Patch");
+  assert.deepEqual(completed.response.output.map((item) => item.type), ["custom_tool_call"]);
+  assert.equal(completed.response.output[0].input, "*** Begin Patch\n*** End Patch");
+});
+
 test("MockResponse keeps distinct output indexes for mixed text and tool call streams", () => {
   const events = [];
   const res = new responses.MockResponse(
@@ -512,7 +981,232 @@ test("handleResponsesHTTP sends translated Responses requests as internal proxy 
   assert.equal(capturedReq._llmProxyClient, "codex");
   assert.equal(capturedReq._llmProxyCapabilityContract.runtime.surface, "codex");
   assert.equal(capturedReq._llmProxyCapabilityContract.runtime.toolDialect.previousResponseToolContext, true);
-  assert.deepEqual(capturedReq._llmProxyCapabilityContract.capabilities.subagents, ["spawn_agent"]);
+  assert.equal(capturedReq._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+  assert.equal(capturedReq.tools.some((tool) => tool.function.name === "spawn_agent"), true);
+});
+
+test("handleResponsesHTTP executes Codex virtual subagent calls inside proxy", async () => {
+  const capturedReqs = [];
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      capturedReqs.push(req);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const hasVirtualOutput = req.messages.some((message) => message.role === "tool" && message.name === "spawn_agent");
+      if (req._llmProxyClient === "codex_virtual_subagent") {
+        res.end(JSON.stringify({
+          id: "chatcmpl_virtual_worker",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "Logs look clean from the virtual sidecar." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+        }));
+        return;
+      }
+      if (hasVirtualOutput) {
+        res.end(JSON.stringify({
+          id: "chatcmpl_after_virtual_agent",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "Done after integrating virtual subagent result." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        id: "chatcmpl_virtual_agent",
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_spawn_virtual",
+              type: "function",
+              function: {
+                name: "spawn_agent",
+                arguments: "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Codex Desktop/0.136.0-alpha.2",
+      },
+    },
+    res,
+    JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Use a subagent for independent log inspection.",
+      tools: [
+        { type: "function", name: "exec_command", parameters: { type: "object" } },
+        { type: "tool_search", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+      ],
+    }),
+  );
+
+  const body = JSON.parse(res.body);
+  const firstReq = capturedReqs[0];
+  const toolNames = firstReq.tools.map((tool) => tool.function.name);
+  assert.equal(toolNames.includes("spawn_agent"), true);
+  assert.equal(toolNames.includes("tool_search"), true);
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(capturedReqs.some((req) => req._llmProxyClient === "codex_virtual_subagent"), true);
+  assert.equal(body.output[0].type, "message");
+  assert.equal(body.output[0].content[0].text, "Done after integrating virtual subagent result.");
+});
+
+test("handleResponsesHTTP proxy-hosts bare Codex subagent placeholders before client execution", async () => {
+  const capturedReqs = [];
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      capturedReqs.push(req);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req._llmProxyClient === "codex_virtual_subagent") {
+        res.end(JSON.stringify({
+          id: "chatcmpl_bare_worker",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "Bare placeholder handled internally." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+        }));
+        return;
+      }
+      if (req.messages.some((message) => message.role === "tool" && message.name === "spawn_agent")) {
+        res.end(JSON.stringify({
+          id: "chatcmpl_bare_done",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "Finished without exposing unsupported spawn_agent to Codex." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        id: "chatcmpl_bare_agent",
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_spawn_bare",
+              type: "function",
+              function: {
+                name: "spawn_agent",
+                arguments: "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Codex Desktop/0.136.0-alpha.2",
+      },
+    },
+    res,
+    JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Use a subagent for independent log inspection.",
+      tools: [
+        { type: "function", name: "spawn_agent", parameters: { type: "object" } },
+        { type: "tool_search", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+      ],
+    }),
+  );
+
+  const body = JSON.parse(res.body);
+  const firstReq = capturedReqs[0];
+  const toolNames = firstReq.tools.map((tool) => tool.function.name);
+  assert.equal(toolNames.includes("spawn_agent"), true);
+  assert.equal(toolNames.includes("tool_search"), true);
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(body.output[0].type, "message");
+  assert.equal(body.output[0].content[0].text, "Finished without exposing unsupported spawn_agent to Codex.");
+});
+
+test("handleResponsesHTTP preserves namespace-declared Codex subagent calls", async () => {
+  let capturedReq;
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      capturedReq = req;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl_real_agent",
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_spawn_real",
+              type: "function",
+              function: {
+                name: "spawn_agent",
+                arguments: "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Codex Desktop/0.136.0-alpha.2",
+      },
+    },
+    res,
+    JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Use a subagent for independent log inspection.",
+      tools: [
+        {
+          type: "namespace",
+          name: "multi_agent_v1",
+          tools: [
+            { type: "function", name: "spawn_agent", parameters: { type: "object" } },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const body = JSON.parse(res.body);
+  assert.equal(capturedReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "namespace_function");
+  assert.equal(capturedReq._llmProxyResponsesToolRegistry.byName.spawn_agent.namespace, "multi_agent_v1");
+  assert.equal(body.output[0].type, "function_call");
+  assert.equal(body.output[0].name, "spawn_agent");
+  assert.equal(body.output[0].call_id, "call_spawn_real");
+  assert.equal(body.output[0].arguments, "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}");
 });
 
 test("handleResponsesHTTP keeps Codex loop alive by returning function_call after hidden continuation", async () => {
@@ -811,8 +1505,10 @@ test("handleResponsesHTTP suppresses mixed assistant text when Codex JSON respon
   assert.equal(second.statusCode, 200);
   const replay = captured[1].messages;
   const assistantReplay = replay.find((message) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call_exec");
+  const toolReplay = replay.find((message) => message.role === "tool" && message.tool_call_id === "call_exec");
   assert.equal(assistantReplay.content, null);
   assert.equal(assistantReplay.tool_calls[0].function.name, "exec_command");
+  assert.equal(toolReplay.name, "exec_command");
 });
 
 test("handleResponsesHTTP replays previous_response_id history for tool outputs", async () => {
@@ -912,6 +1608,7 @@ test("handleResponsesHTTP replays previous_response_id history for tool outputs"
   const toolIndex = replay.findIndex((message) => message.role === "tool" && message.tool_call_id === "call_read");
   assert.equal(assistantIndex >= 0, true);
   assert.equal(toolIndex > assistantIndex, true);
+  assert.equal(replay[toolIndex].name, "Read");
 });
 
 test("handleResponsesHTTP repairs structured JSON output to match requested schema", async () => {
