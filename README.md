@@ -241,6 +241,12 @@ Neo4j connection, and Graphiti group ID.
 COMPOSE_PROJECT_NAME=llm-proxy docker compose up -d
 ```
 
+## Documentation
+
+- [Runtime Architecture](docs/RUNTIME.md) — Core modules, memory stack, data flow
+- [Validation Guide](docs/VALIDATION.md) — Smoke tests, endpoint checks, troubleshooting
+- [Memory Migration Plan](docs/superpowers/plans/2026-06-07-proxy-memory-deploy-plan.md) — Migration history
+
 ## Credits
 
 | Tool | Used for |
