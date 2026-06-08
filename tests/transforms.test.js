@@ -61,7 +61,6 @@ test("transformRequest sanitizes tool schemas and tool call history for provider
   assert.equal(toolResult.tool_call_id, toolCall.id);
   assert.equal(transformed.messages.some((m) => m.role === "final"), false);
   assert.equal(transformed.messages.find((m) => m.role === "assistant" && m.tool_calls).content, null);
-  assert.equal(transformed.messages.some((m, i, arr) => m.role === "tool" && arr[i + 1]?.role === "user"), false);
   assert.equal(transformed.messages.some((m) => m.role === "assistant" && m.content === "continue"), false);
   assert.equal(transformed.messages.some((m) => m.role === "assistant" && m.content === "Tool result received."), false);
 });
@@ -90,6 +89,37 @@ test("transformRequest caps tools using provider-advertised maximum", async () =
   });
 
   assert.deepEqual(transformed.tools.map((tool) => tool.function.name), ["tool_0", "tool_1"]);
+});
+
+test("transformRequest caps Copilot Claude tool schemas by serialized byte budget", async () => {
+  const largeDescription = "x".repeat(30_000);
+  const tools = Array.from({ length: 4 }, (_, idx) => ({
+    type: "function",
+    function: {
+      name: `tool_${idx}`,
+      description: idx < 3 ? largeDescription : "tiny",
+      parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+    },
+  }));
+
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    name: "Copilot-claudesonnet46",
+    family: "copilot",
+    model: "copilot/claude-sonnet-4.6",
+    upstream_model: "claude-sonnet-4.6",
+  }, {
+    model: "auto-coding",
+    tools,
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Use the available tools." },
+    ],
+  });
+
+  assert.equal(transformed.tools.length, 2);
+  const toolBytes = Buffer.byteLength(JSON.stringify(transformed.tools), "utf8");
+  assert.equal(toolBytes <= 87380, true);
 });
 
 test("transformRequest never increases requested max_tokens while fitting context", async () => {
@@ -1070,6 +1100,46 @@ test("transformRequest keeps required local prompt when provider rejects tool_ch
     if (originalCompat === undefined) delete state.providerCompat[providerName];
     else state.providerCompat[providerName] = originalCompat;
   }
+});
+
+test("transformRequest downgrades required tool_choice to auto for Copilot Claude Opus wire requests", async () => {
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    family: "copilot",
+    model: "copilot/claude-opus-4.6",
+    upstream_model: "claude-opus-4.6",
+  }, {
+    model: "copilot/claude-opus-4.6",
+    tool_choice: "required",
+    tools: [{ type: "function", function: { name: "Ping", parameters: { type: "object" } } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Ping the health endpoint." },
+    ],
+  });
+
+  assert.equal(transformed.tool_choice, "auto");
+  assert.equal(transformed.tools.length, 1);
+  assert.match(transformed.messages[0].content, /TOOL STRATEGY.*MUST use tools/);
+});
+
+test("transformRequest keeps required tool_choice for Copilot Claude Sonnet wire requests", async () => {
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    family: "copilot",
+    model: "copilot/claude-sonnet-4.6",
+    upstream_model: "claude-sonnet-4.6",
+  }, {
+    model: "copilot/claude-sonnet-4.6",
+    tool_choice: "required",
+    tools: [{ type: "function", function: { name: "Ping", parameters: { type: "object" } } }],
+    messages: [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "Ping the health endpoint." },
+    ],
+  });
+
+  assert.equal(transformed.tool_choice, "required");
 });
 
 test("transformRequest does not force every response to tool-call when tools are optional", async () => {

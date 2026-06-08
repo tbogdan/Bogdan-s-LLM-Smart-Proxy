@@ -6,6 +6,91 @@ const http = require("node:http");
 
 const adapters = require("../lib/provider-adapters");
 
+test("prepareOpenAICompatibleRequest sanitizes Copilot tool names for wire format and restores them in responses", () => {
+  const provider = {
+    name: "Copilot-claudesonnet46",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/claude-sonnet-4.6",
+    upstream_model: "claude-sonnet-4.6",
+  };
+  const request = {
+    model: "auto-coding",
+    tool_choice: "auto",
+    tools: [
+      { type: "function", function: { name: "functions.exec_command", parameters: { type: "object" } } },
+      { type: "function", function: { name: "sites:deploy", parameters: { type: "object" } } },
+      { type: "function", function: { name: "a".repeat(65), parameters: { type: "object" } } },
+    ],
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Use a tool." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "functions.exec_command", arguments: "{\"cmd\":\"echo ok\"}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_1",
+        name: "functions.exec_command",
+        content: "ok",
+      },
+      { role: "user", content: "Continue." },
+    ],
+  };
+
+  const prepared = adapters.prepareOpenAICompatibleRequest(provider, request, false);
+  assert.deepEqual(
+    prepared.tools.map((tool) => tool.function.name),
+    [
+      "functions_exec_command",
+      "sites_deploy",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_c743a45e",
+    ],
+  );
+  assert.equal(
+    prepared.messages.find((message) => message.role === "assistant" && message.tool_calls)?.tool_calls[0].function.name,
+    "functions_exec_command",
+  );
+  assert.equal(
+    prepared.messages.find((message) => message.role === "tool").name,
+    "functions_exec_command",
+  );
+
+  const restored = adapters.restoreOpenAICompatibleResponse(provider, JSON.stringify({
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_2",
+            type: "function",
+            function: { name: "functions_exec_command", arguments: "{\"cmd\":\"pwd\"}" },
+          },
+          {
+            id: "call_3",
+            type: "function",
+            function: { name: "sites_deploy", arguments: "{}" },
+          },
+        ],
+      },
+      finish_reason: "tool_calls",
+    }],
+  }), prepared);
+
+  const parsed = JSON.parse(restored);
+  assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "functions.exec_command");
+  assert.equal(parsed.choices[0].message.tool_calls[1].function.name, "sites:deploy");
+});
+
 test("routeNativeStream sends Anthropic Messages shape and converts Anthropic SSE to OpenAI SSE", async () => {
   const previousEnv = {
     CLAUDE_CODE_VERSION: process.env.CLAUDE_CODE_VERSION,

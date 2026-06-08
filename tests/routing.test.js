@@ -161,6 +161,100 @@ test("stripHistoricalUserTransportMetadata removes stale file and browser envelo
   assert.match(String(reqBody.messages[2].content), /Current URL: http:\/\/localhost:18900\/health/);
 });
 
+test("stripHistoricalUserTransportMetadata removes stale TodoWrite and skill base-dir nudges from old user turns", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "user",
+        content: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using it.",
+      },
+      {
+        role: "user",
+        content: "Base directory for this skill: /Users/bogdan/.claude/plugins/cache/example",
+      },
+      {
+        role: "user",
+        content: "continue the active task and edit files",
+      },
+    ],
+  };
+
+  const changed = routing.stripHistoricalUserTransportMetadata(reqBody);
+
+  assert.equal(changed, 2);
+  assert.deepEqual(reqBody.messages.map((message) => message.content), [
+    "continue the active task and edit files",
+  ]);
+});
+
+test("stripHistoricalUserTransportMetadata translates latest Claude task notifications and removes stale ones", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          "<task-notification>",
+          "<task-id>old123</task-id>",
+          "<summary>Background command \"old\" completed (exit code 0)</summary>",
+          "</task-notification>",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          "continue and use the latest background result",
+          "<task-notification>",
+          "<task-id>a936bb0b14119cef5</task-id>",
+          "<tool-use-id>call_9mzF0GzoyFvH9fZe946ufajN</tool-use-id>",
+          "<output-file>/private/tmp/claude-501/example.output</output-file>",
+          "<status>completed</status>",
+          "<summary>Agent \"Check agent branch state\" completed</summary>",
+          "<result>No agent-* branches found. Single worktree present at current location.</result>",
+          "<usage><subagent_tokens>6690</subagent_tokens><tool_uses>3</tool_uses><duration_ms>5823</duration_ms></usage>",
+          "</task-notification>",
+        ].join("\n"),
+      },
+    ],
+  };
+
+  const changed = routing.stripHistoricalUserTransportMetadata(reqBody);
+
+  assert.equal(changed, 2);
+  assert.equal(reqBody.messages.length, 1);
+  assert.match(reqBody.messages[0].content, /continue and use the latest background result/i);
+  assert.match(reqBody.messages[0].content, /Internal IDE task notification \(not user-authored; do not quote verbatim\)/);
+  assert.match(reqBody.messages[0].content, /Summary: Agent "Check agent branch state" completed/);
+  assert.match(reqBody.messages[0].content, /Result: No agent-\* branches found/);
+  assert.doesNotMatch(reqBody.messages[0].content, /<task-notification>|<usage>|tool-use-id|output-file/);
+});
+
+test("stripHistoricalUserTransportMetadata summarizes latest tool_use_error artifacts and removes stale ones", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "user",
+        content: "<tool_use_error>InputValidationError: TodoWrite failed because `todos` is required.</tool_use_error>",
+      },
+      {
+        role: "user",
+        content: [
+          "continue the active task",
+          "<tool_use_error>InputValidationError: functions.exec_command failed because `cmd` is required.</tool_use_error>",
+        ].join("\n\n"),
+      },
+    ],
+  };
+
+  const changed = routing.stripHistoricalUserTransportMetadata(reqBody);
+
+  assert.equal(changed, 2);
+  assert.equal(reqBody.messages.length, 1);
+  assert.match(reqBody.messages[0].content, /continue the active task/i);
+  assert.match(reqBody.messages[0].content, /Internal IDE tool validation error \(not user-authored; do not quote verbatim\)/);
+  assert.match(reqBody.messages[0].content, /functions\.exec_command/);
+  assert.doesNotMatch(reqBody.messages[0].content, /<tool_use_error>/);
+});
+
 test("human approval ignores assessed security signoff without current security intent", async () => {
   await withRoutingState(async () => {
     const reqBody = { messages: [{ role: "user", content: "continua" }] };
@@ -555,6 +649,100 @@ test("routeToProvider converts XML function-call text into real tool calls", asy
   });
 });
 
+test("routeToProvider converts tagged tool_call text into real tool calls", async () => {
+  await withRoutingState(async () => {
+    const taggedToolText = [
+      "Need Docker + backend running first. Starting stack now.",
+      "",
+      "<tool_call>",
+      "<tool_name>exec_command</tool_name>",
+      "<parameter name=\"cmd\">cd /Users/bogdan/PhpstormProjects/Events &amp;&amp; docker compose up -d 2&gt;&amp;1 | tail -20</parameter>",
+      "<parameter name=\"yield_time_ms\">15000</parameter>",
+      "</tool_call>",
+      "<tool_call>",
+      "<tool_name>update_plan</tool_name>",
+      "<parameter name=\"explanation\">Membership task: fix wallet 404s, admin QR scanner, membership card UI. Start stack first.</parameter>",
+      "<parameter name=\"plan\">[{\"step\":\"Start Docker + backend + verify stack running\",\"status\":\"in_progress\"},{\"step\":\"Fix Apple/Google Wallet 404 routes\",\"status\":\"pending\"}]</parameter>",
+      "</tool_call>",
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-tagged-tool-text",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: taggedToolText,
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Start the stack and keep the plan updated." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "exec_command",
+              parameters: {
+                type: "object",
+                required: ["cmd"],
+                properties: {
+                  cmd: { type: "string" },
+                  yield_time_ms: { type: "number" },
+                },
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "update_plan",
+              parameters: {
+                type: "object",
+                required: ["plan"],
+                properties: {
+                  explanation: { type: "string" },
+                  plan: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      required: ["step", "status"],
+                      properties: {
+                        step: { type: "string" },
+                        status: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+      const execArgs = JSON.parse(message.tool_calls[0].function.arguments);
+      const planArgs = JSON.parse(message.tool_calls[1].function.arguments);
+
+      assert.equal(message.content, null);
+      assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+      assert.deepEqual(message.tool_calls.map((call) => call.function.name), ["exec_command", "update_plan"]);
+      assert.equal(execArgs.cmd, "cd /Users/bogdan/PhpstormProjects/Events && docker compose up -d 2>&1 | tail -20");
+      assert.equal(execArgs.yield_time_ms, 15000);
+      assert.equal(planArgs.plan[0].step, "Start Docker + backend + verify stack running");
+      assert.equal(planArgs.plan[0].status, "in_progress");
+      assert.doesNotMatch(resp.body, /<tool_call>|<tool_name>|<parameter name=/);
+    });
+  });
+});
+
 test("routeToProvider converts naked command argument text into a real exec_command tool call", async () => {
   await withRoutingState(async () => {
     const expectedCmd = String.raw`cd /Users/bogdan/PhpstormProjects/Events && grep -n "'/login'\|\"/login\"\|auth_login\|loginUser\|'login'" backend/src/routes.php | head; echo '---REDIS KEYS---'; docker exec events_redis redis-cli KEYS 'rate' 2>/dev/null | head -30; docker exec events_redis redis-cli KEYS 'auth' 2>/dev/null | head -30`;
@@ -661,6 +849,63 @@ test("routeToProvider does not execute explanatory candidate command payload tex
       assert.equal(parsed.choices[0].finish_reason, "stop");
       assert.equal(message.content, candidateText);
       assert.equal(message.tool_calls, undefined);
+    });
+  });
+});
+
+test("routeToProvider does not infer tool calls from long substantive reports with trailing payload snippets", async () => {
+  await withRoutingState(async () => {
+    const longReport = [
+      "All diagnostics are complete. Here is the synthesis.",
+      "Current state: SSH to homebridge.local is working, the proxy is healthy, and the provider reroutes are happening as expected.",
+      "Main findings: the failures only happen after long native Windsurf runs, and the visible text is a substantive summary rather than a final tool action.",
+      "Recommended strategy: inspect the raw Connect envelopes before changing more routing behavior.",
+      "",
+      `cmd": "docker logs --tail 200 llm-proxy-llm-proxy-1", "yield_time_ms": 8000}`,
+    ].join("\n");
+
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-long-report-with-snippet",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: longReport,
+          },
+          finish_reason: "stop",
+        }],
+      }));
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url), {
+        model: "auto-coding",
+        messages: [{ role: "user", content: "Inspect the last homebridge failures and explain what happened." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "exec_command",
+            parameters: {
+              type: "object",
+              required: ["cmd"],
+              properties: {
+                cmd: { type: "string" },
+                yield_time_ms: { type: "number" },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      const message = parsed.choices[0].message;
+
+      assert.equal(parsed.choices[0].finish_reason, "stop");
+      assert.equal(message.tool_calls, undefined);
+      assert.match(message.content, /All diagnostics are complete/);
+      assert.match(message.content, /docker logs --tail 200/);
     });
   });
 });
@@ -3336,6 +3581,56 @@ test("routeToProvider keeps required tool schemas and rejects text-only response
   });
 });
 
+test("routeToProvider rewrites Copilot wire-format tool names back to original client names", async () => {
+  await withRoutingState(async () => {
+    let forwarded;
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_abc123",
+                type: "function",
+                function: {
+                  name: "functions_exec_command",
+                  arguments: "{\"cmd\":\"pwd\"}",
+                },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+        }));
+      });
+    }, async (url) => {
+      const resp = await routing.routeToProvider(provider(url, {
+        name: "Copilot-claudeopus46",
+        family: "copilot",
+        model: "copilot/claude-opus-4.6",
+        upstream_model: "claude-opus-4.6",
+        authHeader: "copilot-runtime",
+        key: "runtime-test-token",
+      }), {
+        model: "auto-coding",
+        tool_choice: "auto",
+        tools: [{ type: "function", function: { name: "functions.exec_command", parameters: { type: "object", required: ["cmd"] } } }],
+        messages: [{ role: "user", content: "Run pwd." }],
+      });
+
+      const parsed = JSON.parse(resp.body);
+      assert.equal(forwarded.tools[0].function.name, "functions_exec_command");
+      assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "functions.exec_command");
+    });
+  });
+});
+
 test("routeToProvider preserves required validation when provider compat strips tool_choice", async () => {
   await withRoutingState(async () => {
     const providerName = "NoToolChoice-Routing";
@@ -3788,6 +4083,52 @@ test("stripCachedProxyArtifacts removes proxy assistant diagnostics from IDE rep
     { role: "user", content: "run pwd" },
     { role: "user", content: "continue" },
   ]);
+});
+
+test("stripCachedProxyArtifacts removes task notification and subagent usage artifacts", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          "Applied the fix.",
+          "<task-notification>",
+          "<task-id>bx7lw3ald</task-id>",
+          "<summary>Background command \"Recommit with clean message\" completed (exit code 0)</summary>",
+          "</task-notification>",
+          "agentId: ae226560a04546298 (use SendMessage with to: 'ae226560a04546298' to continue this agent)",
+          "<usage>total_tokens: 64389",
+          "tool_uses: 22",
+          "duration_ms: 44850</usage>",
+        ].join("\n"),
+      },
+    ],
+  };
+
+  const removed = routing.stripCachedProxyArtifacts(reqBody);
+
+  assert.equal(removed, 1);
+  assert.equal(reqBody.messages.length, 1);
+  assert.equal(reqBody.messages[0].content, "Applied the fix.");
+});
+
+test("stripCachedProxyArtifacts removes tool_use_error artifacts", () => {
+  const reqBody = {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          "I repaired the TodoWrite payload.",
+          "<tool_use_error>InputValidationError: TodoWrite failed because `todos` is required.</tool_use_error>",
+        ].join("\n\n"),
+      },
+    ],
+  };
+
+  const removed = routing.stripCachedProxyArtifacts(reqBody);
+
+  assert.equal(removed, 1);
+  assert.equal(reqBody.messages[0].content, "I repaired the TodoWrite payload.");
 });
 
 test("stripCachedProxyArtifacts removes historical tool replay artifacts across assistant and user messages", () => {

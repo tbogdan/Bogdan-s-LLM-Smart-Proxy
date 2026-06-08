@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
+const path = require("path");
 const scoring = require("../lib/scoring");
 const state = require("../lib/state");
 
@@ -312,7 +313,7 @@ test("detectIncompatibility does not cool request-specific token limit errors as
   });
 });
 
-test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as no_tools", () => {
+test("detectIncompatibility does not infer no_tools from bare Copilot Bad Request on tool payloads", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
       "Copilot-claudesonnet46",
@@ -322,7 +323,8 @@ test("detectIncompatibility learns bare Copilot Bad Request on tool payloads as 
     );
 
     const compat = scoring.getCompat("Copilot-claudesonnet46");
-    assert.equal(compat.no_tools, true);
+    assert.equal(compat.no_tools, undefined);
+    assert.equal(compat.no_stream, undefined);
   });
 });
 
@@ -335,6 +337,24 @@ test("detectIncompatibility learns bare Copilot Bad Request on streaming payload
       "Copilot-claudesonnet46",
       400,
       "Bad Request",
+      { isStreaming: true, hasTools: true },
+    );
+
+    assert.equal(compat.no_stream, true);
+    assert.equal(compat.stream_only, undefined);
+    assert.equal(compat.no_tools, undefined);
+  });
+});
+
+test("detectIncompatibility learns prefixed Copilot stream Bad Request as no_stream", () => {
+  withIsolatedScoring(() => {
+    const compat = scoring.getCompat("Copilot-claudesonnet46");
+    compat.stream_only = true;
+
+    scoring.detectIncompatibility(
+      "Copilot-claudesonnet46",
+      400,
+      "HTTP 400: Bad Request",
       { isStreaming: true, hasTools: true },
     );
 
@@ -357,6 +377,19 @@ test("detectIncompatibility learns unsupported Copilot models", () => {
   });
 });
 
+test("detectIncompatibility learns providers that reject tool_choice required", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "Copilot-claudeopus46",
+      400,
+      "{\"error\":{\"message\":\"Thinking may not be enabled when tool_choice forces tool use.\",\"code\":\"invalid_request_body\"}}",
+    );
+
+    const compat = scoring.getCompat("Copilot-claudeopus46");
+    assert.equal(compat.no_required_tool_choice, true);
+  });
+});
+
 test("detectIncompatibility learns Copilot maximum tools length errors", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
@@ -368,6 +401,44 @@ test("detectIncompatibility learns Copilot maximum tools length errors", () => {
     const compat = scoring.getCompat("Copilot-gpt54");
     assert.equal(compat.max_tools, 128);
   });
+});
+
+test("loadCompat clears stale Copilot Claude no_tools flags", () => {
+  const originalCompat = state.providerCompat;
+  const originalExistsSync = fs.existsSync;
+  const originalReadFileSync = fs.readFileSync;
+  const originalWriteFileSync = fs.writeFileSync;
+  let written = null;
+  const compatSource = {
+    "Copilot-claudesonnet46": { no_tools: true, no_stream: true },
+    "Copilot-claudeopus46": { no_tools: true },
+    "Copilot-gemini25pro": { no_tools: true },
+  };
+
+  const compatFile = path.join(state.DATA_DIR, "compat.json");
+  fs.existsSync = (file) => file === compatFile;
+  fs.readFileSync = (file, enc) => {
+    assert.equal(enc, "utf8");
+    return JSON.stringify(compatSource);
+  };
+  fs.writeFileSync = (_file, data) => {
+    written = JSON.parse(data);
+  };
+
+  try {
+    scoring.loadCompat();
+    assert.equal(state.providerCompat["Copilot-claudesonnet46"].no_tools, undefined);
+    assert.equal(state.providerCompat["Copilot-claudesonnet46"].no_stream, true);
+    assert.equal(state.providerCompat["Copilot-claudeopus46"].no_tools, undefined);
+    assert.equal(state.providerCompat["Copilot-gemini25pro"].no_tools, true);
+    assert.equal(state.providerCompat.__migrations.copilot_claude_tools_v1.cleared_no_tools, 2);
+    assert.equal(written.__migrations.copilot_claude_tools_v1.cleared_no_tools, 2);
+  } finally {
+    fs.existsSync = originalExistsSync;
+    fs.readFileSync = originalReadFileSync;
+    fs.writeFileSync = originalWriteFileSync;
+    state.providerCompat = originalCompat;
+  }
 });
 
 test("detectIncompatibility learns no_images from vision unsupported errors", () => {

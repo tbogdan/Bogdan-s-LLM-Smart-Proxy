@@ -1163,6 +1163,79 @@ test("routeStreamToProvider repairs empty streamed update_plan calls to a safe p
   });
 });
 
+test("routeStreamToProvider repairs empty streamed TodoWrite calls from tracked tasks", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_todo_empty",
+              type: "function",
+              function: { name: "TodoWrite", arguments: "{}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        messages: [
+          { role: "user", content: "Continue fixing wallet route and scanner dialog." },
+          { role: "user", content: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Here are the existing contents of your todo list:\n[1. [completed] Fix wallet route\n2. [in_progress] Verify scanner dialog\n3. [pending] Run end to end verification]" },
+        ],
+        tools: [{
+          type: "function",
+          function: {
+            name: "TodoWrite",
+            parameters: {
+              type: "object",
+              required: ["todos"],
+              properties: {
+                todos: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["content", "status", "activeForm"],
+                    properties: {
+                      content: { type: "string" },
+                      status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+                      activeForm: { type: "string" },
+                    },
+                  },
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"TodoWrite"/);
+      assert.match(output, /\\"todos\\"/);
+      assert.match(output, /\\"content\\":\\"Fix wallet route\\"/);
+      assert.match(output, /\\"status\\":\\"completed\\"/);
+      assert.match(output, /\\"activeForm\\":\\"Fix wallet route\\"/);
+      assert.match(output, /\\"content\\":\\"Verify scanner dialog\\"/);
+      assert.match(output, /\\"status\\":\\"in_progress\\"/);
+      assert.match(output, /\\"activeForm\\":\\"Verify scanner dialog\\"/);
+      assert.match(output, /\\"content\\":\\"Run end to end verification\\"/);
+      assert.match(output, /\\"status\\":\\"pending\\"/);
+      assert.match(output, /\\"activeForm\\":\\"Run end to end verification\\"/);
+    });
+  });
+});
+
 test("routeStreamToProvider rejects invalid streamed tool calls before sending client headers", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {

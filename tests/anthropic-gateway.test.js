@@ -516,6 +516,57 @@ test("toAnthropicResponse strips cached historical tool artifacts from text", ()
   ]);
 });
 
+test("toAnthropicResponse strips task notification and subagent usage artifacts from text", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            "Am aplicat patch-ul.",
+            "<task-notification>",
+            "<task-id>bx7lw3ald</task-id>",
+            "<summary>Background command \"Recommit with clean message\" completed (exit code 0)</summary>",
+            "</task-notification>",
+            "agentId: ae226560a04546298 (use SendMessage with to: 'ae226560a04546298' to continue this agent)",
+            "<usage>total_tokens: 64389",
+            "tool_uses: 22",
+            "duration_ms: 44850</usage>",
+          ].join("\n"),
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "Am aplicat patch-ul." },
+  ]);
+});
+
+test("toAnthropicResponse strips tool_use_error artifacts from text", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: [
+            "I repaired the tool call.",
+            "<tool_use_error>InputValidationError: TodoWrite failed because `todos` is required.</tool_use_error>",
+          ].join("\n"),
+        },
+        finish_reason: "stop",
+      },
+    ],
+  }, "auto-coding");
+
+  assert.deepEqual(response.content, [
+    { type: "text", text: "I repaired the tool call." },
+  ]);
+});
+
 test("streaming Anthropic bridge strips fragmented historical tool artifacts", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
@@ -547,6 +598,39 @@ test("streaming Anthropic bridge strips fragmented historical tool artifacts", a
   assert.equal(res.status, 200);
   assert.match(body, /Am actualizat scriptul/);
   assert.doesNotMatch(body, /Historical tool invocation|already executed|new-test-wizard/);
+});
+
+test("streaming Anthropic bridge strips fragmented task notification artifacts", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "Am aplicat patch-ul.\n" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "<task-notification>\n<summary>Background command \\\"Wait for app to come back up\\\" completed (exit code 0)</summary>\n</task-notification>" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { content: "\nagentId: ae226560a04546298 (use SendMessage with to: 'ae226560a04546298' to continue this agent)\n<usage>total_tokens: 64389\ntool_uses: 22\nduration_ms: 44850</usage>" }, finish_reason: null }],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "ce ai schimbat?" }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /Am aplicat patch-ul/);
+  assert.doesNotMatch(body, /task-notification|Background command|agentId:|SendMessage|<usage>|total_tokens/i);
 });
 
 test("streaming Anthropic bridge strips private memory metadata", async () => {
@@ -738,6 +822,66 @@ test("toAnthropicResponse returns clear help for generated tool_use missing requ
   assert.match(text, /required fields: command/i);
 });
 
+test("toAnthropicResponse repairs TodoWrite from Claude Code todo nudge context", () => {
+  const requestMessages = [{
+    role: "user",
+    content: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Here are the existing contents of your todo list:\n[1. [completed] Fix wallet route\n2. [in_progress] Verify scanner dialog\n3. [pending] Run end to end verification]",
+  }];
+
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_todo",
+              type: "function",
+              function: { name: "TodoWrite", arguments: "{}" },
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+  }, "auto-coding", [
+    {
+      name: "TodoWrite",
+      input_schema: {
+        type: "object",
+        required: ["todos"],
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["content", "status", "activeForm"],
+              properties: {
+                content: { type: "string" },
+                status: { type: "string" },
+                activeForm: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  ], requestMessages);
+
+  assert.equal(response.stop_reason, "tool_use");
+  const toolUse = response.content.find((part) => part.type === "tool_use");
+  assert.ok(toolUse);
+  assert.equal(toolUse.name, "TodoWrite");
+  assert.deepEqual(toolUse.input.todos, [
+    { content: "Fix wallet route", status: "completed", activeForm: "Fix wallet route" },
+    { content: "Verify scanner dialog", status: "in_progress", activeForm: "Verify scanner dialog" },
+    { content: "Run end to end verification", status: "pending", activeForm: "Run end to end verification" },
+  ]);
+  assert.equal(response.content.some((part) => /Tool call error/i.test(part.text || "")), false);
+});
+
 test("streaming Anthropic bridge returns clear help for generated tool_use missing required input", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
@@ -782,6 +926,74 @@ test("streaming Anthropic bridge returns clear help for generated tool_use missi
   assert.match(body, /missing required field \\"command\\"/);
   assert.match(body, /retry/i);
   assert.match(body, /Required fields: command/i);
+});
+
+test("streaming Anthropic bridge repairs TodoWrite from Claude Code todo nudge context", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_todo",
+                  type: "function",
+                  function: { name: "TodoWrite", arguments: "{}" },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "tool_calls" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{
+      role: "user",
+      content: "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Here are the existing contents of your todo list:\n[1. [completed] Fix wallet route\n2. [in_progress] Verify scanner dialog\n3. [pending] Run end to end verification]",
+    }],
+    tools: [{
+      name: "TodoWrite",
+      input_schema: {
+        type: "object",
+        required: ["todos"],
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["content", "status", "activeForm"],
+              properties: {
+                content: { type: "string" },
+                status: { type: "string" },
+                activeForm: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /"type":"tool_use"/);
+  assert.match(body, /"name":"TodoWrite"/);
+  assert.match(body, /\\"content\\":\\"Fix wallet route\\"/);
+  assert.match(body, /\\"status\\":\\"completed\\"/);
+  assert.equal(/Tool call error/i.test(body), false);
 });
 
 test("streaming Anthropic bridge explains invalid tool diagnostics in IDE-visible text", async () => {
