@@ -15,6 +15,7 @@ const routing = require("./lib/routing");
 const routingPolicy = require("./lib/routing-policy");
 const responses = require("./lib/responses");
 const anthropicGateway = require("./lib/anthropic-gateway");
+const ideCapabilities = require("./lib/ide-capabilities");
 const httpHome = require("./lib/http-home");
 const discoveryTools = require("./llm-discovery");
 const embeddings = require("./lib/embeddings");
@@ -114,6 +115,8 @@ function handleModels(query) {
       created: 0,
       owned_by: p.name,
       capabilities: p.caps,
+      supported_capabilities: ideCapabilities.modelSupportedCapabilityList(p),
+      llm_proxy_transform: ideCapabilities.providerTransformCapabilityMetadata(p),
       context_length: scoring.getEffectiveContext(p),
       max_tokens: p.max_tokens,
       tier: p.tier,
@@ -153,6 +156,8 @@ function handleModels(query) {
       created: 0,
       owned_by: "llm-proxy",
       capabilities: state.GROUPS[g] === null ? ["all"] : [state.GROUPS[g]],
+      supported_capabilities: ["chat", "tools", "parallel_tool_calls", "context_compaction", "smart_routing"],
+      llm_proxy_transform: { wire_protocol: "smart_group", routes_to_provider_transform: true },
       context_length: maxContext(groupProviders),
       tier: 0,
       thinking_capable: g === "auto-thinking",
@@ -168,6 +173,8 @@ function handleModels(query) {
     created: 0,
     owned_by: "llm-proxy",
     capabilities: ["all", "auto-detect"],
+    supported_capabilities: ["chat", "tools", "parallel_tool_calls", "context_compaction", "smart_routing", "auto_assessment"],
+    llm_proxy_transform: { wire_protocol: "smart_group", routes_to_provider_transform: true },
     context_length: maxContext(state.PROVIDERS.filter((p) => p.key && p.alive !== false)),
     tier: 0,
     thinking_capable: true,
@@ -182,6 +189,7 @@ function handleModels(query) {
     created: 0,
     owned_by: "llm-proxy",
     capabilities: ["embeddings"],
+    supported_capabilities: ["embeddings"],
     embedding_dimensions: parseInt(process.env.LLM_PROXY_EMBEDDING_DIMENSIONS || String(embeddings.DEFAULT_DIMENSIONS), 10),
   };
 
@@ -205,6 +213,8 @@ function handleCapabilities() {
   }
   return {
     capabilities: caps,
+    client_runtime_profiles: ideCapabilities.clientRuntimeProfilesCatalog(),
+    cross_provider_transforms: ideCapabilities.crossProviderTransformCatalog(),
     groups: Object.keys(state.GROUPS).map((g) => ({
       name: g,
       capability: state.GROUPS[g],

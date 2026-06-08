@@ -1403,6 +1403,7 @@ async function withRoutingState(fn) {
   const originalAssessmentCacheStats = { ...(state.sessionAssessmentCacheStats || {}) };
   const originalSessionStats = { ...state.sessionStats };
   const originalRouteDiversityStats = { ...state.routeDiversityStats };
+  const originalRuntimeProfileLogCache = { ...state.runtimeProfileLogCache };
   const originalHumanApprovals = {
     pending: { ...state.humanApprovals.pending },
     byRequestHash: { ...state.humanApprovals.byRequestHash },
@@ -1417,6 +1418,7 @@ async function withRoutingState(fn) {
   }
   for (const key of Object.keys(state.sessionStats)) delete state.sessionStats[key];
   for (const key of Object.keys(state.routeDiversityStats)) delete state.routeDiversityStats[key];
+  for (const key of Object.keys(state.runtimeProfileLogCache)) delete state.runtimeProfileLogCache[key];
   fs.writeFileSync = () => {};
   fs.appendFileSync = () => {};
   routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
@@ -1436,6 +1438,8 @@ async function withRoutingState(fn) {
     Object.assign(state.sessionStats, originalSessionStats);
     for (const key of Object.keys(state.routeDiversityStats)) delete state.routeDiversityStats[key];
     Object.assign(state.routeDiversityStats, originalRouteDiversityStats);
+    for (const key of Object.keys(state.runtimeProfileLogCache)) delete state.runtimeProfileLogCache[key];
+    Object.assign(state.runtimeProfileLogCache, originalRuntimeProfileLogCache);
     for (const key of Object.keys(state.humanApprovals.pending)) delete state.humanApprovals.pending[key];
     for (const key of Object.keys(state.humanApprovals.byRequestHash)) delete state.humanApprovals.byRequestHash[key];
     state.humanApprovals.audit.length = 0;
@@ -3168,6 +3172,38 @@ test("routeToProvider accepts proxy identity answers without tool calls when too
   });
 });
 
+test("handleChatCompletion answers visible identity probes directly without upstream routing", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    try {
+      state.PROVIDERS = [];
+      state.GROUPS = { "auto-sm": "text" };
+      state.log = (line) => logs.push(String(line));
+
+      const fake = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-sm",
+        stream: false,
+        max_tokens: 32,
+        messages: [{ role: "user", content: "cum te numesti?" }],
+      }, fake);
+
+      const body = JSON.parse(fake.body);
+      assert.equal(fake.status, 200);
+      assert.equal(body.choices[0].message.content, "Ma numesc Project LLM Smart Proxy.");
+      assert.match(logs.join("\n"), /IDENTITY-DIRECT/);
+      assert.doesNotMatch(logs.join("\n"), /Route:|No providers available/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      state.log = originalLog;
+    }
+  });
+});
+
 test("routeToProvider does not forward tool schemas for direct identity answers", async () => {
   await withRoutingState(async () => {
     let forwarded;
@@ -3663,6 +3699,60 @@ test("routeToProvider preserves required validation when provider compat strips 
     } finally {
       if (originalCompat === undefined) delete state.providerCompat[providerName];
       else state.providerCompat[providerName] = originalCompat;
+    }
+  });
+});
+
+test("handleChatCompletion attaches Claude VSCode runtime profile from headers", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    let forwarded;
+    state.log = (line) => logs.push(String(line));
+    try {
+      await withServer((req, res) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }));
+        });
+      }, async (url) => {
+        state.GROUPS = {};
+        state.PROVIDERS = [provider(url, { name: "Runtime-Profile-Test", model: "test/runtime-profile" })];
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "test/runtime-profile",
+          messages: [{ role: "user", content: "Say ok." }],
+          _claudeCodeProfile: {
+            deviceId: "device-1",
+            accountUuid: "account-1",
+            sessionId: "body-session",
+          },
+        }, fake, {
+          headers: {
+            "x-anthropic-billing-header": "cc_version=2.1.165.5d5; cc_entrypoint=claude-vscode; cch=00000;",
+            "x-claude-code-session-id": "header-session",
+          },
+        });
+
+        assert.equal(fake.status, 200);
+        assert.match(forwarded.messages[0].content, /Runtime surface: claude-vscode/);
+        assert.match(forwarded.messages[0].content, /entrypoint=claude-vscode/);
+        assert.equal(forwarded._llmProxyRuntimeProfile, undefined);
+        assert.equal(forwarded._llmProxyCapabilityContract, undefined);
+        assert.match(logs.join("\n"), /CLIENT-RUNTIME: client=claude_code surface=claude-vscode auth=first_party_oauth entrypoint=claude-vscode version=2\.1\.165/);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      state.log = originalLog;
     }
   });
 });
@@ -6610,7 +6700,7 @@ test("internal assessment responses are not rejected as proxy identity mismatche
             { role: "user", content: "Current user message:\nwhat is your name" },
           ],
           max_tokens: 48,
-          stream: false,
+          stream: true,
         });
 
         assert.equal(resp.status, 200);
@@ -9392,7 +9482,7 @@ test("handleChatCompletion skips direct Claude peers after generic rate limit", 
         const fake = new FakeClientResponse();
         await routing.handleChatCompletion({
           model: "auto-coding",
-          stream: false,
+          stream: true,
           max_tokens: 100,
           _llmProxyBypassOptimizations: true,
           _llmProxyDifficulty: {
@@ -9579,6 +9669,119 @@ test("handleChatCompletion does not cool direct Claude peers after native stream
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("handleChatCompletion does not classify Claude billing header serialization errors as native stalls", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const logs = [];
+
+    try {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.log = (msg) => logs.push(String(msg));
+
+      await withServer((req, res) => {
+        let raw = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw || "{}");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            id: "chatcmpl-header-fallback",
+            object: "chat.completion",
+            choices: [{
+              index: 0,
+              message: { role: "assistant", content: `Fallback ok via ${body.model}` },
+              finish_reason: "stop",
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+          }));
+        });
+      }, async (url) => {
+        state.PROVIDERS = [
+          {
+            name: "Claude-Sonnet45",
+            model: "claude/claude-sonnet-4-5-20250929",
+            upstream_model: "claude-sonnet-4-5-20250929",
+            family: "claude",
+            protocol: "anthropic",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 133129,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+          {
+            name: "Windsurf-ClaudeSonnet45",
+            model: "windsurf/claude-sonnet-4-5",
+            family: "windsurf",
+            protocol: "openai",
+            url,
+            key: "test",
+            caps: ["text", "coding", "tools", "thinking"],
+            context: 200000,
+            tier: 1,
+            cost_group: 3,
+            quality_group: 4,
+            speed_group: 4,
+            thinking_effort: "medium",
+          },
+        ];
+
+        providerAdapters.routeNativeStream = async (provider) => {
+          if (provider.name !== "Claude-Sonnet45") throw new Error("unexpected native stream provider");
+          const err = new Error('Invalid character in header content ["x-anthropic-billing-header"]');
+          err.status = 502;
+          err.body = 'Invalid character in header content ["x-anthropic-billing-header"]';
+          throw err;
+        };
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "auto-coding",
+          stream: true,
+          max_tokens: 100,
+          _llmProxyBypassOptimizations: true,
+          _llmProxyDifficulty: {
+            level: 4,
+            taskLevel: 3,
+            contextLevel: 2,
+            taskKind: "agentic_coding",
+            stepShape: { shape: "write_heavy", gate: "run_behavior" },
+            effort: "high",
+            thinkingEffort: "high",
+            thinkingLevel: 4,
+            speedTarget: 4,
+            costTarget: 3,
+            source: "assessment",
+          },
+          messages: [{ role: "user", content: "Continue fixing the proxy routing bug." }],
+          tools: [{ type: "function", function: { name: "Read", parameters: { type: "object", required: ["file_path"], properties: { file_path: { type: "string" } } } } }],
+        }, fake, { internal: true });
+
+        const joined = logs.join("\n");
+        assert.equal(fake.status, 200);
+        assert.match(fake.body, /Fallback ok via wind.*surf\/claude-sonnet-4.*-5/s);
+        assert.match(joined, /COMPAT: Claude-Sonnet45 invalid Claude billing header serialization/);
+        assert.match(joined, /REROUTE: Claude-Sonnet45 header serialization error → trying next provider/);
+        assert.doesNotMatch(joined, /POSSIBLE-STALL: Claude-Sonnet45 native stall\/timeout/);
+        assert.equal(scoring.isOnCooldown("Claude-Sonnet45"), false);
+      });
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      state.log = originalLog;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
     }
   });
 });
@@ -11361,6 +11564,57 @@ test("response expectation matrix hidden-continues completed reports while track
   assert.equal(row.action, "hidden_continue");
 });
 
+test("response expectation matrix allows definitive markdown completion summaries despite stale open tracked tasks", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } }],
+    _hiddenContinuationRetries: 0,
+    messages: [
+      { role: "user", content: "Continue fixing the wallet flow and verify it end to end." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_todo",
+          type: "function",
+          function: {
+            name: "TodoWrite",
+            arguments: "{\"todos\":[{\"content\":\"Fix wallet route\",\"status\":\"completed\"},{\"content\":\"Verify E2E\",\"status\":\"in_progress\"}]}",
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_todo", content: "Todos have been modified successfully." },
+    ],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 3,
+      thinkingEffort: "medium",
+      speedTarget: 4,
+      reason: "edit_recovery",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  for (const content of [
+    ["*Done*", "\u2022 Added missing frontend i18n keys.", "\u2022 Verified scanner E2E flow."].join("\n"),
+    ["*E2E Testing Complete*", "", "All fixes verified against the current membership wallet flow."].join("\n"),
+  ]) {
+    const row = routing.classifyResponseExpectation(reqBody, {
+      content,
+      hasToolCalls: false,
+      stallingHeuristic: false,
+    });
+
+    assert.equal(row.stall_class, "not_stall");
+    assert.equal(row.action, "allow");
+  }
+});
+
 test("response expectation matrix allows completed reports after tracked update_plan is fully completed", () => {
   const reqBody = {
     model: "auto-coding",
@@ -11459,6 +11713,32 @@ test("response expectation matrix allows definitive completion summaries after h
   assert.equal(row.output_kind, "substantive_report");
   assert.equal(row.stall_class, "not_stall");
   assert.equal(row.action, "allow");
+
+  const doneRow = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "*Done*",
+      "\u2022\u2060  \u2060Added missing frontend i18n keys for the wallet membership scanner.",
+      "\u2022\u2060  \u2060Updated the membership card rendering and reran the focused checks.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(doneRow.stall_class, "not_stall");
+  assert.equal(doneRow.action, "allow");
+
+  const e2eRow = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "*E2E Testing Complete*",
+      "",
+      "All fixes verified against the current membership wallet flow.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(e2eRow.stall_class, "not_stall");
+  assert.equal(e2eRow.action, "allow");
 });
 
 test("retryWithHiddenContinue cools provider after hidden-continue retry budget is exhausted", async () => {
@@ -11627,6 +11907,96 @@ test("response expectation matrix rejects text-only output only when tools are r
   assert.equal(row.output_kind, "action_prelude");
   assert.equal(row.stall_class, "contract_failure");
   assert.equal(row.action, "reject_required_tools");
+});
+
+test("response expectation matrix allows validation reports with quoted command snippets", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{
+      type: "function",
+      function: {
+        name: "exec_command",
+        parameters: {
+          type: "object",
+          required: ["cmd"],
+          properties: {
+            cmd: { type: "string" },
+            description: { type: "string" },
+          },
+        },
+      },
+    }],
+    messages: [{ role: "user", content: "Verify the current tasks and report validation evidence." }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "verification",
+      costTarget: 3,
+      thinkingLevel: 3,
+      speedTarget: 4,
+      reason: "deterministic_validator",
+      stepShape: { shape: "validation", gate: "deterministic_validator" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "Validation evidence:",
+      "{\"cmd\":\"docker compose smoke test && node data/memory-load-smoke.js 2>&1\",\"description\":\"Run Task 2 smoke test\"}",
+      "{\"cmd\":\"./scripts/brand-scan.sh 2>&1\",\"description\":\"Run Task 5 brand scan\"}",
+      "These quoted snippets are from the validation checklist, not executable tool calls.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "text_or_tool");
+  assert.notEqual(row.output_kind, "invalid_text_tool_call");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
+test("response expectation matrix still rejects explicit text-encoded tool calls in validation routes", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{
+      type: "function",
+      function: {
+        name: "exec_command",
+        parameters: {
+          type: "object",
+          required: ["cmd"],
+          properties: { cmd: { type: "string" } },
+        },
+      },
+    }],
+    messages: [{ role: "user", content: "Verify the current tasks and report validation evidence." }],
+    _llmProxyDifficulty: {
+      level: 4,
+      taskLevel: 4,
+      contextLevel: 4,
+      taskKind: "verification",
+      costTarget: 3,
+      thinkingLevel: 3,
+      speedTarget: 4,
+      reason: "deterministic_validator",
+      stepShape: { shape: "validation", gate: "deterministic_validator" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: "Tool call: exec_command {\"cmd\":\"node data/memory-load-smoke.js 2>&1\"}",
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "text_or_tool");
+  assert.equal(row.output_kind, "invalid_text_tool_call");
+  assert.equal(row.stall_class, "invalid_text_tool_output");
+  assert.equal(row.action, "reject_invalid_text_tool");
 });
 
 test("response expectation matrix ignores required tool_choice without tool schemas", () => {

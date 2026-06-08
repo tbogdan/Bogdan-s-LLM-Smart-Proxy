@@ -223,6 +223,7 @@ test("public env only exposes operator-owned source and routing settings", () =>
     "LLM_THINKING_TARGET",
     "LLM_SPEED_TARGET",
     "LLM_ROUTING_POLICY",
+    "LLM_PROXY_PROMPT_INJECTION",
     "WINDSURF_ENTERPRISE",
   ]);
 

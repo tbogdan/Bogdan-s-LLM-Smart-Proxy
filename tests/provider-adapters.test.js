@@ -17,6 +17,18 @@ test("prepareOpenAICompatibleRequest sanitizes Copilot tool names for wire forma
   const request = {
     model: "auto-coding",
     tool_choice: "auto",
+    _llmProxyCapabilityContract: {
+      client: { id: "copilot" },
+      runtime: {
+        surface: "github-copilot",
+        toolDialect: {
+          sanitizeToolNames: true,
+          restoreToolNames: true,
+          stripToolControlsWithoutDefinitions: true,
+        },
+      },
+      capabilities: { toolNames: ["functions.exec_command", "sites:deploy"] },
+    },
     tools: [
       { type: "function", function: { name: "functions.exec_command", parameters: { type: "object" } } },
       { type: "function", function: { name: "sites:deploy", parameters: { type: "object" } } },
@@ -63,6 +75,8 @@ test("prepareOpenAICompatibleRequest sanitizes Copilot tool names for wire forma
     prepared.messages.find((message) => message.role === "tool").name,
     "functions_exec_command",
   );
+  assert.equal(prepared._llmProxyCapabilityContract, undefined);
+  assert.equal(Object.getOwnPropertyDescriptor(prepared, "__llmProxyCapabilityContract")?.value?.runtime?.surface, "github-copilot");
 
   const restored = adapters.restoreOpenAICompatibleResponse(provider, JSON.stringify({
     choices: [{
@@ -89,6 +103,91 @@ test("prepareOpenAICompatibleRequest sanitizes Copilot tool names for wire forma
   const parsed = JSON.parse(restored);
   assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "functions.exec_command");
   assert.equal(parsed.choices[0].message.tool_calls[1].function.name, "sites:deploy");
+});
+
+test("routeAnthropic hydrates Claude bridge fields from the forwarded capability contract", async () => {
+  const previousEnv = {
+    CLAUDE_CODE_VERSION: process.env.CLAUDE_CODE_VERSION,
+    CLAUDE_CODE_DEVICE_ID: process.env.CLAUDE_CODE_DEVICE_ID,
+    CLAUDE_CODE_ACCOUNT_UUID: process.env.CLAUDE_CODE_ACCOUNT_UUID,
+    CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID,
+  };
+  process.env.CLAUDE_CODE_VERSION = "2.1.165";
+  delete process.env.CLAUDE_CODE_DEVICE_ID;
+  delete process.env.CLAUDE_CODE_ACCOUNT_UUID;
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+
+  let capturedBody = {};
+  const server = http.createServer((request, response) => {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      capturedBody = JSON.parse(raw);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "msg_1",
+        role: "assistant",
+        type: "message",
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await adapters.routeNonStreaming(
+      {
+        name: "Claude-Sonnet46",
+        family: "claude",
+        protocol: "anthropic",
+        model: "claude/claude-sonnet-4-6",
+        upstream_model: "claude-sonnet-4-6",
+        key: "sk-ant-api03-test",
+        key_env: "ANTHROPIC_API_KEY",
+        url: `http://127.0.0.1:${port}/v1/messages`,
+      },
+      {
+        model: "claude/claude-sonnet-4-6",
+        messages: [{ role: "user", content: "Say ok." }],
+        _llmProxyCapabilityContract: {
+          client: { id: "claude_code" },
+          runtime: {
+            surface: "claude-vscode",
+            metadata: {
+              deviceId: "device-contract",
+              accountUuid: "account-contract",
+              sessionId: "session-contract",
+            },
+          },
+        },
+      },
+      () => {
+        throw new Error("should not use OpenAI route for anthropic provider");
+      },
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(capturedBody.metadata.user_id), {
+      device_id: "device-contract",
+      account_uuid: "account-contract",
+      session_id: "session-contract",
+    });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("routeNativeStream sends Anthropic Messages shape and converts Anthropic SSE to OpenAI SSE", async () => {

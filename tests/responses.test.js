@@ -108,6 +108,39 @@ test("translateInput forwards detected IDE client metadata for prompt capability
   assert.equal(chat._llmProxyClient, "codex");
 });
 
+test("translateInput preserves Responses runtime capability contract for routing adapters", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4",
+    previous_response_id: "resp_1",
+    prompt_cache_key: "cache_1",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use a subagent to inspect logs." }],
+    tools: [
+      { type: "function", name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } },
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+      { type: "function", name: "create_goal", parameters: { type: "object" } },
+      { type: "mcp", server_label: "mempalace" },
+    ],
+  }, {
+    client: "codex",
+    headers: {
+      "user-agent": "Codex Desktop/0.136.0-alpha.2",
+      "openai-beta": "responses_websockets=2026-02-06",
+    },
+  });
+
+  assert.equal(chat._llmProxyClient, "codex");
+  assert.equal(chat._llmProxyCapabilityContract.client.id, "codex");
+  assert.equal(chat._llmProxyCapabilityContract.runtime.surface, "codex");
+  assert.equal(chat._llmProxyCapabilityContract.runtime.toolDialect.previousResponseToolContext, true);
+  assert.equal(chat._llmProxyCapabilityContract.runtime.toolDialect.promptCacheKey, true);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, ["multi_agent_v1.spawn_agent"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.plans, ["update_plan"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.goals, ["create_goal"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp:mempalace"]);
+  assert.equal(chat.tools.length, 3);
+});
+
 test("translateInput maps OpenAI SDK chat-style Responses input and JSON schema format", () => {
   const schema = {
     type: "object",
@@ -436,6 +469,50 @@ test("handleResponsesHTTP ignores duplicate internal stream closes", async () =>
   assert.equal(res.statusCode, 200);
   assert.equal(res.endCalls, 1);
   assert.equal((res.body.match(/response.completed/g) || []).length, 1);
+});
+
+test("handleResponsesHTTP sends translated Responses requests as internal proxy traffic", async () => {
+  let capturedReq;
+  let capturedOptions;
+  responses.init({
+    handleChatCompletion: async (req, res, options) => {
+      capturedReq = req;
+      capturedOptions = options;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl_1",
+        model: "auto-coding",
+        choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Codex Desktop/0.136.0-alpha.2",
+        "openai-beta": "responses_websockets=2026-02-06",
+      },
+    },
+    res,
+    JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_1",
+      input: "continue",
+      tools: [{ type: "function", name: "spawn_agent", parameters: { type: "object" } }],
+    }),
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(capturedOptions.internal, true);
+  assert.equal(capturedReq._llmProxyClient, "codex");
+  assert.equal(capturedReq._llmProxyCapabilityContract.runtime.surface, "codex");
+  assert.equal(capturedReq._llmProxyCapabilityContract.runtime.toolDialect.previousResponseToolContext, true);
+  assert.deepEqual(capturedReq._llmProxyCapabilityContract.capabilities.subagents, ["spawn_agent"]);
 });
 
 test("handleResponsesHTTP keeps Codex loop alive by returning function_call after hidden continuation", async () => {

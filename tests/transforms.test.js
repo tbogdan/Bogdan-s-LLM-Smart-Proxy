@@ -677,6 +677,37 @@ test("transformRequest hidden-only prompt mode preserves IDE identity while keep
   }
 });
 
+test("transformRequest consumes runtime profile in prompt, strips the raw profile, and preserves the compact capability contract for adapters", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    _llmProxyClient: "claude_code",
+    _llmProxyRuntimeProfile: {
+      client: { id: "claude_code" },
+      surface: "claude-vscode",
+      entrypoint: "claude-vscode",
+      version: "2.1.165",
+      build: "5d5",
+      authMode: "first_party_oauth",
+      policy: { orgFastModeDisabled: true },
+      metadata: { sessionId: "session-1" },
+    },
+    _llmProxyCapabilityContract: {
+      client: { id: "claude_code" },
+      runtime: { surface: "claude-vscode", metadata: { sessionId: "session-1" } },
+      capabilities: { subagents: ["Task"] },
+    },
+    tools: [{ type: "function", function: { name: "Task", parameters: { type: "object" } } }],
+    messages: [{ role: "user", content: "Investigate logs and continue." }],
+  });
+
+  const system = transformed.messages[0].content;
+  assert.match(system, /Runtime surface: claude-vscode/);
+  assert.match(system, /entrypoint=claude-vscode/);
+  assert.match(system, /Org policy: fast mode disabled/);
+  assert.equal(transformed._llmProxyRuntimeProfile, undefined);
+  assert.equal(transformed._llmProxyCapabilityContract.runtime.surface, "claude-vscode");
+});
+
 test("transformRequest skips difficulty marker contract for direct exact replies", async () => {
   const transformed = await transforms.transformRequest(provider, {
     model: "auto-coding",

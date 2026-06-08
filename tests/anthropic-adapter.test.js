@@ -347,9 +347,21 @@ test("builds Claude Code first-party headers for managed OAuth token", () => {
   assert.equal(headers["anthropic-dangerous-direct-browser-access"], "true");
   assert.match(headers["anthropic-beta"], /claude-code-20250219/);
   assert.match(headers["anthropic-beta"], /effort-2025-11-24/);
-  assert.match(headers["x-anthropic-billing-header"], /cc_version=2\.1\.150\.[a-z0-9]+; cc_entrypoint=sdk-cli; cch=00000;/);
+  assert.match(headers["x-anthropic-billing-header"], /cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=sdk-cli; cch=[a-f0-9]{5};/);
   assert.equal(headers["x-stainless-lang"], "js");
   assert.equal(headers["x-stainless-package-version"], "0.94.0");
+});
+
+test("computes Claude Code billing header from the first user message", () => {
+  const headers = anthropic.buildHeaders(
+    { key: "oauth-token", key_env: "CLAUDE_CODE_OAUTH_TOKEN" },
+    {
+      billingMessageText: "hey",
+      env: { CLAUDE_CODE_VERSION: "2.1.37" },
+    },
+  );
+
+  assert.equal(headers["x-anthropic-billing-header"], "cc_version=2.1.37.0d9; cc_entrypoint=sdk-cli; cch=fa690;");
 });
 
 test("builds Claude Code first-party headers for Claude providers using managed API key", () => {
@@ -444,6 +456,10 @@ test("builds Claude Code request metadata and shape for first-party Claude provi
   assert.deepEqual(output.system, [
     {
       type: "text",
+      text: "x-anthropic-billing-header: cc_version=2.1.150.c38; cc_entrypoint=sdk-cli; cch=c1bd7;",
+    },
+    {
+      type: "text",
       text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
       cache_control: { type: "ephemeral" },
     },
@@ -453,6 +469,38 @@ test("builds Claude Code request metadata and shape for first-party Claude provi
     role: "user",
     content: [{ type: "text", text: "Say ok.", cache_control: { type: "ephemeral" } }],
   });
+});
+
+test("splits multiline Claude Code billing system text into header and cached system body", () => {
+  const provider = { family: "claude", protocol: "anthropic", upstream_model: "claude-sonnet-4-5" };
+  const output = anthropic.toAnthropicRequest(
+    provider,
+    {
+      model: "claude/claude-sonnet-4-5",
+      messages: [
+        {
+          role: "system",
+          content: "x-anthropic-billing-header: cc_version=2.1.150.e37; cc_entrypoint=sdk-cli; cch=00000;\nUse repo rules.",
+        },
+        { role: "user", content: "Say ok." },
+      ],
+      max_tokens: 64,
+    },
+    {
+      sessionId: "session-from-header",
+      env: {
+        CLAUDE_CODE_VERSION: "2.1.150",
+        CLAUDE_CODE_DEVICE_ID: "device-from-env",
+        CLAUDE_CODE_ACCOUNT_UUID: "account-from-env",
+      },
+    },
+  );
+
+  const billingBlock = output.system.find((part) => /^x-anthropic-billing-header:/i.test(part.text || ""));
+  assert.equal(billingBlock.text, "x-anthropic-billing-header: cc_version=2.1.150.e37; cc_entrypoint=sdk-cli; cch=00000;");
+  assert.equal(billingBlock.cache_control, undefined);
+  assert.match(output.system.map((part) => part.text).join("\n"), /Use repo rules\./);
+  assert.equal(output.system.at(-1).cache_control?.type, "ephemeral");
 });
 
 test("prepends Claude Code SDK system before proxy system for native Claude providers", () => {
@@ -476,8 +524,10 @@ test("prepends Claude Code SDK system before proxy system for native Claude prov
     }
   );
 
-  assert.equal(output.system[0].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.");
-  assert.equal(output.system[1].text, "LLM proxy routing note: preserve the user request.");
+  assert.match(output.system[0].text, /^x-anthropic-billing-header: cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=sdk-cli; cch=[a-f0-9]{5};$/);
+  assert.equal(output.system[0].cache_control, undefined);
+  assert.equal(output.system[1].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.");
+  assert.equal(output.system[2].text, "LLM proxy routing note: preserve the user request.");
 });
 
 test("caps Claude Code cache_control blocks at Anthropic request limit", () => {
@@ -670,6 +720,49 @@ test("postAnthropic appends beta query for Claude Code managed OAuth token", asy
     assert.equal(capturedHeaders["user-agent"], "claude-cli/2.1.150 (external, sdk-cli)");
     assert.equal(capturedHeaders["x-app"], "cli");
     assert.match(capturedHeaders["anthropic-beta"], /claude-code-20250219/);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+});
+
+test("postAnthropic extracts only the billing header line from multiline system text", async () => {
+  let capturedHeaders = {};
+  const server = http.createServer((request, response) => {
+    capturedHeaders = request.headers;
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const output = await anthropic.postAnthropic(
+      {
+        family: "claude",
+        protocol: "anthropic",
+        key: "oauth-token",
+        key_env: "CLAUDE_CODE_OAUTH_TOKEN",
+        url: `http://127.0.0.1:${port}/v1/messages`,
+      },
+      {
+        model: "claude-sonnet-4-5",
+        max_tokens: 1,
+        system: "x-anthropic-billing-header: cc_version=2.1.150.e37; cc_entrypoint=sdk-cli; cch=00000;\nUse repo rules.",
+        messages: [{ role: "user", content: "Say ok." }],
+      },
+      { env: { CLAUDE_CODE_VERSION: "2.1.150" } },
+    );
+
+    assert.equal(output.status, 200);
+    assert.equal(capturedHeaders["x-anthropic-billing-header"], "cc_version=2.1.150.e37; cc_entrypoint=sdk-cli; cch=00000;");
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
