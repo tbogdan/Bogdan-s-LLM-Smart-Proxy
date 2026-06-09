@@ -211,7 +211,7 @@ test("translateInput preserves custom and hosted Responses tools with registry m
     tool_choice: { type: "custom", name: "apply_patch" },
   }, { client: "codex" });
 
-  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["apply_patch", "web_search"]);
+  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["apply_patch", "web_search", "spawn_agent", "wait_agent", "close_agent", "send_input", "resume_agent", "create_thread", "read_thread", "send_message_to_thread", "list_threads", "set_thread_pinned", "set_thread_archived", "set_thread_title"]);
   assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "apply_patch" } });
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.apply_patch.kind, "custom");
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.web_search.kind, "hosted");
@@ -238,7 +238,7 @@ test("translateInput qualifies duplicate namespace child tools instead of droppi
     ],
   }, { client: "codex" });
 
-  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["read", "mcp__two.read"]);
+  assert.deepEqual(chat.tools.map((tool) => tool.function.name), ["read", "mcp__two.read", "spawn_agent", "wait_agent", "close_agent", "send_input", "resume_agent", "create_thread", "read_thread", "send_message_to_thread", "list_threads", "set_thread_pinned", "set_thread_archived", "set_thread_title"]);
   assert.equal(chat._llmProxyResponsesToolRegistry.byName["mcp__two.read"].childName, "read");
   });
 });
@@ -328,7 +328,7 @@ test("translateInput preserves Responses runtime capability contract for routing
   assert.equal(chat.tools.some((tool) => tool.function.name === "spawn_agent"), false);
 });
 
-test("translateInput exposes missing Codex subagents as proxy-hosted virtual tools", async () => {
+test("translateInput keeps tool_search alongside always-on Codex virtual subagents", async () => {
   const chat = responses.translateInput({
     model: "gpt-5.4-mini",
     client_metadata: { originator: "Codex Desktop" },
@@ -353,8 +353,9 @@ test("translateInput exposes missing Codex subagents as proxy-hosted virtual too
   assert.equal(names.includes("send_message_to_thread"), true);
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
-  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.shadowOnly, undefined);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.deferredTools, ["tool_search"]);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
 
   const transformed = await transforms.transformRequest({
     name: "Codex-Test",
@@ -365,10 +366,10 @@ test("translateInput exposes missing Codex subagents as proxy-hosted virtual too
   const system = transformed.messages[0].content;
   assert.match(system, /Deferred tool discovery: available via tool_search/i);
   assert.match(system, /Subagents: available via .*spawn_agent/i);
-  assert.doesNotMatch(system, /Subagents: no dedicated subagent tool/i);
+  assert.doesNotMatch(system, /Subagents: deferred via tool_search/i);
 });
 
-test("translateInput auto-detects Codex metadata before proxy-hosting virtual subagents", () => {
+test("translateInput auto-detects Codex metadata and proxy-hosts bare spawn_agent", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4-mini",
     metadata: { originator: "Codex Desktop" },
@@ -385,8 +386,29 @@ test("translateInput auto-detects Codex metadata before proxy-hosting virtual su
   assert.equal(names.includes("tool_search"), true);
   assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "spawn_agent" } });
   assert.equal(chat._llmProxyClient, "codex");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.shadowOnly, undefined);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+});
+
+test("translateInput preserves bare Codex spawn_agent when deferred discovery is absent", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    metadata: { originator: "Codex Desktop" },
+    input: "Try a sidecar subagent.",
+    tools: [
+      { type: "function", name: "spawn_agent", parameters: { type: "object" } },
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+    ],
+    tool_choice: { type: "function", name: "spawn_agent" },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("spawn_agent"), true);
+  assert.equal(chat.tool_choice.function.name, "spawn_agent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
   assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
 });
 
@@ -410,7 +432,7 @@ test("translateInput injects Codex virtual subagents even without deferred disco
   assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
 });
 
-test("translateInput keeps absent Codex subagent and goal tools conditional", async () => {
+test("translateInput keeps non-subagent capabilities conditional while Codex virtual subagents stay on", async () => {
   await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
     const chat = responses.translateInput({
     model: "gpt-5.4-mini",
@@ -432,7 +454,7 @@ test("translateInput keeps absent Codex subagent and goal tools conditional", as
   });
 
   assert.equal(chat._llmProxyCapabilityContract.client.id, "codex");
-  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, []);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.goals, []);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, []);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcpResources, ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
@@ -446,18 +468,16 @@ test("translateInput keeps absent Codex subagent and goal tools conditional", as
     max_context: 128000,
   }, chat);
   const system = transformed.messages[0].content;
-  assert.match(system, /Subagents: no dedicated subagent tool detected/i);
+  assert.match(system, /Subagents: available via .*spawn_agent/i);
   assert.match(system, /MCP resources\/templates: listing access is available/i);
   assert.match(system, /Empty resources\/templates output is normal/i);
   assert.doesNotMatch(system, /MCP tools: available/i);
   assert.match(system, /Do not infer Codex subagent\/thread tools from app-context docs/i);
-  assert.doesNotMatch(system, /Use subagents whenever possible/i);
   assert.doesNotMatch(system, /Expected executable tools/i);
-  assert.doesNotMatch(system, /spawn_agent|create_thread|send_message_to_thread/i);
   });
 });
 
-test("translateInput forwards Codex deferred tool discovery without inventing subagents", async () => {
+test("translateInput forwards Codex deferred tool discovery alongside proxy-hosted subagents", async () => {
   await withEnv("LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS", "false", async () => {
     const chat = responses.translateInput({
     model: "gpt-5.5",
@@ -476,7 +496,7 @@ test("translateInput forwards Codex deferred tool discovery without inventing su
   });
 
   assert.equal(chat.model, "auto-coding");
-  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.subagents, []);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.deferredTools, ["tool_search"]);
 
   const transformed = await transforms.transformRequest({
@@ -487,9 +507,9 @@ test("translateInput forwards Codex deferred tool discovery without inventing su
   }, chat);
   const system = transformed.messages[0].content;
   assert.match(system, /Deferred tool discovery: available via tool_search/i);
-  assert.match(system, /Subagents: deferred via tool_search/i);
-  assert.match(system, /first call tool_search with an exact query: spawn_agent, multi_agent_v1/i);
-  assert.doesNotMatch(system, /Use subagents whenever possible for independent research/i);
+  assert.match(system, /Subagents: available via .*spawn_agent/i);
+  assert.doesNotMatch(system, /Subagents: deferred via tool_search/i);
+  assert.match(system, /Use subagents whenever possible for independent research/i);
 });
 });
 
@@ -1139,10 +1159,10 @@ test("handleResponsesHTTP proxy-hosts bare Codex subagent placeholders before cl
   const toolNames = firstReq.tools.map((tool) => tool.function.name);
   assert.equal(toolNames.includes("spawn_agent"), true);
   assert.equal(toolNames.includes("tool_search"), true);
-  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
-  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
-  assert.equal(body.output[0].type, "message");
-  assert.equal(body.output[0].content[0].text, "Finished without exposing unsupported spawn_agent to Codex.");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
+  assert.equal(body.output[0].type, "function_call");
+  assert.equal(body.output[0].name, "spawn_agent");
 });
 
 test("handleResponsesHTTP preserves namespace-declared Codex subagent calls", async () => {

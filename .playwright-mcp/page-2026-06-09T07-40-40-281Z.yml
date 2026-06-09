@@ -1,0 +1,771 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "OpenAI Developers" [ref=e4] [cursor=pointer]:
+        - /url: /
+        - img "OpenAI Developers" [ref=e5]
+      - navigation [ref=e6]:
+        - link "Home" [ref=e8] [cursor=pointer]:
+          - /url: /
+        - link "API" [ref=e10] [cursor=pointer]:
+          - /url: /api
+          - text: API
+          - img [ref=e11]
+        - link "Codex" [ref=e14] [cursor=pointer]:
+          - /url: /codex
+          - text: Codex
+          - img [ref=e15]
+        - link "ChatGPT" [ref=e18] [cursor=pointer]:
+          - /url: /chatgpt
+          - text: ChatGPT
+          - img [ref=e19]
+        - link "Resources" [ref=e22] [cursor=pointer]:
+          - /url: /learn
+          - text: Resources
+          - img [ref=e23]
+      - generic [ref=e25]:
+        - link "API Dashboard" [ref=e28] [cursor=pointer]:
+          - /url: https://platform.openai.com/login
+          - generic [ref=e29]:
+            - generic [ref=e30]: API Dashboard
+            - img [ref=e31]
+        - button "Toggle light and dark theme" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Search the Codex docs" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+  - generic [ref=e41]:
+    - navigation [ref=e43]:
+      - generic [ref=e44]:
+        - heading "Getting Started" [level=3] [ref=e45]
+        - list [ref=e46]:
+          - listitem [ref=e47]:
+            - link "Overview" [ref=e48] [cursor=pointer]:
+              - /url: /codex
+              - generic [ref=e49]: Overview
+          - listitem [ref=e50]:
+            - link "Quickstart" [ref=e51] [cursor=pointer]:
+              - /url: /codex/quickstart
+              - generic [ref=e52]: Quickstart
+          - listitem [ref=e53]:
+            - link "Explore use cases" [ref=e54] [cursor=pointer]:
+              - /url: /codex/use-cases
+              - generic [ref=e55]: Explore use cases
+          - listitem [ref=e56]:
+            - link "Migrate" [ref=e57] [cursor=pointer]:
+              - /url: /codex/migrate
+              - generic [ref=e58]: Migrate
+          - listitem [ref=e59]:
+            - link "Pricing" [ref=e60] [cursor=pointer]:
+              - /url: /codex/pricing
+              - generic [ref=e61]: Pricing
+          - listitem [ref=e62]:
+            - group [ref=e63]:
+              - generic "Concepts" [ref=e64] [cursor=pointer]:
+                - generic [ref=e65]: Concepts
+                - img [ref=e66]
+      - generic [ref=e68]:
+        - heading "Using Codex" [level=3] [ref=e69]
+        - list [ref=e70]:
+          - listitem [ref=e71]:
+            - group [ref=e72]:
+              - generic "App" [ref=e73] [cursor=pointer]:
+                - generic [ref=e74]: App
+                - img [ref=e75]
+          - listitem [ref=e77]:
+            - group [ref=e78]:
+              - generic "IDE Extension" [ref=e79] [cursor=pointer]:
+                - generic [ref=e80]: IDE Extension
+                - img [ref=e81]
+          - listitem [ref=e83]:
+            - group [ref=e84]:
+              - generic "CLI" [ref=e85] [cursor=pointer]:
+                - generic [ref=e86]: CLI
+                - img [ref=e87]
+          - listitem [ref=e89]:
+            - group [ref=e90]:
+              - generic "Web" [ref=e91] [cursor=pointer]:
+                - generic [ref=e92]: Web
+                - img [ref=e93]
+          - listitem [ref=e95]:
+            - group [ref=e96]:
+              - generic "Integrations" [ref=e97] [cursor=pointer]:
+                - generic [ref=e98]: Integrations
+                - img [ref=e99]
+          - listitem [ref=e101]:
+            - group [ref=e102]:
+              - generic "Codex Security" [ref=e103] [cursor=pointer]:
+                - generic [ref=e104]: Codex Security
+                - img [ref=e105]
+      - generic [ref=e107]:
+        - heading "Configuration" [level=3] [ref=e108]
+        - list [ref=e109]:
+          - listitem [ref=e110]:
+            - group [ref=e111]:
+              - generic "Config File" [ref=e112] [cursor=pointer]:
+                - generic [ref=e113]: Config File
+                - img [ref=e114]
+          - listitem [ref=e116]:
+            - link "Permissions" [ref=e117] [cursor=pointer]:
+              - /url: /codex/permissions
+              - generic [ref=e118]: Permissions
+          - listitem [ref=e119]:
+            - link "Speed" [ref=e120] [cursor=pointer]:
+              - /url: /codex/speed
+              - generic [ref=e121]: Speed
+          - listitem [ref=e122]:
+            - link "Rules" [ref=e123] [cursor=pointer]:
+              - /url: /codex/rules
+              - generic [ref=e124]: Rules
+          - listitem [ref=e125]:
+            - link "Hooks" [ref=e126] [cursor=pointer]:
+              - /url: /codex/hooks
+              - generic [ref=e127]: Hooks
+          - listitem [ref=e128]:
+            - link "AGENTS.md" [ref=e129] [cursor=pointer]:
+              - /url: /codex/guides/agents-md
+              - generic [ref=e130]: AGENTS.md
+          - listitem [ref=e131]:
+            - link "MCP" [ref=e132] [cursor=pointer]:
+              - /url: /codex/mcp
+              - generic [ref=e133]: MCP
+          - listitem [ref=e134]:
+            - group [ref=e135]:
+              - generic "Plugins" [ref=e136] [cursor=pointer]:
+                - generic [ref=e137]: Plugins
+                - img [ref=e138]
+          - listitem [ref=e140]:
+            - link "Sites" [ref=e141] [cursor=pointer]:
+              - /url: /codex/sites
+              - generic [ref=e142]: Sites
+          - listitem [ref=e143]:
+            - link "Skills" [ref=e144] [cursor=pointer]:
+              - /url: /codex/skills
+              - generic [ref=e145]: Skills
+          - listitem [ref=e146]:
+            - link "Subagents" [ref=e147] [cursor=pointer]:
+              - /url: /codex/subagents
+              - generic [ref=e148]: Subagents
+      - generic [ref=e149]:
+        - heading "Administration" [level=3] [ref=e150]
+        - list [ref=e151]:
+          - listitem [ref=e152]:
+            - group [ref=e153]:
+              - generic "Authentication" [ref=e154] [cursor=pointer]:
+                - generic [ref=e155]: Authentication
+                - img [ref=e156]
+          - listitem [ref=e158]:
+            - link "Agent approvals & security" [ref=e159] [cursor=pointer]:
+              - /url: /codex/agent-approvals-security
+              - generic [ref=e160]: Agent approvals & security
+          - listitem [ref=e161]:
+            - link "Remote connections" [ref=e162] [cursor=pointer]:
+              - /url: /codex/remote-connections
+              - generic [ref=e163]: Remote connections
+          - listitem [ref=e164]:
+            - group [ref=e165]:
+              - generic "Deployment" [ref=e166] [cursor=pointer]:
+                - generic [ref=e167]: Deployment
+                - img [ref=e168]
+          - listitem [ref=e170]:
+            - group [ref=e171]:
+              - generic "Enterprise" [ref=e172] [cursor=pointer]:
+                - generic [ref=e173]: Enterprise
+                - img [ref=e174]
+          - listitem [ref=e176]:
+            - link "Windows" [ref=e177] [cursor=pointer]:
+              - /url: /codex/windows
+              - generic [ref=e178]: Windows
+      - generic [ref=e179]:
+        - heading "Automation" [level=3] [ref=e180]
+        - list [ref=e181]:
+          - listitem [ref=e182]:
+            - link "Non-interactive Mode" [ref=e183] [cursor=pointer]:
+              - /url: /codex/noninteractive
+              - generic [ref=e184]: Non-interactive Mode
+          - listitem [ref=e185]:
+            - link "Codex SDK" [ref=e186] [cursor=pointer]:
+              - /url: /codex/sdk
+              - generic [ref=e187]: Codex SDK
+          - listitem [ref=e188]:
+            - link "App Server" [ref=e189] [cursor=pointer]:
+              - /url: /codex/app-server
+              - generic [ref=e190]: App Server
+          - listitem [ref=e191]:
+            - link "MCP Server" [ref=e192] [cursor=pointer]:
+              - /url: /codex/guides/agents-sdk
+              - generic [ref=e193]: MCP Server
+          - listitem [ref=e194]:
+            - link "GitHub Action" [ref=e195] [cursor=pointer]:
+              - /url: /codex/github-action
+              - generic [ref=e196]: GitHub Action
+      - generic [ref=e197]:
+        - heading "Learn" [level=3] [ref=e198]
+        - list [ref=e199]:
+          - listitem [ref=e200]:
+            - link "Best practices" [ref=e201] [cursor=pointer]:
+              - /url: /codex/learn/best-practices
+              - generic [ref=e202]: Best practices
+          - listitem [ref=e203]:
+            - link "Videos" [ref=e204] [cursor=pointer]:
+              - /url: /codex/videos
+              - generic [ref=e205]: Videos
+          - listitem [ref=e206]:
+            - link "Community" [ref=e207] [cursor=pointer]:
+              - /url: /community
+              - generic [ref=e208]: Community
+          - listitem [ref=e209]:
+            - group [ref=e210]:
+              - generic "Blog" [ref=e211] [cursor=pointer]:
+                - generic [ref=e212]: Blog
+                - img [ref=e213]
+          - listitem [ref=e215]:
+            - group [ref=e216]:
+              - generic "Cookbooks" [ref=e217] [cursor=pointer]:
+                - generic [ref=e218]: Cookbooks
+                - img [ref=e219]
+          - listitem [ref=e221]:
+            - link "Building AI Teams" [ref=e222] [cursor=pointer]:
+              - /url: /codex/guides/build-ai-native-engineering-team
+              - generic [ref=e223]: Building AI Teams
+      - generic [ref=e224]:
+        - heading "Releases" [level=3] [ref=e225]
+        - list [ref=e226]:
+          - listitem [ref=e227]:
+            - link "Changelog" [ref=e228] [cursor=pointer]:
+              - /url: /codex/changelog
+              - generic [ref=e229]: Changelog
+          - listitem [ref=e230]:
+            - link "Feature Maturity" [ref=e231] [cursor=pointer]:
+              - /url: /codex/feature-maturity
+              - generic [ref=e232]: Feature Maturity
+          - listitem [ref=e233]:
+            - link "Open Source" [ref=e234] [cursor=pointer]:
+              - /url: /codex/open-source
+              - generic [ref=e235]: Open Source
+    - main [ref=e236]:
+      - generic [ref=e239]:
+        - generic [ref=e241]:
+          - heading "Subagents" [level=1] [ref=e242]
+          - paragraph [ref=e243]: Use subagents and custom agents in Codex
+          - button "Copy Page" [ref=e246] [cursor=pointer]:
+            - img [ref=e248]
+            - generic [ref=e250]: Copy Page
+        - article [ref=e251]:
+          - paragraph [ref=e252]: Codex can run subagent workflows by spawning specialized agents in parallel and then collecting their results in one response. This can be particularly helpful for complex tasks that are highly parallel, such as codebase exploration or implementing a multi-step feature plan.
+          - paragraph [ref=e253]: With subagent workflows, you can also define your own custom agents with different model configurations and instructions depending on the task.
+          - paragraph [ref=e254]:
+            - text: For the concepts and tradeoffs behind subagent workflows, including context pollution, context rot, and model-selection guidance, see
+            - link "Subagent concepts" [ref=e255] [cursor=pointer]:
+              - /url: /codex/concepts/subagents
+            - text: .
+          - heading "Availability Copy link to availability" [level=2] [ref=e256]:
+            - generic [ref=e257]: Availability
+            - button "Copy link to availability" [ref=e258] [cursor=pointer]:
+              - img [ref=e259]
+          - paragraph [ref=e261]: Current Codex releases enable subagent workflows by default.
+          - generic [ref=e263]:
+            - img [ref=e265]
+            - paragraph [ref=e270]: Subagent activity is currently surfaced in the Codex app and CLI. Visibility in the IDE Extension is coming soon.
+          - paragraph [ref=e271]: Codex only spawns subagents when you explicitly ask it to. Because each subagent does its own model and tool work, subagent workflows consume more tokens than comparable single-agent runs.
+          - heading "Typical workflow Copy link to typical workflow" [level=2] [ref=e272]:
+            - generic [ref=e273]: Typical workflow
+            - button "Copy link to typical workflow" [ref=e274] [cursor=pointer]:
+              - img [ref=e275]
+          - paragraph [ref=e277]: Codex handles orchestration across agents, including spawning new subagents, routing follow-up instructions, waiting for results, and closing agent threads.
+          - paragraph [ref=e278]: When many agents are running, Codex waits until all requested results are available, then returns a consolidated response.
+          - paragraph [ref=e279]: Codex only spawns a new agent when you explicitly ask it to do so.
+          - paragraph [ref=e280]: "To see it in action, try the following prompt on your project:"
+          - generic [ref=e281]:
+            - code [ref=e282]:
+              - generic [ref=e283]: I would like to review the following points on the current PR (this branch vs main). Spawn one agent per point, wait for all of them, and summarize the result for each point.
+              - generic [ref=e284]: 1. Security issue
+              - generic [ref=e285]: 2. Code quality
+              - generic [ref=e286]: 3. Bugs
+              - generic [ref=e287]: 4. Race
+              - generic [ref=e288]: 5. Test flakiness
+              - generic [ref=e289]: 6. Maintainability of the code
+            - button "Copy code to clipboard" [ref=e291] [cursor=pointer]:
+              - img [ref=e292]
+          - heading "Managing subagents Copy link to managing subagents" [level=2] [ref=e294]:
+            - generic [ref=e295]: Managing subagents
+            - button "Copy link to managing subagents" [ref=e296] [cursor=pointer]:
+              - img [ref=e297]
+          - list [ref=e299]:
+            - listitem [ref=e300]:
+              - text: Use
+              - code [ref=e301]: /agent
+              - text: in the CLI to switch between active agent threads and inspect the ongoing thread.
+            - listitem [ref=e302]: Ask Codex directly to steer a running subagent, stop it, or close completed agent threads.
+          - heading "Approvals and sandbox controls Copy link to approvals and sandbox controls" [level=2] [ref=e303]:
+            - generic [ref=e304]: Approvals and sandbox controls
+            - button "Copy link to approvals and sandbox controls" [ref=e305] [cursor=pointer]:
+              - img [ref=e306]
+          - paragraph [ref=e308]: Subagents inherit your current sandbox policy.
+          - paragraph [ref=e309]:
+            - text: In interactive CLI sessions, approval requests can surface from inactive agent threads even while you are looking at the main thread. The approval overlay shows the source thread label, and you can press
+            - code [ref=e310]: o
+            - text: to open that thread before you approve, reject, or answer the request.
+          - paragraph [ref=e311]: In non-interactive flows, or whenever a run can’t surface a fresh approval, an action that needs new approval fails and Codex surfaces the error back to the parent workflow.
+          - paragraph [ref=e312]:
+            - text: Codex also reapplies the parent turn’s live runtime overrides when it spawns a child. That includes sandbox and approval choices you set interactively during the session, such as
+            - code [ref=e313]: /permissions
+            - text: changes or
+            - code [ref=e314]: "--yolo"
+            - text: ", even if the selected custom agent file sets different defaults."
+          - paragraph [ref=e315]:
+            - text: You can also override the sandbox configuration for individual
+            - link "custom agents" [ref=e316] [cursor=pointer]:
+              - /url: "#custom-agents"
+            - text: ", such as explicitly marking one to work in read-only mode."
+          - heading "Custom agents Copy link to custom agents" [level=2] [ref=e317]:
+            - generic [ref=e318]: Custom agents
+            - button "Copy link to custom agents" [ref=e319] [cursor=pointer]:
+              - img [ref=e320]
+          - paragraph [ref=e322]: "Codex ships with built-in agents:"
+          - list [ref=e323]:
+            - listitem [ref=e324]:
+              - code [ref=e325]: default
+              - text: ": general-purpose fallback agent."
+            - listitem [ref=e326]:
+              - code [ref=e327]: worker
+              - text: ": execution-focused agent for implementation and fixes."
+            - listitem [ref=e328]:
+              - code [ref=e329]: explorer
+              - text: ": read-heavy codebase exploration agent."
+          - paragraph [ref=e330]:
+            - text: To define your own custom agents, add standalone TOML files under
+            - code [ref=e331]: ~/.codex/agents/
+            - text: for personal agents or
+            - code [ref=e332]: .codex/agents/
+            - text: for project-scoped agents.
+          - paragraph [ref=e333]: Each file defines one custom agent. Codex loads these files as configuration layers for spawned sessions, so custom agents can override the same settings as a normal Codex session config. That can feel heavier than a dedicated agent manifest, and the format may evolve as authoring and sharing mature.
+          - paragraph [ref=e334]: "Every standalone custom agent file must define:"
+          - list [ref=e335]:
+            - listitem [ref=e336]:
+              - code [ref=e337]: name
+            - listitem [ref=e338]:
+              - code [ref=e339]: description
+            - listitem [ref=e340]:
+              - code [ref=e341]: developer_instructions
+          - paragraph [ref=e342]:
+            - text: Optional fields such as
+            - code [ref=e343]: nickname_candidates
+            - text: ","
+            - code [ref=e344]: model
+            - text: ","
+            - code [ref=e345]: model_reasoning_effort
+            - text: ","
+            - code [ref=e346]: sandbox_mode
+            - text: ","
+            - code [ref=e347]: mcp_servers
+            - text: ", and"
+            - code [ref=e348]: skills.config
+            - text: inherit from the parent session when you omit them.
+          - heading "Global settings Copy link to global settings" [level=3] [ref=e349]:
+            - generic [ref=e350]: Global settings
+            - button "Copy link to global settings" [ref=e351] [cursor=pointer]:
+              - img [ref=e352]
+          - paragraph [ref=e354]:
+            - text: Global subagent settings still live under
+            - code [ref=e355]: "[agents]"
+            - text: in your
+            - link "configuration" [ref=e356] [cursor=pointer]:
+              - /url: /codex/config-basic#configuration-precedence
+            - text: .
+          - table [ref=e358]:
+            - rowgroup [ref=e359]:
+              - row "Field Type Required Purpose" [ref=e360]:
+                - columnheader "Field" [ref=e361]
+                - columnheader "Type" [ref=e362]
+                - columnheader "Required" [ref=e363]
+                - columnheader "Purpose" [ref=e364]
+            - rowgroup [ref=e365]:
+              - row "agents.max_threads number No Concurrent open agent thread cap." [ref=e366]:
+                - cell "agents.max_threads" [ref=e367]:
+                  - code [ref=e368]: agents.max_threads
+                - cell "number" [ref=e369]
+                - cell "No" [ref=e370]
+                - cell "Concurrent open agent thread cap." [ref=e371]
+              - row "agents.max_depth number No Spawned agent nesting depth (root session starts at 0)." [ref=e372]:
+                - cell "agents.max_depth" [ref=e373]:
+                  - code [ref=e374]: agents.max_depth
+                - cell "number" [ref=e375]
+                - cell "No" [ref=e376]
+                - cell "Spawned agent nesting depth (root session starts at 0)." [ref=e377]
+              - row "agents.job_max_runtime_seconds number No Default timeout per worker for spawn_agents_on_csv jobs." [ref=e378]:
+                - cell "agents.job_max_runtime_seconds" [ref=e379]:
+                  - code [ref=e380]: agents.job_max_runtime_seconds
+                - cell "number" [ref=e381]
+                - cell "No" [ref=e382]
+                - cell "Default timeout per worker for spawn_agents_on_csv jobs." [ref=e383]:
+                  - text: Default timeout per worker for
+                  - code [ref=e384]: spawn_agents_on_csv
+                  - text: jobs.
+          - paragraph [ref=e385]:
+            - strong [ref=e386]: "Notes:"
+          - list [ref=e387]:
+            - listitem [ref=e388]:
+              - code [ref=e389]: agents.max_threads
+              - text: defaults to
+              - code [ref=e390]: "6"
+              - text: when you leave it unset.
+            - listitem [ref=e391]:
+              - code [ref=e392]: agents.max_depth
+              - text: defaults to
+              - code [ref=e393]: "1"
+              - text: ", which allows a direct child agent to spawn but prevents deeper nesting. Keep the default unless you specifically need recursive delegation. Raising this value can turn broad delegation instructions into repeated fan-out, which increases token usage, latency, and local resource consumption."
+              - code [ref=e394]: agents.max_threads
+              - text: still caps concurrent open threads, but it doesn’t remove the cost and predictability risks of deeper recursion.
+            - listitem [ref=e395]:
+              - code [ref=e396]: agents.job_max_runtime_seconds
+              - text: is optional. When you leave it unset,
+              - code [ref=e397]: spawn_agents_on_csv
+              - text: falls back to its per-call default timeout of 1800 seconds per worker.
+            - listitem [ref=e398]:
+              - text: If a custom agent name matches a built-in agent such as
+              - code [ref=e399]: explorer
+              - text: ", your custom agent takes precedence."
+          - heading "Custom agent file schema Copy link to custom agent file schema" [level=3] [ref=e400]:
+            - generic [ref=e401]: Custom agent file schema
+            - button "Copy link to custom agent file schema" [ref=e402] [cursor=pointer]:
+              - img [ref=e403]
+          - table [ref=e406]:
+            - rowgroup [ref=e407]:
+              - row "Field Type Required Purpose" [ref=e408]:
+                - columnheader "Field" [ref=e409]
+                - columnheader "Type" [ref=e410]
+                - columnheader "Required" [ref=e411]
+                - columnheader "Purpose" [ref=e412]
+            - rowgroup [ref=e413]:
+              - row "name string Yes Agent name Codex uses when spawning or referring to this agent." [ref=e414]:
+                - cell "name" [ref=e415]:
+                  - code [ref=e416]: name
+                - cell "string" [ref=e417]
+                - cell "Yes" [ref=e418]
+                - cell "Agent name Codex uses when spawning or referring to this agent." [ref=e419]
+              - row "description string Yes Human-facing guidance for when Codex should use this agent." [ref=e420]:
+                - cell "description" [ref=e421]:
+                  - code [ref=e422]: description
+                - cell "string" [ref=e423]
+                - cell "Yes" [ref=e424]
+                - cell "Human-facing guidance for when Codex should use this agent." [ref=e425]
+              - row "developer_instructions string Yes Core instructions that define the agent’s behavior." [ref=e426]:
+                - cell "developer_instructions" [ref=e427]:
+                  - code [ref=e428]: developer_instructions
+                - cell "string" [ref=e429]
+                - cell "Yes" [ref=e430]
+                - cell "Core instructions that define the agent’s behavior." [ref=e431]
+              - row "nickname_candidates string[] No Optional pool of display nicknames for spawned agents." [ref=e432]:
+                - cell "nickname_candidates" [ref=e433]:
+                  - code [ref=e434]: nickname_candidates
+                - cell "string[]" [ref=e435]
+                - cell "No" [ref=e436]
+                - cell "Optional pool of display nicknames for spawned agents." [ref=e437]
+          - paragraph [ref=e438]:
+            - text: You can also include other supported
+            - code [ref=e439]: config.toml
+            - text: keys in a custom agent file, such as
+            - code [ref=e440]: model
+            - text: ","
+            - code [ref=e441]: model_reasoning_effort
+            - text: ","
+            - code [ref=e442]: sandbox_mode
+            - text: ","
+            - code [ref=e443]: mcp_servers
+            - text: ", and"
+            - code [ref=e444]: skills.config
+            - text: .
+          - paragraph [ref=e445]:
+            - text: Codex identifies the custom agent by its
+            - code [ref=e446]: name
+            - text: field. Matching the filename to the agent name is the simplest convention, but the
+            - code [ref=e447]: name
+            - text: field is the source of truth.
+          - heading "Display nicknames Copy link to display nicknames" [level=3] [ref=e448]:
+            - generic [ref=e449]: Display nicknames
+            - button "Copy link to display nicknames" [ref=e450] [cursor=pointer]:
+              - img [ref=e451]
+          - paragraph [ref=e453]:
+            - text: Use
+            - code [ref=e454]: nickname_candidates
+            - text: when you want Codex to assign more readable display names to spawned agents. This is especially helpful when you run many instances of the same custom agent and want the UI to show distinct labels instead of repeating the same agent name.
+          - paragraph [ref=e455]:
+            - text: Nicknames are presentation-only. Codex still identifies and spawns the agent by its
+            - code [ref=e456]: name
+            - text: .
+          - paragraph [ref=e457]: Nickname candidates must be a non-empty list of unique names. Each nickname can use ASCII letters, digits, spaces, hyphens, and underscores.
+          - paragraph [ref=e458]: "Example:"
+          - generic [ref=e459]:
+            - code [ref=e460]:
+              - generic [ref=e461]: name = "reviewer"
+              - generic [ref=e462]: description = "PR reviewer focused on correctness, security, and missing tests."
+              - generic [ref=e463]: developer_instructions = """
+              - generic [ref=e464]: Review code like an owner.
+              - generic [ref=e465]: Prioritize correctness, security, behavior regressions, and missing test coverage.
+              - generic [ref=e466]: "\"\"\""
+              - generic [ref=e467]: nickname_candidates = ["Atlas", "Delta", "Echo"]
+            - button "Copy code to clipboard" [ref=e469] [cursor=pointer]:
+              - img [ref=e470]
+          - paragraph [ref=e472]:
+            - text: In practice, the Codex app and CLI can show the nicknames where agent activity appears, while the underlying agent type stays
+            - code [ref=e473]: reviewer
+            - text: .
+          - heading "Example custom agents Copy link to example custom agents" [level=3] [ref=e474]:
+            - generic [ref=e475]: Example custom agents
+            - button "Copy link to example custom agents" [ref=e476] [cursor=pointer]:
+              - img [ref=e477]
+          - paragraph [ref=e479]: The best custom agents are narrow and opinionated. Give each one clear job, a tool surface that matches that job, and instructions that keep it from drifting into adjacent work.
+          - 'heading "Example 1: PR review Copy link to example 1 pr review" [level=4] [ref=e480]':
+            - generic [ref=e481]: "Example 1: PR review"
+            - button "Copy link to example 1 pr review" [ref=e482] [cursor=pointer]:
+              - img [ref=e483]
+          - paragraph [ref=e485]: "This pattern splits review across three focused custom agents:"
+          - list [ref=e486]:
+            - listitem [ref=e487]:
+              - code [ref=e488]: pr_explorer
+              - text: maps the codebase and gathers evidence.
+            - listitem [ref=e489]:
+              - code [ref=e490]: reviewer
+              - text: looks for correctness, security, and test risks.
+            - listitem [ref=e491]:
+              - code [ref=e492]: docs_researcher
+              - text: checks framework or API documentation through a dedicated MCP server.
+          - paragraph [ref=e493]:
+            - text: Project config (
+            - code [ref=e494]: .codex/config.toml
+            - text: "):"
+          - generic [ref=e495]:
+            - code [ref=e496]:
+              - generic [ref=e497]: "[agents]"
+              - generic [ref=e498]: max_threads = 6
+              - generic [ref=e499]: max_depth = 1
+            - button "Copy code to clipboard" [ref=e501] [cursor=pointer]:
+              - img [ref=e502]
+          - paragraph [ref=e504]:
+            - code [ref=e505]: .codex/agents/pr-explorer.toml
+            - text: ":"
+          - generic [ref=e506]:
+            - code [ref=e507]:
+              - generic [ref=e508]: name = "pr_explorer"
+              - generic [ref=e509]: description = "Read-only codebase explorer for gathering evidence before changes are proposed."
+              - generic [ref=e510]: model = "gpt-5.3-codex-spark"
+              - generic [ref=e511]: model_reasoning_effort = "medium"
+              - generic [ref=e512]: sandbox_mode = "read-only"
+              - generic [ref=e513]: developer_instructions = """
+              - generic [ref=e514]: Stay in exploration mode.
+              - generic [ref=e515]: Trace the real execution path, cite files and symbols, and avoid proposing fixes unless the parent agent asks for them.
+              - generic [ref=e516]: Prefer fast search and targeted file reads over broad scans.
+              - generic [ref=e517]: "\"\"\""
+            - button "Copy code to clipboard" [ref=e519] [cursor=pointer]:
+              - img [ref=e520]
+          - paragraph [ref=e522]:
+            - code [ref=e523]: .codex/agents/reviewer.toml
+            - text: ":"
+          - generic [ref=e524]:
+            - code [ref=e525]:
+              - generic [ref=e526]: name = "reviewer"
+              - generic [ref=e527]: description = "PR reviewer focused on correctness, security, and missing tests."
+              - generic [ref=e528]: model = "gpt-5.4"
+              - generic [ref=e529]: model_reasoning_effort = "high"
+              - generic [ref=e530]: sandbox_mode = "read-only"
+              - generic [ref=e531]: developer_instructions = """
+              - generic [ref=e532]: Review code like an owner.
+              - generic [ref=e533]: Prioritize correctness, security, behavior regressions, and missing test coverage.
+              - generic [ref=e534]: Lead with concrete findings, include reproduction steps when possible, and avoid style-only comments unless they hide a real bug.
+              - generic [ref=e535]: "\"\"\""
+            - button "Copy code to clipboard" [ref=e537] [cursor=pointer]:
+              - img [ref=e538]
+          - paragraph [ref=e540]:
+            - code [ref=e541]: .codex/agents/docs-researcher.toml
+            - text: ":"
+          - generic [ref=e542]:
+            - code [ref=e543]:
+              - generic [ref=e544]: name = "docs_researcher"
+              - generic [ref=e545]: description = "Documentation specialist that uses the docs MCP server to verify APIs and framework behavior."
+              - generic [ref=e546]: model = "gpt-5.4-mini"
+              - generic [ref=e547]: model_reasoning_effort = "medium"
+              - generic [ref=e548]: sandbox_mode = "read-only"
+              - generic [ref=e549]: developer_instructions = """
+              - generic [ref=e550]: Use the docs MCP server to confirm APIs, options, and version-specific behavior.
+              - generic [ref=e551]: Return concise answers with links or exact references when available.
+              - generic [ref=e552]: Do not make code changes.
+              - generic [ref=e553]: "\"\"\""
+              - generic [ref=e554]: "[mcp_servers.openaiDeveloperDocs]"
+              - generic [ref=e555]: url = "https://developers.openai.com/mcp"
+            - button "Copy code to clipboard" [ref=e557] [cursor=pointer]:
+              - img [ref=e558]
+          - paragraph [ref=e560]: "This setup works well for prompts like:"
+          - generic [ref=e561]:
+            - code [ref=e562]:
+              - generic [ref=e563]: Review this branch against main. Have pr_explorer map the affected code paths, reviewer find real risks, and docs_researcher verify the framework APIs that the patch relies on.
+            - button "Copy code to clipboard" [ref=e565] [cursor=pointer]:
+              - img [ref=e566]
+          - heading "Process CSV batches with subagents (experimental) Copy link to process csv batches with subagents experimental" [level=2] [ref=e568]:
+            - generic [ref=e569]: Process CSV batches with subagents (experimental)
+            - button "Copy link to process csv batches with subagents experimental" [ref=e570] [cursor=pointer]:
+              - img [ref=e571]
+          - paragraph [ref=e573]:
+            - text: This workflow is experimental and may change as subagent support evolves. Use
+            - code [ref=e574]: spawn_agents_on_csv
+            - text: when you have many similar tasks that map to one row per work item. Codex reads the CSV, spawns one worker subagent per row, waits for the full batch to finish, and exports the combined results to CSV.
+          - paragraph [ref=e575]: "This works well for repeated audits such as:"
+          - list [ref=e576]:
+            - listitem [ref=e577]: reviewing one file, package, or service per row
+            - listitem [ref=e578]: checking a list of incidents, PRs, or migration targets
+            - listitem [ref=e579]: generating structured summaries for many similar inputs
+          - paragraph [ref=e580]: "The tool accepts:"
+          - list [ref=e581]:
+            - listitem [ref=e582]:
+              - code [ref=e583]: csv_path
+              - text: for the source CSV
+            - listitem [ref=e584]:
+              - code [ref=e585]: instruction
+              - text: for the worker prompt template, using
+              - code [ref=e586]: "{column_name}"
+              - text: placeholders
+            - listitem [ref=e587]:
+              - code [ref=e588]: id_column
+              - text: when you want stable item ids from a specific column
+            - listitem [ref=e589]:
+              - code [ref=e590]: output_schema
+              - text: when each worker should return a JSON object with a fixed shape
+            - listitem [ref=e591]:
+              - code [ref=e592]: output_csv_path
+              - text: ","
+              - code [ref=e593]: max_concurrency
+              - text: ", and"
+              - code [ref=e594]: max_runtime_seconds
+              - text: for job control
+          - paragraph [ref=e595]:
+            - text: Each worker must call
+            - code [ref=e596]: report_agent_job_result
+            - text: exactly once. If a worker exits without reporting a result, Codex marks that row with an error in the exported CSV.
+          - paragraph [ref=e597]: "Example prompt:"
+          - generic [ref=e598]:
+            - code [ref=e599]:
+              - generic [ref=e600]: Create /tmp/components.csv with columns path,owner and one row per frontend component.
+              - generic [ref=e601]: "Then call spawn_agents_on_csv with:"
+              - generic [ref=e602]: "- csv_path: /tmp/components.csv"
+              - generic [ref=e603]: "- id_column: path"
+              - generic [ref=e604]: "- instruction: \"Review {path} owned by {owner}. Return JSON with keys path, risk, summary, and follow_up via report_agent_job_result.\""
+              - generic [ref=e605]: "- output_csv_path: /tmp/components-review.csv"
+              - generic [ref=e606]: "- output_schema: an object with required string fields path, risk, summary, and follow_up"
+            - button "Copy code to clipboard" [ref=e608] [cursor=pointer]:
+              - img [ref=e609]
+          - paragraph [ref=e611]:
+            - text: When you run this through
+            - code [ref=e612]: codex exec
+            - text: ", Codex shows a single-line progress update on"
+            - code [ref=e613]: stderr
+            - text: while the batch is running. The exported CSV includes the original row data plus metadata such as
+            - code [ref=e614]: job_id
+            - text: ","
+            - code [ref=e615]: item_id
+            - text: ","
+            - code [ref=e616]: status
+            - text: ","
+            - code [ref=e617]: last_error
+            - text: ", and"
+            - code [ref=e618]: result_json
+            - text: .
+          - paragraph [ref=e619]: "Related runtime settings:"
+          - list [ref=e620]:
+            - listitem [ref=e621]:
+              - code [ref=e622]: agents.max_threads
+              - text: caps how many agent threads can stay open concurrently.
+            - listitem [ref=e623]:
+              - code [ref=e624]: agents.job_max_runtime_seconds
+              - text: sets the default per-worker timeout for CSV fan-out jobs. A per-call
+              - code [ref=e625]: max_runtime_seconds
+              - text: override takes precedence.
+            - listitem [ref=e626]:
+              - code [ref=e627]: sqlite_home
+              - text: controls where Codex stores the SQLite-backed state used for agent jobs and their exported results.
+          - 'heading "Example 2: Frontend integration debugging Copy link to example 2 frontend integration debugging" [level=4] [ref=e628]':
+            - generic [ref=e629]: "Example 2: Frontend integration debugging"
+            - button "Copy link to example 2 frontend integration debugging" [ref=e630] [cursor=pointer]:
+              - img [ref=e631]
+          - paragraph [ref=e633]: This pattern is useful for UI regressions, flaky browser flows, or integration bugs that cross application code and the running product.
+          - paragraph [ref=e634]:
+            - text: Project config (
+            - code [ref=e635]: .codex/config.toml
+            - text: "):"
+          - generic [ref=e636]:
+            - code [ref=e637]:
+              - generic [ref=e638]: "[agents]"
+              - generic [ref=e639]: max_threads = 6
+              - generic [ref=e640]: max_depth = 1
+            - button "Copy code to clipboard" [ref=e642] [cursor=pointer]:
+              - img [ref=e643]
+          - paragraph [ref=e645]:
+            - code [ref=e646]: .codex/agents/code-mapper.toml
+            - text: ":"
+          - generic [ref=e647]:
+            - code [ref=e648]:
+              - generic [ref=e649]: name = "code_mapper"
+              - generic [ref=e650]: description = "Read-only codebase explorer for locating the relevant frontend and backend code paths."
+              - generic [ref=e651]: model = "gpt-5.4-mini"
+              - generic [ref=e652]: model_reasoning_effort = "medium"
+              - generic [ref=e653]: sandbox_mode = "read-only"
+              - generic [ref=e654]: developer_instructions = """
+              - generic [ref=e655]: Map the code that owns the failing UI flow.
+              - generic [ref=e656]: Identify entry points, state transitions, and likely files before the worker starts editing.
+              - generic [ref=e657]: "\"\"\""
+            - button "Copy code to clipboard" [ref=e659] [cursor=pointer]:
+              - img [ref=e660]
+          - paragraph [ref=e662]:
+            - code [ref=e663]: .codex/agents/browser-debugger.toml
+            - text: ":"
+          - generic [ref=e664]:
+            - code [ref=e665]:
+              - generic [ref=e666]: name = "browser_debugger"
+              - generic [ref=e667]: description = "UI debugger that uses browser tooling to reproduce issues and capture evidence."
+              - generic [ref=e668]: model = "gpt-5.4"
+              - generic [ref=e669]: model_reasoning_effort = "high"
+              - generic [ref=e670]: sandbox_mode = "workspace-write"
+              - generic [ref=e671]: developer_instructions = """
+              - generic [ref=e672]: Reproduce the issue in the browser, capture exact steps, and report what the UI actually does.
+              - generic [ref=e673]: Use browser tooling for screenshots, console output, and network evidence.
+              - generic [ref=e674]: Do not edit application code.
+              - generic [ref=e675]: "\"\"\""
+              - generic [ref=e676]: "[mcp_servers.chrome_devtools]"
+              - generic [ref=e677]: url = "http://localhost:3000/mcp"
+              - generic [ref=e678]: startup_timeout_sec = 20
+            - button "Copy code to clipboard" [ref=e680] [cursor=pointer]:
+              - img [ref=e681]
+          - paragraph [ref=e683]:
+            - code [ref=e684]: .codex/agents/ui-fixer.toml
+            - text: ":"
+          - generic [ref=e685]:
+            - code [ref=e686]:
+              - generic [ref=e687]: name = "ui_fixer"
+              - generic [ref=e688]: description = "Implementation-focused agent for small, targeted fixes after the issue is understood."
+              - generic [ref=e689]: model = "gpt-5.3-codex-spark"
+              - generic [ref=e690]: model_reasoning_effort = "medium"
+              - generic [ref=e691]: developer_instructions = """
+              - generic [ref=e692]: Own the fix once the issue is reproduced.
+              - generic [ref=e693]: Make the smallest defensible change, keep unrelated files untouched, and validate only the behavior you changed.
+              - generic [ref=e694]: "\"\"\""
+              - generic [ref=e695]: "[[skills.config]]"
+              - generic [ref=e696]: path = "/Users/me/.agents/skills/docs-editor/SKILL.md"
+              - generic [ref=e697]: enabled = false
+            - button "Copy code to clipboard" [ref=e699] [cursor=pointer]:
+              - img [ref=e700]
+          - paragraph [ref=e702]: "This setup works well for prompts like:"
+          - generic [ref=e703]:
+            - code [ref=e704]:
+              - generic [ref=e705]: Investigate why the settings modal fails to save. Have browser_debugger reproduce it, code_mapper trace the responsible code path, and ui_fixer implement the smallest fix once the failure mode is clear.
+            - button "Copy code to clipboard" [ref=e707] [cursor=pointer]:
+              - img [ref=e708]
+  - generic:
+    - button "Ask AI" [ref=e710] [cursor=pointer]:
+      - generic [ref=e711]: Ask AI
+    - dialog "Docs agent" [ref=e712]:
+      - banner [ref=e713]:
+        - heading "Docs agent" [level=2] [ref=e714]
+        - generic [ref=e715]:
+          - button "Start a new docs agent thread" [ref=e716] [cursor=pointer]:
+            - img [ref=e717]
+          - button "Close docs agent" [ref=e719] [cursor=pointer]:
+            - img [ref=e720]
+      - paragraph [ref=e724]: Loading docs agent...

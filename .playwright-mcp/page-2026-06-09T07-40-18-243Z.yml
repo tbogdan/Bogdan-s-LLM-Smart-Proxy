@@ -1,0 +1,522 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "OpenAI Developers" [ref=e4] [cursor=pointer]:
+        - /url: /
+        - img "OpenAI Developers" [ref=e5]
+      - navigation [ref=e6]:
+        - link "Home" [ref=e8] [cursor=pointer]:
+          - /url: /
+        - link "API" [ref=e10] [cursor=pointer]:
+          - /url: /api
+          - text: API
+          - img [ref=e11]
+        - link "Codex" [ref=e14] [cursor=pointer]:
+          - /url: /codex
+          - text: Codex
+          - img [ref=e15]
+        - link "ChatGPT" [ref=e18] [cursor=pointer]:
+          - /url: /chatgpt
+          - text: ChatGPT
+          - img [ref=e19]
+        - link "Resources" [ref=e22] [cursor=pointer]:
+          - /url: /learn
+          - text: Resources
+          - img [ref=e23]
+      - generic [ref=e25]:
+        - link "API Dashboard" [ref=e28] [cursor=pointer]:
+          - /url: https://platform.openai.com/login
+          - generic [ref=e29]:
+            - generic [ref=e30]: API Dashboard
+            - img [ref=e31]
+        - button "Toggle light and dark theme" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Search the Codex docs" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+  - generic [ref=e41]:
+    - navigation [ref=e43]:
+      - generic [ref=e44]:
+        - heading "Getting Started" [level=3] [ref=e45]
+        - list [ref=e46]:
+          - listitem [ref=e47]:
+            - link "Overview" [ref=e48] [cursor=pointer]:
+              - /url: /codex
+              - generic [ref=e49]: Overview
+          - listitem [ref=e50]:
+            - link "Quickstart" [ref=e51] [cursor=pointer]:
+              - /url: /codex/quickstart
+              - generic [ref=e52]: Quickstart
+          - listitem [ref=e53]:
+            - link "Explore use cases" [ref=e54] [cursor=pointer]:
+              - /url: /codex/use-cases
+              - generic [ref=e55]: Explore use cases
+          - listitem [ref=e56]:
+            - link "Migrate" [ref=e57] [cursor=pointer]:
+              - /url: /codex/migrate
+              - generic [ref=e58]: Migrate
+          - listitem [ref=e59]:
+            - link "Pricing" [ref=e60] [cursor=pointer]:
+              - /url: /codex/pricing
+              - generic [ref=e61]: Pricing
+          - listitem [ref=e62]:
+            - group [ref=e63]:
+              - generic "Concepts" [ref=e64] [cursor=pointer]:
+                - generic [ref=e65]: Concepts
+                - img [ref=e66]
+      - generic [ref=e68]:
+        - heading "Using Codex" [level=3] [ref=e69]
+        - list [ref=e70]:
+          - listitem [ref=e71]:
+            - group [ref=e72]:
+              - generic "App" [ref=e73] [cursor=pointer]:
+                - generic [ref=e74]: App
+                - img [ref=e75]
+          - listitem [ref=e77]:
+            - group [ref=e78]:
+              - generic "IDE Extension" [ref=e79] [cursor=pointer]:
+                - generic [ref=e80]: IDE Extension
+                - img [ref=e81]
+          - listitem [ref=e83]:
+            - group [ref=e84]:
+              - generic "CLI" [ref=e85] [cursor=pointer]:
+                - generic [ref=e86]: CLI
+                - img [ref=e87]
+              - list [ref=e89]:
+                - listitem [ref=e90]:
+                  - link "Overview" [ref=e91] [cursor=pointer]:
+                    - /url: /codex/cli
+                    - generic [ref=e92]: Overview
+                - listitem [ref=e93]:
+                  - link "Features" [ref=e94] [cursor=pointer]:
+                    - /url: /codex/cli/features
+                    - generic [ref=e95]: Features
+                - listitem [ref=e96]:
+                  - link "Command Line Options" [ref=e97] [cursor=pointer]:
+                    - /url: /codex/cli/reference
+                    - generic [ref=e98]: Command Line Options
+                - listitem [ref=e99]:
+                  - link "Slash commands" [ref=e100] [cursor=pointer]:
+                    - /url: /codex/cli/slash-commands
+                    - generic [ref=e101]: Slash commands
+          - listitem [ref=e102]:
+            - group [ref=e103]:
+              - generic "Web" [ref=e104] [cursor=pointer]:
+                - generic [ref=e105]: Web
+                - img [ref=e106]
+          - listitem [ref=e108]:
+            - group [ref=e109]:
+              - generic "Integrations" [ref=e110] [cursor=pointer]:
+                - generic [ref=e111]: Integrations
+                - img [ref=e112]
+          - listitem [ref=e114]:
+            - group [ref=e115]:
+              - generic "Codex Security" [ref=e116] [cursor=pointer]:
+                - generic [ref=e117]: Codex Security
+                - img [ref=e118]
+      - generic [ref=e120]:
+        - heading "Configuration" [level=3] [ref=e121]
+        - list [ref=e122]:
+          - listitem [ref=e123]:
+            - group [ref=e124]:
+              - generic "Config File" [ref=e125] [cursor=pointer]:
+                - generic [ref=e126]: Config File
+                - img [ref=e127]
+          - listitem [ref=e129]:
+            - link "Permissions" [ref=e130] [cursor=pointer]:
+              - /url: /codex/permissions
+              - generic [ref=e131]: Permissions
+          - listitem [ref=e132]:
+            - link "Speed" [ref=e133] [cursor=pointer]:
+              - /url: /codex/speed
+              - generic [ref=e134]: Speed
+          - listitem [ref=e135]:
+            - link "Rules" [ref=e136] [cursor=pointer]:
+              - /url: /codex/rules
+              - generic [ref=e137]: Rules
+          - listitem [ref=e138]:
+            - link "Hooks" [ref=e139] [cursor=pointer]:
+              - /url: /codex/hooks
+              - generic [ref=e140]: Hooks
+          - listitem [ref=e141]:
+            - link "AGENTS.md" [ref=e142] [cursor=pointer]:
+              - /url: /codex/guides/agents-md
+              - generic [ref=e143]: AGENTS.md
+          - listitem [ref=e144]:
+            - link "MCP" [ref=e145] [cursor=pointer]:
+              - /url: /codex/mcp
+              - generic [ref=e146]: MCP
+          - listitem [ref=e147]:
+            - group [ref=e148]:
+              - generic "Plugins" [ref=e149] [cursor=pointer]:
+                - generic [ref=e150]: Plugins
+                - img [ref=e151]
+          - listitem [ref=e153]:
+            - link "Sites" [ref=e154] [cursor=pointer]:
+              - /url: /codex/sites
+              - generic [ref=e155]: Sites
+          - listitem [ref=e156]:
+            - link "Skills" [ref=e157] [cursor=pointer]:
+              - /url: /codex/skills
+              - generic [ref=e158]: Skills
+          - listitem [ref=e159]:
+            - link "Subagents" [ref=e160] [cursor=pointer]:
+              - /url: /codex/subagents
+              - generic [ref=e161]: Subagents
+      - generic [ref=e162]:
+        - heading "Administration" [level=3] [ref=e163]
+        - list [ref=e164]:
+          - listitem [ref=e165]:
+            - group [ref=e166]:
+              - generic "Authentication" [ref=e167] [cursor=pointer]:
+                - generic [ref=e168]: Authentication
+                - img [ref=e169]
+          - listitem [ref=e171]:
+            - link "Agent approvals & security" [ref=e172] [cursor=pointer]:
+              - /url: /codex/agent-approvals-security
+              - generic [ref=e173]: Agent approvals & security
+          - listitem [ref=e174]:
+            - link "Remote connections" [ref=e175] [cursor=pointer]:
+              - /url: /codex/remote-connections
+              - generic [ref=e176]: Remote connections
+          - listitem [ref=e177]:
+            - group [ref=e178]:
+              - generic "Deployment" [ref=e179] [cursor=pointer]:
+                - generic [ref=e180]: Deployment
+                - img [ref=e181]
+          - listitem [ref=e183]:
+            - group [ref=e184]:
+              - generic "Enterprise" [ref=e185] [cursor=pointer]:
+                - generic [ref=e186]: Enterprise
+                - img [ref=e187]
+          - listitem [ref=e189]:
+            - link "Windows" [ref=e190] [cursor=pointer]:
+              - /url: /codex/windows
+              - generic [ref=e191]: Windows
+      - generic [ref=e192]:
+        - heading "Automation" [level=3] [ref=e193]
+        - list [ref=e194]:
+          - listitem [ref=e195]:
+            - link "Non-interactive Mode" [ref=e196] [cursor=pointer]:
+              - /url: /codex/noninteractive
+              - generic [ref=e197]: Non-interactive Mode
+          - listitem [ref=e198]:
+            - link "Codex SDK" [ref=e199] [cursor=pointer]:
+              - /url: /codex/sdk
+              - generic [ref=e200]: Codex SDK
+          - listitem [ref=e201]:
+            - link "App Server" [ref=e202] [cursor=pointer]:
+              - /url: /codex/app-server
+              - generic [ref=e203]: App Server
+          - listitem [ref=e204]:
+            - link "MCP Server" [ref=e205] [cursor=pointer]:
+              - /url: /codex/guides/agents-sdk
+              - generic [ref=e206]: MCP Server
+          - listitem [ref=e207]:
+            - link "GitHub Action" [ref=e208] [cursor=pointer]:
+              - /url: /codex/github-action
+              - generic [ref=e209]: GitHub Action
+      - generic [ref=e210]:
+        - heading "Learn" [level=3] [ref=e211]
+        - list [ref=e212]:
+          - listitem [ref=e213]:
+            - link "Best practices" [ref=e214] [cursor=pointer]:
+              - /url: /codex/learn/best-practices
+              - generic [ref=e215]: Best practices
+          - listitem [ref=e216]:
+            - link "Videos" [ref=e217] [cursor=pointer]:
+              - /url: /codex/videos
+              - generic [ref=e218]: Videos
+          - listitem [ref=e219]:
+            - link "Community" [ref=e220] [cursor=pointer]:
+              - /url: /community
+              - generic [ref=e221]: Community
+          - listitem [ref=e222]:
+            - group [ref=e223]:
+              - generic "Blog" [ref=e224] [cursor=pointer]:
+                - generic [ref=e225]: Blog
+                - img [ref=e226]
+          - listitem [ref=e228]:
+            - group [ref=e229]:
+              - generic "Cookbooks" [ref=e230] [cursor=pointer]:
+                - generic [ref=e231]: Cookbooks
+                - img [ref=e232]
+          - listitem [ref=e234]:
+            - link "Building AI Teams" [ref=e235] [cursor=pointer]:
+              - /url: /codex/guides/build-ai-native-engineering-team
+              - generic [ref=e236]: Building AI Teams
+      - generic [ref=e237]:
+        - heading "Releases" [level=3] [ref=e238]
+        - list [ref=e239]:
+          - listitem [ref=e240]:
+            - link "Changelog" [ref=e241] [cursor=pointer]:
+              - /url: /codex/changelog
+              - generic [ref=e242]: Changelog
+          - listitem [ref=e243]:
+            - link "Feature Maturity" [ref=e244] [cursor=pointer]:
+              - /url: /codex/feature-maturity
+              - generic [ref=e245]: Feature Maturity
+          - listitem [ref=e246]:
+            - link "Open Source" [ref=e247] [cursor=pointer]:
+              - /url: /codex/open-source
+              - generic [ref=e248]: Open Source
+    - main [ref=e249]:
+      - generic [ref=e252]:
+        - generic [ref=e254]:
+          - heading "Codex CLI" [level=1] [ref=e255]
+          - paragraph [ref=e256]: Pair with Codex in your terminal
+          - button "Copy Page" [ref=e259] [cursor=pointer]:
+            - img [ref=e261]
+            - generic [ref=e263]: Copy Page
+        - article [ref=e264]:
+          - paragraph [ref=e265]:
+            - text: Codex CLI is OpenAI’s coding agent that you can run locally from your terminal. It can read, change, and run code on your machine in the selected directory. It’s
+            - link "open source" [ref=e266] [cursor=pointer]:
+              - /url: https://github.com/openai/codex
+            - text: and built in Rust for speed and efficiency.
+          - paragraph [ref=e267]:
+            - text: ChatGPT Plus, Pro, Business, Edu, and Enterprise plans include Codex. Learn more about
+            - link "what’s included" [ref=e268] [cursor=pointer]:
+              - /url: /codex/pricing
+            - text: .
+          - iframe [ref=e271]:
+            - generic [active] [ref=f1e1]:
+              - generic "YouTube Video Player" [ref=f1e3]
+              - generic [ref=f1e5]:
+                - generic:
+                  - generic:
+                    - button "Play video" [ref=f1e10] [cursor=pointer]:
+                      - generic [ref=f1e13]:
+                        - img
+                    - button "Hide player controls" [ref=f1e14] [cursor=pointer]
+                    - generic [ref=f1e16]:
+                      - generic [ref=f1e21]:
+                        - generic [ref=f1e22]:
+                          - link "Using OpenAI Codex CLI with GPT-5-Codex" [ref=f1e23] [cursor=pointer]:
+                            - /url: https://www.youtube.com/watch?v=iqNzfK4_meQ
+                          - link "OpenAI" [ref=f1e24] [cursor=pointer]:
+                            - /url: /channel/UCXZCJLdBC09xxGZ6gcdrc6A
+                            - generic [ref=f1e25]: OpenAI
+                        - generic [ref=f1e26]:
+                          - button "thumbnail-image" [ref=f1e27] [cursor=pointer]:
+                            - img "thumbnail-image" [ref=f1e28]
+                          - generic [ref=f1e30]:
+                            - generic: OpenAI
+                            - generic: 1.97M subscribers
+                      - generic [ref=f1e31]:
+                        - button "Copy link" [ref=f1e34] [cursor=pointer]:
+                          - generic [ref=f1e38]:
+                            - img
+                        - link "Watch on YouTube" [ref=f1e45] [cursor=pointer]:
+                          - /url: https://www.youtube.com/watch?v=iqNzfK4_meQ
+                          - generic [ref=f1e48]:
+                            - text: Watch on
+                            - img [ref=f1e50]:
+                              - generic [ref=f1e52]:
+                                - img
+          - heading "CLI setup Copy link to cli setup" [level=2] [ref=e272]:
+            - generic [ref=e273]: CLI setup
+            - button "Copy link to cli setup" [ref=e274] [cursor=pointer]:
+              - img [ref=e275]
+          - generic [ref=e278]:
+            - generic [ref=e280]:
+              - generic [ref=e281]: Choose your install option
+              - tablist "Choose your install option" [ref=e282]:
+                - tab "macOS/Linux" [selected] [ref=e283] [cursor=pointer]
+                - tab "Windows" [ref=e284] [cursor=pointer]
+                - tab "npm" [ref=e285] [cursor=pointer]
+                - tab "Homebrew" [ref=e286] [cursor=pointer]
+            - list [ref=e287]:
+              - listitem [ref=e288]:
+                - generic [ref=e289]:
+                  - generic [ref=e290]: "1"
+                  - heading "Install" [level=3] [ref=e291]
+                - paragraph [ref=e292]: Install the Codex CLI with the standalone installer for macOS and Linux.
+                - generic [ref=e294]:
+                  - generic [ref=e295]: macOS/Linux install command
+                  - generic [ref=e296]:
+                    - generic [ref=e297]: curl -fsSL https://chatgpt.com/codex/install.sh | sh
+                    - button "Copy" [ref=e298] [cursor=pointer]:
+                      - img [ref=e299]
+                      - generic [ref=e301]: Copy
+                - paragraph [ref=e303]:
+                  - text: For unattended installs, set
+                  - code [ref=e304]: CODEX_NON_INTERACTIVE=1
+                  - text: on the shell that runs the downloaded installer. See
+                  - link "Environment variables" [ref=e305] [cursor=pointer]:
+                    - /url: /codex/environment-variables#installer-variables
+                  - text: for details.
+                - generic [ref=e307]:
+                  - generic [ref=e308]: macOS/Linux unattended install command
+                  - generic [ref=e309]:
+                    - generic [ref=e310]: curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+                    - button "Copy" [ref=e311] [cursor=pointer]:
+                      - img [ref=e312]
+                      - generic [ref=e314]: Copy
+              - listitem [ref=e316]:
+                - generic [ref=e317]:
+                  - generic [ref=e318]: "2"
+                  - heading "Run" [level=3] [ref=e319]
+                - paragraph [ref=e320]: Run Codex in a terminal. It can inspect your repository, edit files, and run commands.
+                - generic [ref=e322]:
+                  - generic [ref=e323]: Run Codex command
+                  - generic [ref=e324]:
+                    - generic [ref=e325]: codex
+                    - button "Copy" [ref=e326] [cursor=pointer]:
+                      - img [ref=e327]
+                      - generic [ref=e329]: Copy
+                - paragraph [ref=e331]: The first time you run Codex, you'll be prompted to sign in. Authenticate with your ChatGPT account or an API key.
+                - paragraph [ref=e332]:
+                  - text: See the
+                  - link "pricing page" [ref=e333] [cursor=pointer]:
+                    - /url: /codex/pricing
+                  - text: if you're not sure which plans include Codex access.
+              - listitem [ref=e334]:
+                - generic [ref=e335]:
+                  - generic [ref=e336]: "3"
+                  - heading "Upgrade" [level=3] [ref=e337]
+                - paragraph [ref=e338]:
+                  - text: New versions of the Codex CLI are released regularly. See the
+                  - link "changelog" [ref=e339] [cursor=pointer]:
+                    - /url: /codex/changelog
+                  - text: "for release notes. To upgrade a standalone install, rerun the installer:"
+                - generic [ref=e341]:
+                  - generic [ref=e342]: macOS/Linux upgrade command
+                  - generic [ref=e343]:
+                    - generic [ref=e344]: curl -fsSL https://chatgpt.com/codex/install.sh | sh
+                    - button "Copy" [ref=e345] [cursor=pointer]:
+                      - img [ref=e346]
+                      - generic [ref=e348]: Copy
+          - generic [ref=e351]:
+            - img [ref=e353]
+            - paragraph [ref=e358]:
+              - text: The Codex CLI is available on macOS, Windows, and Linux. On Windows, run Codex natively in PowerShell with the Windows sandbox, or use WSL2 when you need a Linux-native environment. For setup details, see the
+              - link "Windows setup guide" [ref=e359] [cursor=pointer]:
+                - /url: /codex/windows
+              - text: .
+          - paragraph [ref=e360]:
+            - text: If you’re new to Codex, read the
+            - link "best practices guide" [ref=e361] [cursor=pointer]:
+              - /url: /codex/learn/best-practices
+            - text: .
+          - separator [ref=e362]
+          - heading "Work with the Codex CLI Copy link to work with the codex cli" [level=2] [ref=e363]:
+            - generic [ref=e364]: Work with the Codex CLI
+            - button "Copy link to work with the codex cli" [ref=e365] [cursor=pointer]:
+              - img [ref=e366]
+          - generic [ref=e368]:
+            - link [ref=e369] [cursor=pointer]:
+              - /url: /codex/cli/features#running-in-interactive-mode
+              - article [ref=e370]:
+                - heading "Run Codex interactively Copy link to run codex interactively" [level=3] [ref=e371]:
+                  - generic [ref=e372]: Run Codex interactively
+                  - button "Copy link to run codex interactively" [ref=e373]:
+                    - img [ref=e374]
+                - paragraph [ref=e376]:
+                  - text: Run
+                  - code [ref=e377]: codex
+                  - text: to start an interactive terminal UI (TUI) session.
+            - link [ref=e378] [cursor=pointer]:
+              - /url: /codex/cli/features#models-reasoning
+              - article [ref=e379]:
+                - heading "Control model and reasoning Copy link to control model and reasoning" [level=3] [ref=e380]:
+                  - generic [ref=e381]: Control model and reasoning
+                  - button "Copy link to control model and reasoning" [ref=e382]:
+                    - img [ref=e383]
+                - paragraph [ref=e385]:
+                  - text: Use
+                  - code [ref=e386]: /model
+                  - text: to switch between GPT-5.4, GPT-5.3-Codex, and other available models, or adjust reasoning levels.
+            - link [ref=e387] [cursor=pointer]:
+              - /url: /codex/cli/features#image-inputs
+              - article [ref=e388]:
+                - heading "Image inputs Copy link to image inputs" [level=3] [ref=e389]:
+                  - generic [ref=e390]: Image inputs
+                  - button "Copy link to image inputs" [ref=e391]:
+                    - img [ref=e392]
+                - paragraph [ref=e394]: Attach screenshots or design specs so Codex reads them alongside your prompt.
+            - link [ref=e395] [cursor=pointer]:
+              - /url: /codex/cli/features#image-generation
+              - article [ref=e396]:
+                - heading "Image generation Copy link to image generation" [level=3] [ref=e397]:
+                  - generic [ref=e398]: Image generation
+                  - button "Copy link to image generation" [ref=e399]:
+                    - img [ref=e400]
+                - paragraph [ref=e402]: Generate or edit images directly in the CLI, and attach references when you want Codex to iterate on an existing asset.
+            - link [ref=e403] [cursor=pointer]:
+              - /url: /codex/cli/features#running-local-code-review
+              - article [ref=e404]:
+                - heading "Run local code review Copy link to run local code review" [level=3] [ref=e405]:
+                  - generic [ref=e406]: Run local code review
+                  - button "Copy link to run local code review" [ref=e407]:
+                    - img [ref=e408]
+                - paragraph [ref=e410]: Get your code reviewed by a separate Codex agent before you commit or push your changes.
+            - link [ref=e411] [cursor=pointer]:
+              - /url: /codex/subagents
+              - article [ref=e412]:
+                - heading "Use subagents Copy link to use subagents" [level=3] [ref=e413]:
+                  - generic [ref=e414]: Use subagents
+                  - button "Copy link to use subagents" [ref=e415]:
+                    - img [ref=e416]
+                - paragraph [ref=e418]: Use subagents to parallelize complex tasks.
+            - link [ref=e419] [cursor=pointer]:
+              - /url: /codex/cli/features#web-search
+              - article [ref=e420]:
+                - heading "Web search Copy link to web search" [level=3] [ref=e421]:
+                  - generic [ref=e422]: Web search
+                  - button "Copy link to web search" [ref=e423]:
+                    - img [ref=e424]
+                - paragraph [ref=e426]: Use Codex to search the web and get up-to-date information for your task.
+            - link [ref=e427] [cursor=pointer]:
+              - /url: /codex/cli/features#working-with-codex-cloud
+              - article [ref=e428]:
+                - heading "Codex Cloud tasks Copy link to codex cloud tasks" [level=3] [ref=e429]:
+                  - generic [ref=e430]: Codex Cloud tasks
+                  - button "Copy link to codex cloud tasks" [ref=e431]:
+                    - img [ref=e432]
+                - paragraph [ref=e434]: Launch a Codex Cloud task, choose environments, and apply the resulting diffs without leaving your terminal.
+            - link [ref=e435] [cursor=pointer]:
+              - /url: /codex/noninteractive
+              - article [ref=e436]:
+                - heading "Scripting Codex Copy link to scripting codex" [level=3] [ref=e437]:
+                  - generic [ref=e438]: Scripting Codex
+                  - button "Copy link to scripting codex" [ref=e439]:
+                    - img [ref=e440]
+                - paragraph [ref=e442]:
+                  - text: Automate repeatable workflows by scripting Codex with the
+                  - code [ref=e443]: exec
+                  - text: command.
+            - link [ref=e444] [cursor=pointer]:
+              - /url: /codex/mcp
+              - article [ref=e445]:
+                - heading "Model Context Protocol Copy link to model context protocol" [level=3] [ref=e446]:
+                  - generic [ref=e447]: Model Context Protocol
+                  - button "Copy link to model context protocol" [ref=e448]:
+                    - img [ref=e449]
+                - paragraph [ref=e451]: Give Codex access to additional third-party tools and context with Model Context Protocol (MCP).
+            - link [ref=e452] [cursor=pointer]:
+              - /url: /codex/cli/features#approval-modes
+              - article [ref=e453]:
+                - heading "Approval modes Copy link to approval modes" [level=3] [ref=e454]:
+                  - generic [ref=e455]: Approval modes
+                  - button "Copy link to approval modes" [ref=e456]:
+                    - img [ref=e457]
+                - paragraph [ref=e459]: Choose the approval mode that matches your comfort level before Codex edits or runs commands.
+      - navigation [ref=e462]:
+        - link "Next Features" [ref=e464] [cursor=pointer]:
+          - /url: /codex/cli/features
+          - generic [ref=e465]:
+            - generic [ref=e466]: Next
+            - generic [ref=e467]: Features
+          - img [ref=e468]
+  - generic:
+    - button "Ask AI" [ref=e470] [cursor=pointer]:
+      - generic [ref=e471]: Ask AI
+    - dialog "Docs agent" [ref=e472]:
+      - banner [ref=e473]:
+        - heading "Docs agent" [level=2] [ref=e474]
+        - generic [ref=e475]:
+          - button "Start a new docs agent thread" [ref=e476] [cursor=pointer]:
+            - img [ref=e477]
+          - button "Close docs agent" [ref=e479] [cursor=pointer]:
+            - img [ref=e480]
+      - paragraph [ref=e484]: Loading docs agent...
