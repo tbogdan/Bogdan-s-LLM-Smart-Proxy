@@ -1209,6 +1209,32 @@ test("handleResponsesHTTP preserves namespace-declared Codex subagent calls", as
   assert.equal(body.output[0].arguments, "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}");
 });
 
+test("translateInput injects proxy-hosted Codex fallbacks when flat native aliases are present but other virtual tools are absent", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use thread or subagent helpers if needed." }],
+    tools: [
+      { type: "function", name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } },
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+    ],
+  }, {
+    client: "codex",
+    headers: {
+      "user-agent": "Codex Desktop/0.136.0-alpha.2",
+    },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("multi_agent_v1.spawn_agent"), true);
+  assert.equal(names.includes("spawn_agent"), false);
+  assert.equal(names.includes("wait_agent"), true);
+  assert.equal(names.includes("create_thread"), true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.wait_agent.kind, "virtual_codex_subagent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.wait_agent.proxyHosted, true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.create_thread.proxyHosted, true);
+});
+
 test("handleResponsesHTTP keeps Codex loop alive by returning function_call after hidden continuation", async () => {
   const originalProviders = state.PROVIDERS;
   const originalGroups = state.GROUPS;

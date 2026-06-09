@@ -342,14 +342,21 @@ test("builds Claude Code first-party headers for managed OAuth token", () => {
   assert.equal(headers.Authorization, "Bearer oauth-token");
   assert.equal(headers["user-agent"], "claude-cli/2.1.150 (external, sdk-cli)");
   assert.equal(headers["x-app"], "cli");
-  assert.equal(headers["x-claude-code-session-id"], "session-test");
-  assert.equal(headers["x-client-request-id"], "request-test");
   assert.equal(headers["anthropic-dangerous-direct-browser-access"], "true");
   assert.match(headers["anthropic-beta"], /claude-code-20250219/);
   assert.match(headers["anthropic-beta"], /effort-2025-11-24/);
   assert.match(headers["x-anthropic-billing-header"], /cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=sdk-cli; cch=[a-f0-9]{5};/);
-  assert.equal(headers["x-stainless-lang"], "js");
-  assert.equal(headers["x-stainless-package-version"], "0.94.0");
+  // analytics/session/fingerprint headers must not be forwarded upstream
+  assert.equal(headers["x-claude-code-session-id"], undefined);
+  assert.equal(headers["x-client-request-id"], undefined);
+  assert.equal(headers["x-stainless-lang"], undefined);
+  assert.equal(headers["x-stainless-package-version"], undefined);
+  assert.equal(headers["x-stainless-arch"], undefined);
+  assert.equal(headers["x-stainless-os"], undefined);
+  assert.equal(headers["x-stainless-runtime"], undefined);
+  assert.equal(headers["x-stainless-runtime-version"], undefined);
+  assert.equal(headers["x-stainless-retry-count"], undefined);
+  assert.equal(headers["x-stainless-timeout"], undefined);
 });
 
 test("computes Claude Code billing header from the first user message", () => {
@@ -443,13 +450,8 @@ test("builds Claude Code request metadata and shape for first-party Claude provi
 
   assert.equal(output.model, "claude-opus-4-8");
   assert.equal(output.max_tokens, 32000);
-  assert.deepEqual(output.metadata, {
-    user_id: JSON.stringify({
-      device_id: "device-from-env",
-      account_uuid: "account-from-env",
-      session_id: "session-from-header",
-    }),
-  });
+  // metadata.user_id must not be forwarded upstream when derived from Claude Code shape
+  assert.deepEqual(output.metadata, {});
   assert.deepEqual(output.thinking, { type: "adaptive" });
   assert.deepEqual(output.context_management, { edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
   assert.deepEqual(output.output_config, { effort: "high" });

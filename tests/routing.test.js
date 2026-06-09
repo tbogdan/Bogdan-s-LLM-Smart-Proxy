@@ -4156,6 +4156,75 @@ test("dedupeConsecutiveIdempotentToolCalls removes only exact consecutive read d
   assert.deepEqual(remainingCallIds, ["call_1", "call_3"]);
 });
 
+test("dedupeConsecutiveIdempotentToolCalls records repeated read loop metadata", () => {
+  const reqBody = {
+    messages: [
+      { role: "user", content: "Inspect the same file." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "first" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_2", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_2", content: "second" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_3", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_3", content: "third" },
+    ],
+  };
+
+  const removed = routing.dedupeConsecutiveIdempotentToolCalls(reqBody);
+
+  assert.equal(removed, 4);
+  assert.deepEqual(reqBody._dedupedReadLoop?.loops?.map((loop) => ({ name: loop.name, count: loop.count })), [
+    { name: "Read", count: 3 },
+  ]);
+  assert.equal(reqBody._dedupedReadLoop?.removedPairs, 2);
+});
+
+test("injectReadLoopHiddenContinue appends hidden continue for real repeated read loops", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tools: [{ type: "function", function: { name: "Read", parameters: { type: "object" } } }],
+    messages: [
+      { role: "user", content: "Fix the bug and continue until complete." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "first" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_2", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_2", content: "second" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_3", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/a.js", offset: 1, limit: 40 }) } }],
+      },
+      { role: "tool", tool_call_id: "call_3", content: "third" },
+    ],
+  };
+
+  routing.dedupeConsecutiveIdempotentToolCalls(reqBody);
+  const injected = routing.injectReadLoopHiddenContinue(reqBody);
+
+  assert.equal(injected, true);
+  assert.equal(reqBody.messages.at(-1).role, "user");
+  assert.match(String(reqBody.messages.at(-1).content || ""), /Stop re-reading the same file/i);
+});
+
 test("stripCachedProxyArtifacts removes proxy assistant diagnostics from IDE replay", () => {
   const reqBody = {
     messages: [
