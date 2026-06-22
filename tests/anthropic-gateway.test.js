@@ -442,7 +442,7 @@ test("toAnthropicResponse preserves OpenAI text content parts", () => {
         message: {
           role: "assistant",
           content: [
-            { type: "text", text: "Project " },
+            { type: "text", text: "Bogdan " },
             { type: "text", text: "LLM Smart Proxy." },
           ],
         },
@@ -452,7 +452,7 @@ test("toAnthropicResponse preserves OpenAI text content parts", () => {
   }, "auto-coding");
 
   assert.deepEqual(response.content, [
-    { type: "text", text: "Project \nLLM Smart Proxy." },
+    { type: "text", text: "Bogdan \nLLM Smart Proxy." },
   ]);
 });
 
@@ -882,6 +882,52 @@ test("toAnthropicResponse repairs TodoWrite from Claude Code todo nudge context"
   assert.equal(response.content.some((part) => /Tool call error/i.test(part.text || "")), false);
 });
 
+test("toAnthropicResponse repairs Playwright selector alias into required target", () => {
+  const response = gateway.toAnthropicResponse({
+    model: "auto-coding",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_browser",
+              type: "function",
+              function: {
+                name: "mcp__playwright__browser_click",
+                arguments: JSON.stringify({ selector: "button:has-text(\"Sign in\")" }),
+              },
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+  }, "auto-coding", [
+    {
+      name: "mcp__playwright__browser_click",
+      input_schema: {
+        type: "object",
+        required: ["target"],
+        properties: {
+          target: { type: "string" },
+        },
+      },
+    },
+  ]);
+
+  assert.equal(response.stop_reason, "tool_use");
+  const toolUse = response.content.find((part) => part.type === "tool_use");
+  assert.ok(toolUse);
+  assert.equal(toolUse.name, "mcp__playwright__browser_click");
+  assert.deepEqual(toolUse.input, {
+    selector: "button:has-text(\"Sign in\")",
+    target: "button:has-text(\"Sign in\")",
+  });
+  assert.equal(response.content.some((part) => /Tool call error/i.test(part.text || "")), false);
+});
+
 test("streaming Anthropic bridge returns clear help for generated tool_use missing required input", async () => {
   gateway.init({
     handleChatCompletion: async (_chatReq, res) => {
@@ -1037,6 +1083,62 @@ test("streaming Anthropic bridge explains invalid tool diagnostics in IDE-visibl
   assert.equal(body.includes('"type":"tool_use"'), false);
   assert.match(body, /Tool call error/i);
   assert.match(body, /missing required field \\"command\\"/);
+});
+
+test("streaming Anthropic bridge repairs Playwright selector alias into required target", async () => {
+  gateway.init({
+    handleChatCompletion: async (_chatReq, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_browser",
+                  type: "function",
+                  function: {
+                    name: "mcp__playwright__browser_click",
+                    arguments: "{\"selector\":\"button:has-text(\\\"Sign in\\\")\"}",
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "tool_calls" }],
+      })}\n\n`);
+      res.end();
+    },
+  });
+
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, res, JSON.stringify({
+    model: "auto-coding",
+    stream: true,
+    messages: [{ role: "user", content: "click sign in" }],
+    tools: [{
+      name: "mcp__playwright__browser_click",
+      input_schema: {
+        type: "object",
+        required: ["target"],
+        properties: {
+          target: { type: "string" },
+        },
+      },
+    }],
+  }));
+
+  const body = res.chunks.join("");
+  assert.equal(res.status, 200);
+  assert.match(body, /"type":"tool_use"/);
+  assert.match(body, /"name":"mcp__playwright__browser_click"/);
+  assert.match(body, /"partial_json":"\{\\\"selector\\\":\\\"button:has-text\(\\\\\\\"Sign in\\\\\\\"\)\\\",\\\"target\\\":\\\"button:has-text\(\\\\\\\"Sign in\\\\\\\"\)\\\"\}"/);
+  assert.equal(/Tool call error/i.test(body), false);
 });
 
 test("streaming Anthropic bridge ignores duplicate routed writeHead calls", async () => {

@@ -10,6 +10,7 @@ const { spawnSync } = require("node:child_process");
 const discovery = require("../llm-discovery");
 const copilotToken = require("../lib/copilot-token");
 const windsurfCloud = require("../lib/windsurf-cloud");
+const providerMetadataOverrides = require("../lib/provider-metadata-overrides");
 
 const COPILOT_CLIENT_TEST_OPTIONS = {
   extensionVersion: "0.48.1",
@@ -19,6 +20,22 @@ const COPILOT_CLIENT_TEST_OPTIONS = {
   deviceId: "device-123",
   interactionId: "interaction-123",
 };
+
+function withProviderMetadataAudit(audit, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "discovery-metadata-audit-"));
+  const auditPath = path.join(dir, "audit.json");
+  fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2));
+  const previous = process.env.PROVIDER_METADATA_AUDIT_FILE;
+  process.env.PROVIDER_METADATA_AUDIT_FILE = auditPath;
+  providerMetadataOverrides.clearCache();
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env.PROVIDER_METADATA_AUDIT_FILE;
+    else process.env.PROVIDER_METADATA_AUDIT_FILE = previous;
+    providerMetadataOverrides.clearCache();
+  }
+}
 
 test("getEndpoints returns exactly enabled supported endpoints sorted by name", () => {
   const endpoints = discovery.getEndpoints({
@@ -227,6 +244,52 @@ test("providersFromEndpointModels maps Codex models to namespaced provider entri
   assert.equal(providers[1].context, 200000);
   assert.equal(providers[1].thinking_effort, "low");
 });
+
+test("providersFromEndpointModels applies authoritative metadata audit overrides", () => withProviderMetadataAudit({
+  generated_utc: "2026-06-16T09:05:10Z",
+  provider_metadata_overrides: {
+    "codex/gpt-5.4": {
+      cost_group: 4,
+      cost_multiplier: 1.125,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "high",
+      thinking_level: 4,
+      routing_level: 5,
+      source: "codex_backend",
+      source_type: "model",
+      context_length: 272000,
+      max_tokens: 128000,
+      canonical_provider: "OpenAI",
+      canonical_model: "gpt-5.4",
+    },
+  },
+}, () => {
+  const endpoint = discovery.getEndpoints({
+    ENABLE_CODEX: "true",
+    CODEX_API_KEY: "codex-key",
+  })[0];
+  const providers = discovery.providersFromEndpointModels(endpoint, [
+    {
+      slug: "gpt-5.4",
+      display_name: "GPT-5.4",
+      context_window: 100000,
+      default_reasoning_level: "medium",
+    },
+  ]);
+
+  assert.equal(providers[0].cost_group, 4);
+  assert.equal(providers[0].cost_multiplier, 1.125);
+  assert.equal(providers[0].quality_group, 5);
+  assert.equal(providers[0].speed_group, 3);
+  assert.equal(providers[0].thinking_effort, "high");
+  assert.equal(providers[0].thinking_level, 4);
+  assert.equal(providers[0].routing_level, 5);
+  assert.equal(providers[0].source_type, "model");
+  assert.equal(providers[0].context, 272000);
+  assert.equal(providers[0].max_tokens, 128000);
+  assert.equal(providers[0].canonical_provider, "OpenAI");
+}));
 
 test("providersFromEndpointModels maps Copilot models to OpenAI-compatible provider entries", () => {
   const endpoint = discovery.getEndpoints({

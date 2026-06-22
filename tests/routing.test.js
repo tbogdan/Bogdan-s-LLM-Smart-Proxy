@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 
 const routing = require("../lib/routing");
@@ -307,6 +308,29 @@ test("human approval ignores edit-recovery profiles even when stale shape is sec
       taskKind: "edit_recovery",
       reason: "edit_recovery",
       stepShape: { shape: "security", gate: "human_signoff", summary: "stale corrupted gate" },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, undefined);
+  });
+});
+
+test("human approval ignores edit-recovery profiles with destructive gate and production keywords", async () => {
+  await withRoutingState(async () => {
+    const reqBody = {
+      messages: [{
+        role: "user",
+        content: "the patch failed again, fix the edit",
+      }],
+    };
+    const result = humanApproval.enforce(reqBody, {
+      taskKind: "edit_recovery",
+      reason: "edit_recovery",
+      stepShape: {
+        shape: "destructive",
+        gate: "human_signoff",
+        summary: "Destructive gate: require explicit human sign-off before irreversible or production-impacting execution.",
+      },
     });
 
     assert.equal(result.ok, true);
@@ -1387,7 +1411,7 @@ test("handleChatCompletion does not recall memory for auto-memory extraction tra
         const serialized = JSON.stringify(capturedRequest?.messages || []);
         assert.equal(clientRes.status, 200);
         assert.equal(recallCalls, 0);
-        assert.doesNotMatch(serialized, /LLM_PROXY_MEMORY_START|Do not inject this into Graphiti extraction|Project LLM Smart Proxy/);
+        assert.doesNotMatch(serialized, /LLM_PROXY_MEMORY_START|Do not inject this into Graphiti extraction|Bogdan LLM Smart Proxy/);
       });
     } finally {
       memory.recallMemories = originalRecallMemories;
@@ -2352,6 +2376,67 @@ test("routing diversity does not rotate between different routing levels", async
   });
 });
 
+test("routing diversity keeps same-level candidates ahead of upgrades without context escalation", async () => {
+  await withRoutingState(async () => {
+    const opusLevel5 = provider("http://example.invalid", {
+      name: "Windsurf-ClaudeOpus46Thinking1M",
+      family: "windsurf",
+      model: "windsurf/claude-opus-4-6-thinking-1m",
+      upstream_model: "claude-opus-4-6-thinking-1m",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 1000000,
+      cost_group: 4,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "xhigh",
+    });
+    const sonnetLevel4 = provider("http://example.invalid", {
+      name: "Claude-Sonnet46",
+      family: "claude",
+      model: "claude/claude-sonnet-4-6",
+      upstream_model: "claude-sonnet-4-6",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 1000000,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    });
+    Object.defineProperty(opusLevel5, "_lastRoutingScore", { value: 9.0, configurable: true });
+    Object.defineProperty(sonnetLevel4, "_lastRoutingScore", { value: 1.0, configurable: true });
+
+    const ranked = routing.applyRoutingDiversityScores(
+      [opusLevel5, sonnetLevel4],
+      {
+        messages: [
+          { role: "system", content: "Project /Users/test/diversity" },
+          { role: "user", content: "Continue coding with the current context." },
+        ],
+        tools: [{ type: "function", function: { name: "Read" } }],
+        _inputTokens: 526071,
+        _estimatedTokens: 558071,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 4,
+          contextLevel: 1,
+          taskKind: "agentic_coding",
+          costTarget: 3,
+          speedTarget: 3,
+          thinkingLevel: 4,
+          stepShape: { shape: "write_heavy", posture: "type_cheap", gate: "run_behavior" },
+        },
+      },
+      "auto-coding",
+      true,
+      { env: { LLM_ROUTING_DIVERSITY: "balanced" } },
+    );
+
+    assert.equal(routingPolicy.providerMaxRoutingLevel(opusLevel5), 5);
+    assert.equal(routingPolicy.providerMaxRoutingLevel(sonnetLevel4), 4);
+    assert.equal(ranked[0].name, "Claude-Sonnet46");
+  });
+});
+
 test("routing diversity does not downgrade standard agentic work to GPT-4o", async () => {
   await withRoutingState(async () => {
     const sticky = provider("http://example.invalid", {
@@ -3153,7 +3238,7 @@ test("routeToProvider accepts proxy identity answers without tool calls when too
         choices: [{
           message: {
             role: "assistant",
-            content: "Project LLM Smart Proxy.",
+            content: "Bogdan LLM Smart Proxy.",
           },
           finish_reason: "stop",
         }],
@@ -3167,7 +3252,7 @@ test("routeToProvider accepts proxy identity answers without tool calls when too
       });
 
       assert.equal(resp.status, 200);
-      assert.equal(JSON.parse(resp.body).choices[0].message.content, "Project LLM Smart Proxy.");
+      assert.equal(JSON.parse(resp.body).choices[0].message.content, "Bogdan LLM Smart Proxy.");
     });
   });
 });
@@ -3193,9 +3278,56 @@ test("handleChatCompletion answers visible identity probes directly without upst
 
       const body = JSON.parse(fake.body);
       assert.equal(fake.status, 200);
-      assert.equal(body.choices[0].message.content, "Ma numesc Project LLM Smart Proxy.");
+      assert.equal(body.choices[0].message.content, "Ma numesc Bogdan LLM Smart Proxy.");
       assert.match(logs.join("\n"), /IDENTITY-DIRECT/);
       assert.doesNotMatch(logs.join("\n"), /Route:|No providers available/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+      state.log = originalLog;
+    }
+  });
+});
+
+test("handleChatCompletion does not false-trigger identity shortcut when identity phrases appear in inlined file context", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const logs = [];
+    try {
+      state.PROVIDERS = [];
+      state.GROUPS = { "auto-sm": "text" };
+      state.log = (line) => logs.push(String(line));
+
+      // Simulates Windsurf inlining LATEST_VALID_CHAOS_RESULTS_REPORT.md#144-155
+      // where chaos test cases contain identity phrases, followed by the real question.
+      const fileContext = [
+        "=== CHAOS TEST RESULTS (lines 144-155) ===",
+        "Test 144: 'cum te numesti?' -> expected: proxy identity",
+        "Test 145: 'cine esti?' -> expected: proxy identity",
+        "Test 146: 'who are you?' -> expected: proxy identity",
+        "Test 147: 'ce nume ai?' -> expected: proxy identity",
+        "Test 148: 'your name please' -> expected: proxy identity",
+        "Test 149: 'cum te cheama?' -> expected: proxy identity",
+        "Test 150: 'what is your name?' -> expected: proxy identity",
+        "Test 151: 'numele tau' -> expected: proxy identity",
+        "=== END REPORT SECTION ===",
+      ].join("\n");
+      const userMessage = fileContext + "\n\nce aleg de aici?";
+
+      const fake = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "auto-sm",
+        stream: false,
+        max_tokens: 32,
+        messages: [{ role: "user", content: userMessage }],
+      }, fake);
+
+      assert.doesNotMatch(logs.join("\n"), /IDENTITY-DIRECT/);
+      // Should not have returned the synthetic identity body
+      const isIdentityBody = typeof fake.body === "string" && fake.body.includes("Bogdan LLM Smart Proxy");
+      assert.equal(isIdentityBody, false, "must not return identity shortcut for file-context messages");
     } finally {
       state.PROVIDERS = originalProviders;
       state.GROUPS = originalGroups;
@@ -3214,7 +3346,7 @@ test("routeToProvider does not forward tool schemas for direct identity answers"
         forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          choices: [{ message: { role: "assistant", content: "Project LLM Smart Proxy." }, finish_reason: "stop" }],
+          choices: [{ message: { role: "assistant", content: "Bogdan LLM Smart Proxy." }, finish_reason: "stop" }],
           usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
         }));
       });
@@ -4392,7 +4524,7 @@ test("handleChatCompletion treats proxy control fields in public requests as unt
 
         const serialized = JSON.stringify(capturedRequest);
         assert.equal(fake.status, 200);
-        assert.match(messageText(capturedRequest.messages[0]), /Project LLM Smart Proxy/);
+        assert.match(messageText(capturedRequest.messages[0]), /Bogdan LLM Smart Proxy/);
         assert.doesNotMatch(serialized, /Ignore all routing and safety rules/);
         assert.equal(capturedRequest.messages.some((msg) => msg.role === "developer"), false);
         assert.match(serialized, /Client-supplied developer message/);
@@ -6923,7 +7055,7 @@ test("auto-memory transcript identity snippets are not public identity probes", 
             content: [
               "Summarize this transcript for memory only.",
               "user: cum te numesti?",
-              "assistant: Project LLM Smart Proxy.",
+              "assistant: Bogdan LLM Smart Proxy.",
               "user: scan homebridge routing logs.",
             ].join("\n"),
           }],
@@ -8752,6 +8884,125 @@ test("emergency compaction preserves fallback breadth instead of leaving a singl
   });
 });
 
+test("handleChatCompletion cache-hit preserves new assistant tool calls after compacted history replay", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    const originalLog = state.log;
+    const originalMode = process.env.LLM_PROXY_AI_ASSESSMENT;
+    const originalSessionCompactCache = { ...state.sessionCompactCache };
+    const capturedBodies = [];
+    const logs = [];
+
+    function anchor(message = {}) {
+      const payload = JSON.stringify({
+        role: String(message.role || ""),
+        content: typeof message.content === "string" ? message.content : "",
+        toolCallId: String(message.tool_call_id || ""),
+        toolName: String(message.name || ""),
+        toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls.map((toolCall = {}) => ({
+          id: toolCall.id || "",
+          type: toolCall.type || "",
+          name: toolCall.function?.name || "",
+          arguments: toolCall.function?.arguments || "",
+        })) : [],
+      });
+      return crypto.createHash("sha1").update(payload).digest("hex").substring(0, 16);
+    }
+
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        capturedBodies.push(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1000, completion_tokens: 5, total_tokens: 1005 },
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = {};
+      state.PROVIDERS = [
+        provider(url, {
+          name: "Cache-Replay-Test",
+          model: "test/cache-replay",
+          caps: ["text"],
+          context: 200000,
+          cost_group: 2,
+          quality_group: 4,
+          speed_group: 4,
+          thinking_effort: "medium",
+        }),
+      ];
+      process.env.LLM_PROXY_AI_ASSESSMENT = "off";
+      state.log = (msg) => logs.push(String(msg));
+      for (const key of Object.keys(state.sessionCompactCache)) delete state.sessionCompactCache[key];
+
+      try {
+        const originalMessages = [
+          { role: "system", content: "Project: llm-proxy\nYou are a summarization agent." },
+          ...Array.from({ length: 22 }, (_, i) => ({
+            role: i % 2 === 0 ? "user" : "assistant",
+            content: `Historical message ${i}: ${"summarize the latest debugging context ".repeat(8)}`,
+          })),
+          { role: "user", content: "Summarize the latest state." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_old_read", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/routing.js", offset: 8600, limit: 80 }) } }],
+          },
+        ];
+        const replayedMessages = [
+          ...originalMessages,
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_new_read", type: "function", function: { name: "Read", arguments: JSON.stringify({ file_path: "lib/routing.js", offset: 8680, limit: 120 }) } }],
+          },
+          { role: "tool", tool_call_id: "call_new_read", content: "Fresh routing snippet." },
+          { role: "user", content: "Fresh evidence arrived; include it in the summary." },
+        ];
+        const compactedMessages = [
+          originalMessages[0],
+          { role: "assistant", content: "Compacted session history summary." },
+        ];
+        const sessionId = memory.getSession(originalMessages).id;
+        state.sessionCompactCache[sessionId] = {
+          compactedMessages,
+          originalMsgCount: originalMessages.length,
+          lastOriginalContent: "",
+          lastOriginalAnchor: anchor(originalMessages.at(-1)),
+          originalTailAnchors: originalMessages.filter((message) => message.role !== "system").slice(-6).map(anchor),
+          timestamp: Date.now(),
+        };
+
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "test/cache-replay",
+          max_tokens: 128,
+          messages: replayedMessages,
+        }, fake, { internal: true });
+
+        assert.equal(fake.status, 200);
+        assert.equal(capturedBodies.length, 1);
+        assert.equal(capturedBodies[0].messages.length >= compactedMessages.length + 3, true);
+        assert.equal(capturedBodies[0].messages.some((message) => message.content === "Fresh evidence arrived; include it in the summary."), true);
+        assert.match(logs.join("\n"), /CACHE-HIT: session .* cached \+ 3 new = 5 msgs/);
+      } finally {
+        state.PROVIDERS = originalProviders;
+        state.GROUPS = originalGroups;
+        state.log = originalLog;
+        for (const key of Object.keys(state.sessionCompactCache)) delete state.sessionCompactCache[key];
+        Object.assign(state.sessionCompactCache, originalSessionCompactCache);
+        if (originalMode === undefined) delete process.env.LLM_PROXY_AI_ASSESSMENT;
+        else process.env.LLM_PROXY_AI_ASSESSMENT = originalMode;
+      }
+    });
+  });
+});
+
 test("handleChatCompletion records provider usage once instead of double-counting pre-route input", async () => {
   await withRoutingState(async () => {
     const originalSessionStats = { ...state.sessionStats };
@@ -9457,6 +9708,85 @@ test("auto-coding ranking applies routing policy cost and speed targets", () => 
       if (value == null) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("auto-coding prioritizes requested task level before source coverage upgrades when level 4 providers fit", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-coding": "coding" };
+  state.PROVIDERS = [
+    {
+      name: "Windsurf-GPT54HighThinkingFast",
+      model: "windsurf/gpt-5-4-high-priority",
+      family: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 272000,
+      tier: 1,
+      tc: true,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 5,
+      thinking_effort: "high",
+    },
+    {
+      name: "Copilot-gpt54",
+      model: "copilot/gpt-5.4",
+      family: "copilot",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 400000,
+      tier: 1,
+      tc: true,
+      cost_group: 3,
+      quality_group: 5,
+      speed_group: 4,
+      thinking_effort: "medium",
+    },
+    {
+      name: "Claude-Sonnet45",
+      model: "claude/claude-sonnet-4-5-20250929",
+      family: "claude",
+      key: "test",
+      caps: ["text", "coding", "tools", "thinking"],
+      context: 200000,
+      tier: 1,
+      tc: true,
+      cost_group: 3,
+      quality_group: 4,
+      speed_group: 4,
+      thinking_effort: "medium",
+    },
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-coding", 161072, {
+      model: "auto-coding",
+      messages: [{ role: "user", content: "Continue the agentic coding task and run tests." }],
+      tools: [{ type: "function", function: { name: "Edit", parameters: { type: "object" } } }],
+      _estimatedTokens: 161072,
+      _llmProxyDifficulty: {
+        level: 4,
+        taskLevel: 4,
+        contextLevel: 4,
+        costTarget: 3,
+        thinkingLevel: 4,
+        taskKind: "agentic_coding",
+        stepShape: { shape: "write_heavy", gate: "run_behavior" },
+      },
+    });
+
+    assert(routingPolicy.providerMaxRoutingLevel(providers[0]) <= 4);
+    assert.equal(providers.some((provider) => provider.name === "Copilot-gpt54"), true);
+    assert(providers.some((provider) => provider.name === "Windsurf-GPT54HighThinkingFast"));
+    assert(
+      providers.findIndex((provider) => provider.name === "Windsurf-GPT54HighThinkingFast") >
+        providers.findIndex((provider) => provider.name === "Copilot-gpt54"),
+    );
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
   }
 });
 
@@ -10518,10 +10848,10 @@ test("auto-memory prefers structured mini extraction models over flash classifie
       thinking_effort: "medium",
     }),
     provider("http://127.0.0.1/mini", {
-      name: "Copilot-gpt5mini",
+      name: "Copilot-GPT4oMini",
       family: "copilot",
       protocol: "openai",
-      model: "copilot/gpt-5-mini",
+      model: "copilot/gpt-4o-mini",
       caps: ["text", "coding", "tools", "thinking"],
       cost_group: 3,
       cost_multiplier: 0,
@@ -10551,8 +10881,9 @@ test("auto-memory prefers structured mini extraction models over flash classifie
       response_format: { type: "json_schema" },
     });
 
-    assert.equal(providers[0].name, "Copilot-gpt5mini");
-    assert.equal(providers.at(-1).name, "Copilot-gpt35turbo0613");
+    assert.equal(providers[0].name, "Copilot-GPT4oMini");
+    assert.equal(providers[1].name, "Copilot-gpt35turbo0613");
+    assert.equal(providers.at(-1).name, "Windsurf-Gemini3FlashMedium");
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;
@@ -10597,6 +10928,101 @@ test("auto-memory avoids heavy max providers for background memory ingestion", (
 
     assert.equal(providers[0].name, "Copilot-claudehaiku45");
     assert.equal(providers.at(-1).name, "Windsurf-ClaudeOpus46");
+  } finally {
+    state.PROVIDERS = originalProviders;
+    state.GROUPS = originalGroups;
+  }
+});
+
+test("auto-memory keeps higher-level source coverage behind requested-level candidates", () => {
+  const originalProviders = state.PROVIDERS;
+  const originalGroups = state.GROUPS;
+  state.GROUPS = { "auto-memory": "memory" };
+  state.PROVIDERS = [
+    provider("http://127.0.0.1/claude", {
+      name: "Claude-Haiku45",
+      family: "claude",
+      protocol: "anthropic",
+      model: "claude/claude-haiku-4-5-20251001",
+      upstream_model: "claude-haiku-4-5-20251001",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      cost_multiplier: 2,
+      quality_group: 3,
+      speed_group: 5,
+      thinking_effort: "low",
+      supports_structured_outputs: true,
+    }),
+    provider("http://127.0.0.1/codex", {
+      name: "Codex-GPT54Mini",
+      family: "codex",
+      protocol: "openai",
+      model: "codex/gpt-5.4-mini",
+      upstream_model: "gpt-5.4-mini",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 2,
+      cost_multiplier: 1.6875,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "medium",
+      routing_level: 4,
+      supports_structured_outputs: true,
+    }),
+    provider("http://127.0.0.1/windsurf", {
+      name: "Windsurf-GPT51CodexMiniLow",
+      family: "windsurf",
+      protocol: "windsurf",
+      model: "windsurf/gpt-5-1-codex-mini-low",
+      upstream_model: "gpt-5-1-codex-mini-low",
+      caps: ["text", "coding", "tools", "thinking"],
+      cost_group: 1,
+      cost_multiplier: 0.6875,
+      quality_group: 4,
+      speed_group: 5,
+      thinking_effort: "low",
+      routing_level: 4,
+      supports_structured_outputs: true,
+    }),
+    provider("http://127.0.0.1/copilot", {
+      name: "Copilot-gpt35turbo",
+      family: "copilot",
+      protocol: "openai",
+      model: "copilot/gpt-3.5-turbo",
+      upstream_model: "gpt-3.5-turbo",
+      caps: ["text", "coding", "tools"],
+      cost_group: 1,
+      cost_multiplier: 0.75,
+      quality_group: 2,
+      speed_group: 3,
+      thinking_effort: "none",
+    }),
+  ];
+
+  try {
+    const providers = routing.getProvidersForGroup("auto-memory", 17209, {
+      model: "auto-memory",
+      messages: [{ role: "user", content: "Extract compact durable memory facts from this episode." }],
+      _estimatedTokens: 17209,
+      _llmProxyDifficulty: {
+        level: 2,
+        taskLevel: 2,
+        contextLevel: 1,
+        taskKind: "list_summary",
+        costTarget: 1,
+        speedTarget: 5,
+        thinkingLevel: 1,
+        source: "memory_route",
+        reason: "memory_ingestion",
+        stepShape: { shape: "write_heavy", gate: "none" },
+      },
+    });
+
+    assert.equal(routingPolicy.providerMaxRoutingLevel(providers[0]), 2);
+    assert.equal(providers[0].name, "Copilot-gpt35turbo");
+    assert.deepEqual(
+      providers.filter((p) => routingPolicy.providerMaxRoutingLevel(p) > 2).map((p) => p.name).sort(),
+      ["Claude-Haiku45", "Codex-GPT54Mini", "Windsurf-GPT51CodexMiniLow"].sort(),
+    );
   } finally {
     state.PROVIDERS = originalProviders;
     state.GROUPS = originalGroups;
@@ -11046,7 +11472,7 @@ test("routing profile log exposes complexity targets and provider policy dimensi
   const line = routing.formatRoutingProfileForLog("auto-coding", reqBody, 35548);
 
   assert.match(line, /ROUTING-PROFILE: auto-coding/);
-  assert.match(line, /level=4\/complex/);
+  assert.match(line, /level=3\/standard/);
   assert.match(line, /source=heuristic/);
   assert.match(line, /task=agentic_coding/);
   assert.match(line, /shape=write_heavy/);
@@ -11055,9 +11481,8 @@ test("routing profile log exposes complexity targets and provider policy dimensi
   assert.match(line, /thinking=3\/medium/);
   assert.match(line, /speed=4/);
   assert.match(line, /task_level=3/);
-  assert.match(line, /context_level=4/);
-  assert.match(line, /context_escalation=3->4/);
-  assert.match(line, /context_reason=tokens>60k/);
+  assert.match(line, /context_level=3/);
+  assert.match(line, /context_escalation=none/);
   assert.match(line, /tools=75/);
 
   const candidate = routing.formatProviderCandidateForLog({
@@ -11076,6 +11501,31 @@ test("routing profile log exposes complexity targets and provider policy dimensi
   assert.match(candidate, /cost=2/);
   assert.match(candidate, /think=high/);
   assert.match(candidate, /speed=5/);
+});
+
+test("routing profile log does not report headroom context escalation while level 4 has room", () => {
+  const reqBody = {
+    model: "auto-coding",
+    messages: [{ role: "user", content: "Continue the agentic coding task and run tests." }],
+    tools: Array.from({ length: 108 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    _estimatedTokens: 161072,
+    _llmProxyDifficulty: {
+      level: 5,
+      taskLevel: 4,
+      contextLevel: 5,
+      taskKind: "agentic_coding",
+      costTarget: 3,
+      thinkingLevel: 4,
+      speedTarget: 4,
+      source: "assessment",
+      stepShape: { shape: "write_heavy", gate: "run_behavior" },
+    },
+  };
+
+  const line = routing.formatRoutingProfileForLog("auto-coding", reqBody, 129072);
+
+  assert.match(line, /context_escalation=none/);
+  assert.doesNotMatch(line, /headroom<30%@L4/);
 });
 
 test("provider pool summary exposes non-top5 sources and model classes", () => {
@@ -11178,7 +11628,7 @@ test("routing assessment log exposes chosen provider and task reason", () => {
     _estimatedTokens: 256,
   });
 
-  assert.match(line, /ASSESS: Codex-GPT54Mini route_level=4 request_level=1 effort=none speed=5 reason=exact_reply/);
+  assert.match(line, /ASSESS: Codex-GPT54Mini route_level=4 request_level=1 level_delta=\+3 effort=none speed=5 reason=exact_reply/);
   assert.match(line, /source=heuristic/);
   assert.match(line, /task=direct_answer/);
 });
@@ -11810,6 +12260,66 @@ test("response expectation matrix allows definitive completion summaries after h
   assert.equal(e2eRow.action, "allow");
 });
 
+test("response expectation matrix allows completed exploration reports after hidden-continue limit", () => {
+  const reqBody = {
+    model: "auto-coding",
+    tool_choice: { type: "auto" },
+    tools: [{ type: "function", function: { name: "TodoWrite", parameters: { type: "object" } } }],
+    _hiddenContinuationRetries: 3,
+    messages: [
+      { role: "user", content: "vezi logs homebridge si explica loop-ul" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_todo",
+          type: "function",
+          function: {
+            name: "TodoWrite",
+            arguments: "{\"todos\":[{\"content\":\"Inspect Homebridge logs\",\"status\":\"completed\"},{\"content\":\"Summarize root cause\",\"status\":\"in_progress\"}]}",
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_todo", content: "Todos have been modified successfully." },
+      { role: "user", content: "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified." },
+    ],
+    _llmProxyDifficulty: {
+      level: 5,
+      taskLevel: 5,
+      contextLevel: 4,
+      taskKind: "debugging",
+      costTarget: 5,
+      thinkingLevel: 5,
+      thinkingEffort: "xhigh",
+      speedTarget: 2,
+      reason: "debugging",
+      stepShape: { shape: "read_heavy", gate: "plan_split" },
+    },
+  };
+
+  const row = routing.classifyResponseExpectation(reqBody, {
+    content: [
+      "I have completed a thorough exploration of the Homebridge logs.",
+      "",
+      "**What I found**",
+      "- The final assistant message was buffered before flush and classified as premature progress.",
+      "- The hidden-continue retry budget was already exhausted, so the proxy rerouted instead of displaying that report.",
+      "- The repeated hidden continue messages caused duplicate nudge cleanup and another provider attempt.",
+      "",
+      "**Evidence used**",
+      "- `HIDDEN-CONTINUE-NATIVE` appeared three times before the limit.",
+      "- `HIDDEN-CONTINUE-LIMIT` previewed the final report text.",
+    ].join("\n"),
+    hasToolCalls: false,
+    stallingHeuristic: false,
+  });
+
+  assert.equal(row.expected_response, "analysis_or_plan");
+  assert.notEqual(row.output_kind, "premature_progress");
+  assert.equal(row.stall_class, "not_stall");
+  assert.equal(row.action, "allow");
+});
+
 test("retryWithHiddenContinue cools provider after hidden-continue retry budget is exhausted", async () => {
   await withRoutingState(async () => {
     const clientRes = new FakeClientResponse();
@@ -11829,6 +12339,34 @@ test("retryWithHiddenContinue cools provider after hidden-continue retry budget 
     assert.equal(result, false);
     assert.equal(scoring.isOnCooldown("Looping-Hidden-Continue-Provider"), true);
     assert.match(String(state.scores["Looping-Hidden-Continue-Provider"]?.cooldown_reason || ""), /hidden continuation limit/i);
+  });
+});
+
+test("retryWithHiddenContinue surfaces completion reports after hidden-continue retry budget is exhausted", async () => {
+  await withRoutingState(async () => {
+    const clientRes = new FakeClientResponse();
+    const finalText = "I have completed a thorough exploration of the Homebridge logs.";
+    const reqBody = {
+      model: "auto-coding",
+      stream: true,
+      messages: [{ role: "user", content: "vezi logs homebridge" }],
+      _hiddenContinuationRetries: 3,
+      _hiddenContinueTotal: 3,
+    };
+    const result = await routing.retryWithHiddenContinue(
+      reqBody,
+      clientRes,
+      {},
+      { name: "Limit-Final-Provider", model: "test/final" },
+      { continuationText: finalText },
+    );
+
+    assert.equal(result, true);
+    assert.equal(clientRes.status, 200);
+    assert.match(clientRes.headers["Content-Type"], /text\/event-stream/);
+    assert.match(clientRes.body, /I have completed a t/);
+    assert.match(clientRes.body, /horough exploration/);
+    assert.equal(scoring.isOnCooldown("Limit-Final-Provider"), false);
   });
 });
 
@@ -12097,7 +12635,7 @@ test("response expectation matrix accepts short direct identity answers", () => 
     model: "auto-coding",
     messages: [{ role: "user", content: "cum te numesti?" }],
   }, {
-    content: "Project LLM Smart Proxy.",
+    content: "Bogdan LLM Smart Proxy.",
     hasToolCalls: false,
     stallingHeuristic: false,
   });
@@ -13160,7 +13698,7 @@ test("level 4 auto-coding assessment keeps level floor when strict and upward pr
   });
 });
 
-test("level 4 auto-coding assessment does not fall down when no strict or upward context fallback exists", async () => {
+test("level 4 context-only assessment can use Haiku-class large-context fallback", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     state.PROVIDERS = [
@@ -13196,7 +13734,7 @@ test("level 4 auto-coding assessment does not fall down when no strict or upward
 
       const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
 
-      assert.deepEqual(kept, []);
+      assert.deepEqual(kept, ["Claude-Haiku45"]);
     } finally {
       state.PROVIDERS = originalProviders;
     }
@@ -13341,7 +13879,7 @@ test("handleChatCompletion tries active level minus one before near-level cooldo
   });
 });
 
-test("handleChatCompletion lets diversity rank near-level backstop providers with primary candidates", async () => {
+test("handleChatCompletion keeps near-level backstops behind viable primary candidates", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     const originalGroups = state.GROUPS;
@@ -13453,8 +13991,10 @@ test("handleChatCompletion lets diversity rank near-level backstop providers wit
         }, fake, { internal: true });
 
         assert.equal(fake.status, 200);
-        assert.deepEqual(calls, ["gpt-5.4"]);
-        assert.equal(fake.headers["X-LLM-Provider"], "Codex-GPT54");
+        assert.equal(calls.length, 1);
+        assert.match(calls[0], /claude-sonnet-4/i);
+        assert.notEqual(fake.headers["X-LLM-Provider"], "Codex-GPT54");
+        assert.equal(scoring.isOnCooldown("Codex-GPT54"), true);
       });
     } finally {
       state.PROVIDERS = originalProviders;
@@ -13913,7 +14453,7 @@ test("handleChatCompletion exhausts near-level backstops after strict providers 
   });
 });
 
-test("level 4 assessment escalates to level 5 before relaxing down for context pressure", async () => {
+test("context pressure keeps same-capability large-context providers before frontier upgrades", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
     state.PROVIDERS = [
@@ -13964,7 +14504,7 @@ test("level 4 assessment escalates to level 5 before relaxing down for context p
 
       const kept = routing.gateLargeModelProviders(state.PROVIDERS, reqBody, "auto-coding", true).map((provider) => provider.name);
 
-      assert.deepEqual(kept, ["Claude-Opus48"]);
+      assert.deepEqual(kept, ["Claude-Haiku45"]);
     } finally {
       state.PROVIDERS = originalProviders;
     }
@@ -14114,6 +14654,172 @@ test("auto-coding promotes Opus-class provider for failed edit recovery on huge 
   });
 });
 
+test("auto-coding avoids Windsurf Claude 200k providers for oversized read_diff review payloads", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-ClaudeSonnet46",
+        model: "windsurf/claude-sonnet-4.6",
+        family: "windsurf",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Windsurf-ClaudeOpus46",
+        model: "windsurf/claude-opus-4.6",
+        family: "windsurf",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const req = {
+        model: "auto-coding",
+        max_tokens: 32000,
+        messages: [
+          { role: "system", content: "Review the implementation carefully." },
+          { role: "user", content: "Do a completion review on this large diff and call out regressions before merge." },
+        ],
+        _inputTokens: 152000,
+        _estimatedTokens: 184000,
+        _llmProxyDifficulty: {
+          level: 5,
+          taskLevel: 5,
+          contextLevel: 4,
+          taskKind: "completion_review",
+          costTarget: 5,
+          speedTarget: 3,
+          thinkingLevel: 5,
+          stepShape: { shape: "review", gate: "read_diff" },
+        },
+      };
+      Object.defineProperty(req, "_llmProxySerializedCharsApprox", {
+        value: 1_103_645,
+        configurable: true,
+        enumerable: false,
+      });
+
+      const providers = routing.getProvidersForGroup("auto-coding", req._estimatedTokens, req);
+
+      assert.equal(providers[0].name, "Windsurf-ClaudeOpus461M");
+      assert.equal(providers.some((provider) => provider.name === "Windsurf-ClaudeSonnet46"), false);
+      assert.equal(providers.some((provider) => provider.name === "Windsurf-ClaudeOpus46"), false);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
+test("auto-coding still keeps Windsurf Claude 200k providers for moderate review payloads", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalGroups = state.GROUPS;
+    state.GROUPS = { "auto-coding": "coding" };
+    state.PROVIDERS = [
+      {
+        name: "Windsurf-ClaudeSonnet46",
+        model: "windsurf/claude-sonnet-4.6",
+        family: "windsurf",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking"],
+        context: 200000,
+        tier: 1,
+        tc: true,
+        cost_group: 3,
+        quality_group: 4,
+        speed_group: 4,
+        thinking_effort: "medium",
+      },
+      {
+        name: "Windsurf-ClaudeOpus461M",
+        model: "windsurf/claude-opus-4-6-1m",
+        family: "windsurf",
+        protocol: "windsurf",
+        key: "test",
+        caps: ["text", "coding", "tools", "thinking", "max"],
+        context: 1000000,
+        tier: 1,
+        tc: true,
+        cost_group: 4,
+        quality_group: 5,
+        speed_group: 3,
+        thinking_effort: "xhigh",
+      },
+    ];
+
+    try {
+      const req = {
+        model: "auto-coding",
+        max_tokens: 4000,
+        messages: [
+          { role: "user", content: "Review this patch and suggest the next fix." },
+        ],
+        _inputTokens: 65000,
+        _estimatedTokens: 90000,
+        _llmProxyDifficulty: {
+          level: 4,
+          taskLevel: 3,
+          contextLevel: 2,
+          taskKind: "completion_review",
+          costTarget: 3,
+          speedTarget: 4,
+          thinkingLevel: 3,
+          stepShape: { shape: "review", gate: "read_diff" },
+        },
+      };
+      Object.defineProperty(req, "_llmProxySerializedCharsApprox", {
+        value: 283_630,
+        configurable: true,
+        enumerable: false,
+      });
+
+      const providers = routing.getProvidersForGroup("auto-coding", req._estimatedTokens, req);
+
+      assert.equal(providers[0].name, "Windsurf-ClaudeSonnet46");
+    } finally {
+      state.PROVIDERS = originalProviders;
+      state.GROUPS = originalGroups;
+    }
+  });
+});
+
 test("auto routes the final Opus benchmark challenge to an Opus-class provider", async () => {
   await withRoutingState(async () => {
     const originalProviders = state.PROVIDERS;
@@ -14181,4 +14887,63 @@ test("auto routes the final Opus benchmark challenge to an Opus-class provider",
       state.PROVIDERS = originalProviders;
     }
   });
+});
+
+test("mergeGeneratedToolArgumentText reassembles streamed fragments without dropping the wrapper", () => {
+  const merge = routing.mergeGeneratedToolArgumentText;
+  let acc = "";
+  for (const frag of ['{"plan":[{"step":"a"', ',"status":"pending"}]}']) acc = merge(acc, frag);
+  assert.equal(acc, '{"plan":[{"step":"a","status":"pending"}]}');
+  assert.equal(merge('{"plan":[', '{"step":"x","status":"pending"}]}'), '{"plan":[{"step":"x","status":"pending"}]}');
+  assert.equal(merge('{"a":1}', '{"a":1,"b":2}'), '{"a":1,"b":2}');
+  assert.equal(merge("{}", '{"a":1}'), '{"a":1}');
+});
+
+test("resetHiddenContinueForReroute clears per-provider budget and trims stale nudge tail", () => {
+  const reset = routing.resetHiddenContinueForReroute;
+  const ACTIVE = "continue the active task. Use available plan/goal/todo tools to identify the first incomplete step. If more work remains, call the next appropriate tool now. Do not stop after narrating progress, tool results, or next steps; only provide a final answer when the task is complete and verified.";
+  const ARTIFACT = "continue. Do not replay historical tool invocations or tool results. Use the next appropriate tool call or provide a substantive final answer from current evidence.";
+  const reqBody = {
+    _hiddenContinuationRetries: 3,
+    _hiddenContinueTotal: 3,
+    messages: [
+      { role: "user", content: "do the task" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: ACTIVE },
+      { role: "user", content: ARTIFACT },
+      { role: "user", content: ACTIVE },
+    ],
+  };
+  reset(reqBody);
+  assert.equal(reqBody._hiddenContinuationRetries, 0);
+  // Global cap counter must NOT be reset (keeps nudging globally bounded).
+  assert.equal(reqBody._hiddenContinueTotal, 3);
+  // All three trailing nudge messages are trimmed; the real history is preserved.
+  assert.equal(reqBody.messages.length, 2);
+  assert.equal(reqBody.messages[0].content, "do the task");
+  assert.equal(reqBody.messages[1].content, "ok");
+});
+
+test("coolWindsurfPeers cools the whole Windsurf family but leaves other families active", () => {
+  const originalProviders = state.PROVIDERS;
+  try {
+    state.PROVIDERS = [
+      { name: "Windsurf-GLM51", family: "windsurf", model: "windsurf/glm-5-1" },
+      { name: "Windsurf-SWE16Fast", family: "windsurf", model: "windsurf/swe-1.6-fast" },
+      { name: "Copilot-gpt54", family: "copilot", model: "copilot/gpt-5.4" },
+      { name: "Codex-GPT55", family: "codex", model: "codex/gpt-5.5" },
+    ];
+    state.PROVIDERS.forEach((p) => scoring.clearCooldown && scoring.clearCooldown(p.name));
+    const cooled = routing.coolWindsurfPeers({ name: "Windsurf-GLM51" });
+    assert.equal(cooled, 2);
+    assert.equal(scoring.isOnCooldown("Windsurf-GLM51"), true);
+    assert.equal(scoring.isOnCooldown("Windsurf-SWE16Fast"), true);
+    assert.equal(scoring.isOnCooldown("Copilot-gpt54"), false);
+    assert.equal(scoring.isOnCooldown("Codex-GPT55"), false);
+    // Only the account-wide message matches; per-model rate limits do not cohort-cool.
+    assert.equal(routing.isWindsurfAccountRateLimit(state.PROVIDERS[0], "Reached overall message rate limit. Please try again later."), true);
+    assert.equal(routing.isWindsurfAccountRateLimit(state.PROVIDERS[2], "Reached overall message rate limit."), false);
+  } finally {
+    state.PROVIDERS = originalProviders;
+  }
 });

@@ -152,7 +152,7 @@ test("detectToolCapabilities treats Codex thread tools and Responses hosted tool
 
   assert.deepEqual(caps.subagents, ["create_thread", "send_message_to_thread"]);
   assert.deepEqual(caps.mcpResources, ["list_mcp_resources", "read_mcp_resource"]);
-  assert.deepEqual(caps.mcp, ["mcp:mempalace", "mcp__node_repl"]);
+  assert.deepEqual(caps.mcp, ["mcp__node_repl"]);
   assert.deepEqual(caps.hostedTools, ["web_search_preview"]);
   assert.deepEqual(caps.deferredTools, ["tool_search"]);
 });
@@ -249,6 +249,21 @@ test("capabilityMismatchSummaries classifies no-tool capability reports separate
   assert.equal(summaries.find((summary) => summary.capability === "plans").reason, "no_tools");
 });
 
+test("capabilityMismatchSummaries treats runtime-only tool-less turns as scoped request context", () => {
+  const contract = ide.buildForwardedCapabilityContract({
+    _llmProxyClient: "claude_code",
+    tools: [],
+  }, {
+    headers: {
+      "x-anthropic-billing-header": "cc_version=2.1.165.5d5; cc_entrypoint=claude-vscode; cch=00000;",
+    },
+  });
+
+  const summaries = ide.capabilityMismatchSummaries(contract);
+  assert.equal(summaries.find((summary) => summary.capability === "subagents").reason, "toolless_turn");
+  assert.equal(summaries.find((summary) => summary.capability === "plans").reason, "toolless_turn");
+});
+
 test("capability catalogs advertise cross IDE and provider transform support compactly", () => {
   const clients = ide.clientRuntimeProfilesCatalog();
   assert.deepEqual(Object.keys(clients), [
@@ -278,7 +293,7 @@ test("capability catalogs advertise cross IDE and provider transform support com
   assert.equal(provider.context.compaction, true);
 });
 
-test("buildForwardedCapabilityContract preserves runtime and tool capability shape for all supported surfaces", () => {
+test("buildForwardedCapabilityContract preserves runtime and tool capability shapes across clients", () => {
   const codex = ide.buildForwardedCapabilityContract({
     _llmProxyClient: "codex",
     previous_response_id: "resp_1",
@@ -317,6 +332,9 @@ test("buildForwardedCapabilityContract preserves runtime and tool capability sha
     },
   });
   assert.equal(claudeVsCode.runtime.surface, "claude-vscode");
+
+  const windsurfRuntime = ide.detectRuntimeProfile({}, { headers: { "user-agent": "Windsurf/1.12 Cascade" } });
+  assert.equal(windsurfRuntime.nativeTransport.userAgent, "Windsurf/1.12 Cascade");
 
   const windsurf = ide.buildForwardedCapabilityContract({}, { headers: { "user-agent": "Windsurf/1.12 Cascade" } });
   assert.equal(windsurf.runtime.surface, "windsurf");

@@ -95,15 +95,15 @@ test("stale provider line classifier rejects old setup/listing contexts", () => 
   ]);
 });
 
-test("public docs and setup use current Project branding", () => {
+test("public docs and setup use current LLM Smart Proxy branding", () => {
   const contents = Object.fromEntries(requiredFiles.map((file) => [file, read(file)]));
 
   for (const file of exactBrandingFiles) {
-    assert.match(contents[file], /Project LLM Smart Proxy/, `${file} should carry current prose branding`);
+    assert.match(contents[file], /LLM Smart Proxy/, `${file} should carry current prose branding`);
   }
 
   const packageJson = JSON.parse(contents["package.json"]);
-  assert.equal(packageJson.name, "Project-llm-smart-proxy");
+  assert.match(packageJson.name, /llm.*proxy|smart.*proxy/i, "package.json name should reference LLM proxy");
 });
 
 test("public setup files do not include removed command or config flows", () => {

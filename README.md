@@ -1,12 +1,12 @@
-# Project LLM Smart Proxy
+# Bogdan LLM Smart Proxy
 
-Project LLM Smart Proxy is a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. It exposes one endpoint, discovers available models, and routes smart groups such as `auto`, `auto-coding`, and `coding-sm` to the best provider.
+Bogdan LLM Smart Proxy is a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. It exposes one endpoint, discovers available models, and routes smart groups such as `auto`, `auto-coding`, and `coding-sm` to the best provider.
 
 ## Summary
 
-Project LLM Smart Proxy lowers AI operating cost by routing each request according to task, context size, latency target, and business policy.
+Bogdan LLM Smart Proxy lowers AI operating cost by routing each request according to task, context fit, latency target, and business policy.
 
-- Cost-aware automation: sends simple work to small/free/low-cost models and escalates only when quality, tools, reasoning, or context require it.
+- Cost-aware automation: sends simple work to small/free/low-cost models, escalates capability only when quality/tools/reasoning/risk require it, and prefers same-capability larger-context peers before frontier upgrades.
 - Multi-source provider fabric: unifies Windsurf, Claude, Codex, and GitHub Copilot behind one local API, so clients are not locked to one vendor path.
 - Context continuity: preserves working context across requests with a local Neo4j memory ledger, Graphiti semantic sidecar, compacted-context archives, and built-in memory summaries.
 - Multi-client API support: serves OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, token counting, and model discovery for IDEs, SDKs, and agents.
@@ -55,17 +55,20 @@ CLAUDE_CODE_ACCOUNT_UUID=
 CLAUDE_CODE_ORGANIZATION_UUID=
 CLAUDE_CODE_SESSION_ID=
 CLAUDE_CODE_VERSION=
+CLAUDE_CODE_BILLING_BUILD=
 CLAUDE_CODE_MAX_TOKENS=
 CLAUDE_CODE_STAINLESS_PACKAGE_VERSION=
 CLAUDE_CODE_BETAS=
 CLAUDE_CODE_OUTPUT_EFFORT=
 ENABLE_CODEX=true
+LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS=true
 ENABLE_COPILOT=true
 COPILOT_GITHUB_TOKEN=
 LLM_COST_TARGET=3
 LLM_THINKING_TARGET=medium
 LLM_SPEED_TARGET=4
 LLM_ROUTING_POLICY=balanced
+LLM_PROXY_PROMPT_INJECTION=full
 WINDSURF_ENTERPRISE=false
 ```
 
@@ -110,29 +113,34 @@ To run this proxy beside another checkout on the same Docker host, set a differe
 
 #### Quick setup (persistent)
 
-Copy or reference `example-openai-endpoint.env` for persistent OpenAI-compatible clients:
+Set the client environment variables your OpenAI-compatible client expects:
 
 ```env
 OPENAI_API_BASE_URL=http://localhost:18900/v1
 OPENAI_API_KEY=proxy
-OPENAI_MODEL=auto
+OPENAI_MODEL=gpt-5.5
 ```
+Requesting `gpt-5.5` uses the advertised Codex alias whose smart target is `auto-coding`; clients can also request `auto` or `auto-coding` directly.
 
 Add these lines to your shell profile, such as `~/.zshrc` or `~/.bashrc`, or to your IDE environment/settings file, then restart the IDE or terminal.
 
 #### Codex (persistent config example)
 
-For Codex CLI or plugin, edit `~/.codex/config.toml`:
+For Codex CLI or plugin, point at llm-proxy (port 18900). This is the primary endpoint for Codex — it handles smart routing, prompt injection, memory, and compaction. Edit `~/.codex/config.toml`:
 
 ```toml
 # ~/.codex/config.toml
-model = "auto-coding"
+model = "gpt-5.5"
 model_provider = "llm-proxy"
 
 [model_providers.llm-proxy]
-name = "Project LLM Smart Proxy (OpenAI-compatible)"
+name = "Bogdan LLM Smart Proxy (OpenAI-compatible)"
 base_url = "http://localhost:18900/v1"
-env_key = "OPENAI_API_KEY"
+
+[features]
+multi_agent = true
+codex_hooks = true
+js_repl = false
 ```
 
 Set the API key in your shell or IDE environment:
@@ -142,6 +150,10 @@ export OPENAI_API_KEY=proxy
 ```
 
 Restart after saving.
+
+> **llm-proxy (port 18900) vs codex-proxy (port 10531):**
+> llm-proxy is the smart routing endpoint Codex should talk to. It provides OpenAI Responses API, memory, and routing across all providers.
+> codex-proxy (port 10531) is a separate OAuth/auth shim container that only handles Codex credential refresh from `data/codex-auth.json`. It does not route or inject prompts. The proxy uses it internally as a provider backend.
 
 #### VS Code, JetBrains, or other OpenAI-compatible IDEs
 
@@ -178,7 +190,7 @@ The bridge exposes `/v1/messages` and `/v1/messages/count_tokens`.
 curl http://localhost:18900/v1/chat/completions \
   -H "Authorization: Bearer proxy" \
   -H "Content-Type: application/json" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Project LLM Smart Proxy"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Bogdan LLM Smart Proxy"}]}'
 ```
 
 Health and model checks:
@@ -202,7 +214,7 @@ This summarizes the 2026-05-22 local ladder benchmark. Full methodology, routing
 
 #### Executive Summary
 
-Project LLM Smart Proxy matched direct Opus quality on the tested workload while materially reducing estimated model spend.
+Bogdan LLM Smart Proxy matched direct Opus quality on the tested workload while materially reducing estimated model spend.
 
 | Metric | Direct Opus | Proxy smart routing | Result |
 | --- | ---: | ---: | --- |
@@ -259,11 +271,12 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - `benchmark`: preserve fair arms and measurable outputs.
 5. Build an effective request profile:
    - `taskLevel`: difficulty of the current user task.
-   - `contextLevel`: transcript/tool/cache pressure.
-   - `level`: max of task and context pressure.
+   - `contextLevel`: transcript/tool/cache pressure after the context-headroom check. Token pressure escalates only when the current context tier would leave less than 30% unused context.
+   - `level`: max of task and context pressure for telemetry and route profile. The hard provider capability cap uses task level, thinking level, and sign-off gates; context pressure influences fit/scoring and reaches frontier only when no same-capability fit is viable or an explicit frontier context is requested.
    - `costTarget`, `speedTarget`, `thinkingLevel`: adjusted by the operator policy (`economy`, `balanced`, `speed`, `quality`).
 6. Gate large-model access:
    - Low-tier models can be selected directly.
+   - Context-only pressure does not force Sonnet/Opus/Pro/max access when a same-capability provider has enough context.
    - Sonnet/Opus/Pro/max/high-thinking candidates require AI assessment on a new user task or explicit upgrade.
    - The assessor uses `auto-assess`, favoring cheap fast providers, and returns minified JSON used only by the proxy.
    - Agent continuations reuse the previous response marker or post-route assessment cache when the latest user intent has not changed.
@@ -271,6 +284,7 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
 7. Score candidates:
    - Base provider health and compatibility.
    - Capability match for the smart group.
+   - Context fit and headroom, preferring same-level large-context providers before frontier upgrades.
    - Policy distance from cost, quality, speed, and thinking targets.
    - Learned penalties for tool/schema/context failures.
    - Source-local cost multiplier bonuses so each provider family can contribute its best low-cost candidate.
@@ -282,7 +296,7 @@ The current routing policy is an elastic optimizer rather than a hard allowlist.
    - Store post-route assessment metadata in the session cache for the next request.
    - Emit route trace telemetry with top candidates, selected source, gate, route profile, memory counters, compaction counters, warning codes, and provider-family fairness inputs.
 
-This matches the research direction behind model cascades and learned routing: spend premium reasoning only when the task, context, or risk justifies it.
+This matches the research direction behind model cascades and learned routing: spend premium reasoning only when task complexity, reasoning depth, tool/risk posture, or explicit frontier context need justifies it. Ordinary context pressure first selects a provider with enough window at the current capability level.
 
 ### Memory Algorithm
 
@@ -395,7 +409,7 @@ LLM_SPEED_TARGET=4
 LLM_ROUTING_POLICY=balanced
 ```
 
-The targets are averages/preferences. Simple prompts are steered toward cheaper/faster models; complex agentic work can exceed the configured cost target when capability is more important. Context compaction and AI summaries are handled by the memory layer before the next route is chosen.
+The targets are averages/preferences. Simple prompts are steered toward cheaper/faster models; complex agentic work can exceed the configured cost target when capability is more important. Large context is treated primarily as a fit/headroom constraint: context level rises only when less than 30% headroom remains in the current context tier, and the router keeps same-capability large-context providers eligible before upgrading solely for window size. Context compaction and AI summaries are handled by the memory layer before the next route is chosen.
 
 | Variable | Values | Executive effect |
 | --- | --- | --- |
@@ -454,10 +468,28 @@ Port variables:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `COMPOSE_PROJECT_NAME` | `llm-proxy` | Prefix for Docker Compose container names |
-| `LLM_PROXY_PORT` | `18900` | Host port for the OpenAI/Anthropic proxy |
-| `CODEX_PROXY_PORT` | `10531` | Host port for the Codex proxy profile |
+| `LLM_PROXY_PORT` | `18900` | Host port for llm-proxy: OpenAI, Responses, Anthropic bridge, and smart routing |
+| `CODEX_PROXY_PORT` | `10531` | Host port for codex-proxy: Codex OAuth/auth shim used by llm-proxy as a backend |
 | `DATA_DIR` | `/data` | Runtime data path inside the containers |
 | `DEV_MODE` | `true` | Enables local development logging and behavior |
+
+## Codex config
+
+Codex can use the custom provider mode shown above, with `base_url = "http://localhost:18900/v1"`. In first-party ChatGPT provider mode, point both Codex backend surfaces at llm-proxy:
+
+```toml
+chatgpt_base_url = "http://<proxy-host>:18900/backend-api"
+openai_base_url  = "http://<proxy-host>:18900/v1"
+```
+
+`openai_base_url` routes `/responses` inference through the proxy. `chatgpt_base_url` handles ancillary `backend-api/*` traffic and aliases Codex backend responses back to `/v1/responses`.
+
+Codex must use **ChatGPT login** for `backend-api/*` passthrough. The proxy reverse-proxies that traffic to `chatgpt.com` using client token. Override upstream with `LLM_PROXY_CODEX_BACKEND_UPSTREAM`, or disable passthrough with `LLM_PROXY_CODEX_BACKEND_PASSTHROUGH=off`.
+
+The proxy detects tool families from the request (`Task`, `spawn_agent`, `multi_agent_v1.*`) and adjusts routing accordingly.
+
+Point custom `model_provider` configurations at `http://localhost:18900/v1`; reserve `codex-proxy` on port 10531 for the internal OAuth/auth backend.
+
 
 ## Troubleshooting
 

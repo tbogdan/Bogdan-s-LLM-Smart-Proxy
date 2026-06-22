@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Project LLM Smart Proxy Setup ==="
+echo "=== Bogdan LLM Smart Proxy Setup ==="
 echo ""
 
 if ! command -v docker &> /dev/null; then

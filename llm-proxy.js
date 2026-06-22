@@ -2,6 +2,7 @@
 "use strict";
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const { URL } = require("url");
 const memory = require("./lib/memory");
@@ -395,7 +396,7 @@ function readDiscoveryFile() {
 
 function writeDiscoveryFile(discovery) {
   try {
-    fs.mkdirSync(state.DATA_DIR, { recursive: true });
+    state.ensureDataDir();
     fs.writeFileSync(state.DISCOVERY_FILE, JSON.stringify(discovery, null, 2));
   } catch (err) {
     state.log(`DISCOVERY-REFRESH: failed to write discovery file: ${err.message}`);
@@ -446,6 +447,42 @@ function readBody(req) {
   });
 }
 
+// Reverse-proxy the ChatGPT ancillary backend-api surface (config bundle,
+// requirements, accounts, plugins, analytics) to the real upstream so Codex can
+// start when pointed here via chatgpt_base_url. Inference (/responses) is handled
+// locally and never reaches this path. Forwards method/headers/body verbatim
+// (incl. the client's Authorization) and streams the response back.
+const CODEX_BACKEND_UPSTREAM = (process.env.LLM_PROXY_CODEX_BACKEND_UPSTREAM || "https://chatgpt.com").replace(/\/+$/, "");
+function proxyCodexBackend(req, res, fullPath) {
+  let target;
+  try { target = new URL(CODEX_BACKEND_UPSTREAM + fullPath); }
+  catch { res.writeHead(502); res.end("bad upstream"); return; }
+  const headers = { ...req.headers };
+  delete headers["content-length"];
+  delete headers["accept-encoding"]; // avoid passing through compressed bodies we don't re-handle
+  headers.host = target.host;
+  const client = target.protocol === "http:" ? http : https;
+  const upstream = client.request(
+    target,
+    { method: req.method, headers },
+    (up) => {
+      const respHeaders = { ...up.headers };
+      delete respHeaders["transfer-encoding"];
+      res.writeHead(up.statusCode || 502, respHeaders);
+      up.on("data", (c) => res.write(c));
+      up.on("end", () => res.end());
+    },
+  );
+  upstream.on("error", (err) => {
+    state.log(`CODEX-BACKEND-PROXY-ERR: ${req.method} ${fullPath} -> ${target.host}: ${err.message}`);
+    if (!res.headersSent) { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "codex backend passthrough failed", detail: err.message })); }
+    else { try { res.end(); } catch {} }
+  });
+  req.on("data", (c) => upstream.write(c));
+  req.on("end", () => upstream.end());
+  req.on("error", () => { try { upstream.destroy(); } catch {} });
+}
+
 function formatUptime(seconds) {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
@@ -460,10 +497,38 @@ function formatUptime(seconds) {
 // ---------------------------------------------------------------------------
 // HTTP Server
 // ---------------------------------------------------------------------------
+// Tracks unique unmapped ChatGPT backend-api paths so they are logged once, not
+// per-request (Codex polls plugins/accounts/analytics very frequently).
+const codexBackendUnmappedSeen = new Set();
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
-  const pathname = urlObj.pathname;
+  let pathname = urlObj.pathname;
   const method = req.method;
+
+  // First-party ChatGPT backend impersonation: when Codex is pointed at this
+  // proxy via `chatgpt_base_url` (so it runs as the builtin "chatgpt" provider
+  // and keeps native features like multi_agent_v1), it calls
+  // `…/backend-api/codex/responses` instead of `/v1/responses`. Alias the
+  // runtime responses endpoint onto the existing handler, and log every other
+  // codex/backend-api path so missing endpoints are discoverable from one run.
+  if (/\/responses$/.test(pathname) && pathname !== "/v1/responses") {
+    state.log(`CODEX-BACKEND-ALIAS: ${method} ${pathname} -> /v1/responses`);
+    pathname = "/v1/responses";
+  } else if (/^\/(?:backend-api|codex|api\/codex)\b/.test(pathname)) {
+    // Ancillary chatgpt backend-api calls (config bundle, requirements, accounts,
+    // plugins, analytics). Codex HARD-FAILS startup if it can't load the config
+    // bundle, so we cannot just 404. Forward these to the real chatgpt.com backend
+    // with the client's token; only /responses inference stays local. Disable with
+    // LLM_PROXY_CODEX_BACKEND_PASSTHROUGH=off (then they 404, logged once).
+    if (String(process.env.LLM_PROXY_CODEX_BACKEND_PASSTHROUGH || "on").toLowerCase() !== "off") {
+      return proxyCodexBackend(req, res, urlObj.pathname + urlObj.search);
+    }
+    const key = `${method} ${pathname.replace(/\/[0-9a-f-]{8,}\//gi, "/<id>/")}`;
+    if (!codexBackendUnmappedSeen.has(key)) {
+      codexBackendUnmappedSeen.add(key);
+      state.log(`CODEX-BACKEND-UNMAPPED: ${key} (logged once)`);
+    }
+  }
 
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -681,7 +746,10 @@ server.listen(PORT, () => {
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (url.pathname === "/v1/responses") {
+  // Accept the Responses websocket on /v1/responses and on the ChatGPT
+  // backend-api alias (…/codex/responses) used when Codex runs as the builtin
+  // chatgpt provider pointed at this proxy (the collab/subagent flow is WS-based).
+  if (url.pathname === "/v1/responses" || /\/responses$/.test(url.pathname)) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       responses.handleResponsesWS(ws, req);
     });

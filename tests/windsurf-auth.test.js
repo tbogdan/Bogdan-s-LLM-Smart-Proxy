@@ -115,7 +115,7 @@ test("registerWindsurfOneTimeToken posts proto token and parses API key fields",
       const body = Buffer.concat(chunks);
       assert.equal(request.method, "POST");
       assert.equal(request.headers["content-type"], "application/proto");
-      assert.equal(request.headers["user-agent"], "Project-llm-smart-proxy");
+      assert.equal(request.headers["user-agent"], "vscode-windsurf/1.2.3");
       assert.deepEqual(auth.parseFields(body).get(1), ["ott$one-time"]);
       response.writeHead(200, { "content-type": "application/proto" });
       response.end(Buffer.concat([auth.encodeString(1, "api-key-123"), auth.encodeString(2, "User"), auth.encodeString(3, "u@example.com")]));
@@ -127,6 +127,7 @@ test("registerWindsurfOneTimeToken posts proto token and parses API key fields",
     const { port } = server.address();
     const output = await auth.registerWindsurfOneTimeToken("one-time", {
       registerUrl: `http://127.0.0.1:${port}/register`,
+      userAgent: "vscode-windsurf/1.2.3",
     });
 
     assert.deepEqual(output, { apiKey: "api-key-123", name: "User", email: "u@example.com" });

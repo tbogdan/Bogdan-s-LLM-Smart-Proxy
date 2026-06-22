@@ -1,5 +1,6 @@
 node_modules/
 data/*.json
+!data/discovery-model-inventory-costgroups-multipliers-audit.json
 data/neo4j/
 .env
 .claude/
@@ -10,3 +11,11 @@ docs/*
 palace/
 *.log
 data/human-approvals.jsonl
+scripts/deploy-local-homebridge.sh
+scripts/pull-codex-capture.sh
+data/remote-proxy-log.txt
+data/human-approvals.jsonl
+.vscode/
+.playwright-mcp/
+docs/superpowers
+.claude/

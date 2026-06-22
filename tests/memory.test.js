@@ -34,10 +34,10 @@ test("getSession reads multipart system content for project identity", () => {
 
 test("getSession detects project identity from direct home paths", () => {
   const session = memory.getSession([
-    { role: "system", content: "Workspace: /home/bogdan/Project-llm-proxy" },
+    { role: "system", content: "Workspace: /home/bogdan/Bogdan-llm-proxy" },
   ]);
 
-  assert.equal(session.projectName, "Project-llm-proxy");
+  assert.equal(session.projectName, "Bogdan-llm-proxy");
 });
 
 test("getSession keeps the same project session when volatile prompt preamble changes", () => {

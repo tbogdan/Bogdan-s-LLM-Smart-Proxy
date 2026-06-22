@@ -11,7 +11,7 @@ const claudeAuth = require("../claude-auth");
 test("keychainServiceName matches Claude Code managed API key service", () => {
   assert.equal(claudeAuth.keychainServiceName({ env: {} }), "Claude Code");
   assert.equal(
-    claudeAuth.keychainServiceName({ env: { CLAUDE_CONFIG_DIR: "/tmp/Project-claude" } }),
+    claudeAuth.keychainServiceName({ env: { CLAUDE_CONFIG_DIR: "/tmp/Bogdan-claude" } }),
     "Claude Code-eac8a763",
   );
 });

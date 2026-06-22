@@ -65,6 +65,51 @@ test("transformRequest sanitizes tool schemas and tool call history for provider
   assert.equal(transformed.messages.some((m) => m.role === "assistant" && m.content === "Tool result received."), false);
 });
 
+test("transformRequest repairs invalid historical tool call argument JSON before provider send", async () => {
+  const transformed = await transforms.transformRequest({
+    ...provider,
+    name: "Copilot-Claude-Test",
+    family: "copilot",
+    model: "copilot/claude-sonnet-4.6",
+  }, {
+    model: "auto-coding",
+    tools: [
+      { type: "function", function: { name: "exec_command", parameters: { type: "object" } } },
+      { type: "function", function: { name: "Read", parameters: { type: "object" } } },
+    ],
+    messages: [
+      { role: "user", content: "Continue." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_cmd",
+          type: "function",
+          function: { name: "exec_command", arguments: "\"cmd\":\"npm test\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_cmd", content: "ok" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_read",
+          type: "function",
+          function: { name: "Read", arguments: "not json at all" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_read", content: "ok" },
+    ],
+  });
+
+  const calls = transformed.messages
+    .filter((message) => message.role === "assistant" && message.tool_calls?.length)
+    .flatMap((message) => message.tool_calls);
+
+  assert.equal(JSON.parse(calls[0].function.arguments).cmd, "npm test");
+  assert.equal(JSON.parse(calls[1].function.arguments).input, "not json at all");
+});
+
 test("transformRequest caps tools using provider-advertised maximum", async () => {
   const tools = Array.from({ length: 3 }, (_, idx) => ({
     type: "function",
@@ -433,7 +478,7 @@ test("smartnessBonus stays model-quality focused and leaves routing policy to ro
   }
 });
 
-test("transformRequest injects upgraded Project system prompt from upstream internals", async () => {
+test("transformRequest injects upgraded Bogdan system prompt from upstream internals", async () => {
   const transformed = await transforms.transformRequest(provider, {
     model: "auto-coding",
     tools: [{ type: "function", function: { name: "Read" } }],
@@ -444,7 +489,7 @@ test("transformRequest injects upgraded Project system prompt from upstream inte
   });
   const system = transformed.messages[0].content;
 
-  assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /You are Bogdan LLM Smart Proxy/);
   assert.match(system, /If the user asks your name, identity, who you are/);
   assert.match(system, /Do not answer as Claude, ChatGPT, Gemini, Codex, Windsurf/);
   assert.match(system, /USE CASE FOCUS:/);
@@ -662,7 +707,7 @@ test("transformRequest supports Devin Desktop as a Windsurf-like client profile"
   assert.match(system, /Use subagents whenever possible/i);
 });
 
-test("transformRequest hidden-only prompt mode preserves IDE identity while keeping proxy control lane", async () => {
+test("transformRequest off prompt mode preserves IDE system prompt without proxy injection", async () => {
   const original = process.env.LLM_PROXY_PROMPT_INJECTION;
   process.env.LLM_PROXY_PROMPT_INJECTION = "off";
   try {
@@ -679,12 +724,11 @@ test("transformRequest hidden-only prompt mode preserves IDE identity while keep
 
     assert.match(system, /^You are Devin Desktop, Cognition's official IDE agent\./);
     assert.match(system, /Keep this repo rule\./);
-    assert.match(system, /LLM PROXY HIDDEN CONTROL LANE/);
-    assert.match(system, /CLIENT CAPABILITY CONTRACT:/);
-    assert.match(system, /Detected client: devin_desktop/i);
-    assert.match(system, /OUTPUT CONTRACT:/);
-    assert.match(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
-    assert.doesNotMatch(system, /You are Project LLM Smart Proxy/);
+    assert.doesNotMatch(system, /LLM PROXY HIDDEN CONTROL LANE/);
+    assert.doesNotMatch(system, /CLIENT CAPABILITY CONTRACT:/);
+    assert.doesNotMatch(system, /OUTPUT CONTRACT:/);
+    assert.doesNotMatch(system, /LLM_PROXY_INTERNAL_ROUTING level=<1-5>/);
+    assert.doesNotMatch(system, /You are Bogdan LLM Smart Proxy/);
     assert.doesNotMatch(system, /Do not answer as Claude, ChatGPT, Gemini, Codex, Windsurf/);
   } finally {
     if (original === undefined) delete process.env.LLM_PROXY_PROMPT_INJECTION;
@@ -732,7 +776,7 @@ test("transformRequest skips difficulty marker contract for direct exact replies
   });
   const system = transformed.messages[0].content;
 
-  assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /You are Bogdan LLM Smart Proxy/);
   assert.match(system, /DIRECT ANSWER MODE/);
   assert.match(system, /LIGHTWEIGHT MODE/);
   assert.match(system, /MODE LANE: Ask/);
@@ -896,7 +940,7 @@ test("transformRequest can bypass proxy optimizations for benchmark direct calls
   assert.equal(transformed.messages[0].content, "Baseline instruction.");
   assert.equal(readCalls.length, 2);
   assert.equal(transformed._llmProxyBypassOptimizations, undefined);
-  assert.doesNotMatch(JSON.stringify(transformed), /Project LLM Smart Proxy/);
+  assert.doesNotMatch(JSON.stringify(transformed), /Bogdan LLM Smart Proxy/);
   assert.doesNotMatch(JSON.stringify(transformed), /LLM_PROXY_(?:INTERNAL_ROUTING|TASK_DIFFICULTY)/);
 });
 
@@ -932,7 +976,7 @@ test("transformRequest preserves existing system content parts during injection"
   });
   const system = transformed.messages[0].content;
 
-  assert.match(system, /You are Project LLM Smart Proxy/);
+  assert.match(system, /You are Bogdan LLM Smart Proxy/);
   assert.match(system, /Preserve \ncontent parts\./);
 });
 
@@ -954,14 +998,14 @@ test("transformRequest replaces previous proxy prompt instead of stacking it", a
   });
 
   const system = second.messages[0].content;
-  assert.equal((system.match(/You are Project LLM Smart Proxy/g) || []).length, 1);
+  assert.equal((system.match(/You are Bogdan LLM Smart Proxy/g) || []).length, 1);
   assert.equal((system.match(/\[LLM_PROXY_SYSTEM_PROMPT_START\]/g) || []).length, 1);
   assert.match(system, /Keep this project-specific instruction\./);
 });
 
 test("transformRequest strips old proxy mode tails and recalled memory before reinjection", async () => {
   const previousProxy = [
-    "You are Project LLM Smart Proxy — senior staff engineer. Date: 2026-01-01 00:00:00 UTC.",
+    "You are Bogdan LLM Smart Proxy — senior staff engineer. Date: 2026-01-01 00:00:00 UTC.",
     "IDENTITY: old proxy identity.",
     "- Subagent checklist: 1) Did it use tools? 2) Did files actually change? 3) Do tests pass? 4) Is output correct?",
     "",
@@ -980,7 +1024,7 @@ test("transformRequest strips old proxy mode tails and recalled memory before re
   });
 
   const system = transformed.messages[0].content;
-  assert.equal((system.match(/Project LLM Smart Proxy/g) || []).length, 2); // title + identity rule
+  assert.equal((system.match(/Bogdan LLM Smart Proxy/g) || []).length, 2); // title + identity rule
   assert.equal((system.match(/THINKING MODE:/g) || []).length, 0);
   assert.equal((system.match(/\[LLM_PROXY_MEMORY_START\]/g) || []).length, 1);
   assert.doesNotMatch(system, /Old remembered instruction/);
@@ -1044,7 +1088,7 @@ test("transformRequest preserves Claude Code system verbatim for native Claude p
 
   const system = transformed.messages[0].content;
   assert.equal(system, originalSystem);
-  assert.doesNotMatch(system, /Project LLM Smart Proxy/);
+  assert.doesNotMatch(system, /Bogdan LLM Smart Proxy/);
 });
 
 test("transformRequest strips tool schemas from direct no-tool answers", async () => {
@@ -1224,7 +1268,7 @@ test("transformRequest does not force tools for no-tool requests that include re
 test("transformRequest removes stale proxy blocks from developer messages", async () => {
   const oldProxy = [
     "[LLM_PROXY_SYSTEM_PROMPT_START]",
-    "You are Project LLM Smart Proxy.",
+    "You are Bogdan LLM Smart Proxy.",
     "[LLM_PROXY_MEMORY_START]",
     "Old recalled memory.",
     "[LLM_PROXY_MEMORY_END]",
@@ -1583,10 +1627,11 @@ test("transformRequest removes whitespace-only assistant messages after tool syn
     ],
   });
 
-  assert.equal(
-    transformed.messages.some((msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === ""),
-    false,
+  const whitespaceAssistants = transformed.messages.filter(
+    (msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === "",
   );
+  assert.equal(whitespaceAssistants.length, 1);
+  assert.equal(whitespaceAssistants[0].content, " ");
 });
 
 test("transformRequest does not add whitespace assistant separators for native Anthropic providers", async () => {
@@ -1614,6 +1659,139 @@ test("transformRequest does not add whitespace assistant separators for native A
 
   assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === ""), false);
   assert.equal(transformed.messages.some((msg, i, arr) => msg.role === "tool" && arr[i + 1]?.role === "user"), true);
+});
+
+test("transformRequest does not add whitespace assistant separators for Anthropic-backed Copilot providers", async () => {
+  // Regression: Copilot routes Claude models over the OpenAI wire (protocol !==
+  // anthropic) but relays to Anthropic, which rejects whitespace-only text blocks
+  // with HTTP 400 — the injected " " separator caused a reroute every turn.
+  const copilotClaude = {
+    ...provider,
+    name: "Copilot-claudesonnet45",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/claude-sonnet-4.5",
+  };
+  const transformed = await transforms.transformRequest(copilotClaude, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Read the file." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_read_1", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_read_1", content: "README contents." },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && !msg.tool_calls?.length && String(msg.content || "").trim() === ""), false);
+});
+
+test("transformRequest does not inject assistant separator while unresolved tool calls remain", async () => {
+  const openAiCompatProvider = {
+    ...provider,
+    name: "Copilot-GPT5Mini",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-5-mini",
+  };
+  const transformed = await transforms.transformRequest(openAiCompatProvider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Run two tools." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "call_a", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } },
+          { id: "call_b", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"package.json\"}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_a", content: "README contents." },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  const toolMessages = transformed.messages.filter((msg) => msg.role === "tool");
+  assert.equal(toolMessages.length, 1);
+  assert.equal(transformed.messages[transformed.messages.indexOf(toolMessages[0]) + 1]?.role, "assistant");
+  assert.equal(transformed.messages.some((msg) => msg.role === "assistant" && String(msg.content || "") === " "), true);
+});
+
+test("transformRequest injects assistant separator when all tool calls are resolved", async () => {
+  const openAiCompatProvider = {
+    ...provider,
+    name: "Copilot-GPT5Mini",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-5-mini",
+  };
+  const transformed = await transforms.transformRequest(openAiCompatProvider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "Run tool." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_done", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_done", content: "README contents." },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  const toolMessages = transformed.messages.filter((msg) => msg.role === "tool");
+  assert.equal(toolMessages.length, 1);
+  assert.equal(transformed.messages[transformed.messages.indexOf(toolMessages[0]) + 1]?.role, "assistant");
+  assert.equal(transformed.messages[transformed.messages.indexOf(toolMessages[0]) + 1]?.content, " ");
+});
+
+test("transformRequest keeps duplicate original tool IDs paired with matching tool results", async () => {
+  const openAiCompatProvider = {
+    ...provider,
+    name: "Copilot-GPT54",
+    family: "copilot",
+    protocol: "openai",
+    model: "copilot/gpt-5.4",
+  };
+  const transformed = await transforms.transformRequest(openAiCompatProvider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "You are a coding assistant." },
+      { role: "user", content: "First tool use." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "DZrfWFgJ4", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }],
+      },
+      { role: "tool", tool_call_id: "DZrfWFgJ4", content: "first result" },
+      { role: "user", content: "Second tool use." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "DZrfWFgJ4", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"package.json\"}" } }],
+      },
+      { role: "tool", tool_call_id: "DZrfWFgJ4", content: "second result" },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  const assistantCalls = transformed.messages
+    .filter((msg) => msg.role === "assistant" && Array.isArray(msg.tool_calls))
+    .flatMap((msg) => msg.tool_calls.map((toolCall) => toolCall.id));
+  const toolResultIds = transformed.messages
+    .filter((msg) => msg.role === "tool")
+    .map((msg) => msg.tool_call_id);
+
+  assert.deepEqual(toolResultIds, assistantCalls);
+  assert.equal(new Set(assistantCalls).size, 2);
+  assert.notEqual(assistantCalls[0], assistantCalls[1]);
+  assert.equal(assistantCalls[0].slice(0, 7), assistantCalls[1].slice(0, 7));
 });
 
 test("transformRequest flattens compacted Windsurf tool history into text", async () => {
@@ -1805,7 +1983,7 @@ test("transformRequest leaves internal AI summary self-calls unwrapped by proxy 
   });
 
   assert.equal(transformed._llmProxyInternalSummary, undefined);
-  assert.doesNotMatch(transformed.messages[0].content, /Project LLM Smart Proxy/);
+  assert.doesNotMatch(transformed.messages[0].content, /Bogdan LLM Smart Proxy/);
   assert.match(transformed.messages[0].content, /Summarize compacted context only/);
 });
 
@@ -1823,5 +2001,174 @@ test("transformRequest leaves auto-memory extraction traffic unwrapped by proxy 
   const serialized = JSON.stringify(transformed.messages);
   assert.equal(transformed._memoryInjection, undefined);
   assert.match(String(transformed.messages[0]?.content || ""), /Extract entities and facts/);
-  assert.doesNotMatch(serialized, /Project LLM Smart Proxy|LLM_PROXY_MEMORY_START|LLM_PROXY_RECALL|Architecture note that must not feed Graphiti extraction/);
+  assert.doesNotMatch(serialized, /Bogdan LLM Smart Proxy|LLM_PROXY_MEMORY_START|LLM_PROXY_RECALL|Architecture note that must not feed Graphiti extraction/);
+});
+
+test("transformRequest deduplicates tool_call IDs when different original IDs hash to the same shortened ID", async () => {
+  // Mock the crypto hash to force collision
+  const originalCreateHash = require("crypto").createHash;
+  let hashCallCount = 0;
+  require("crypto").createHash = (algorithm) => {
+    const hash = originalCreateHash(algorithm);
+    const originalUpdate = hash.update.bind(hash);
+    const originalDigest = hash.digest.bind(hash);
+    hash.update = (data) => {
+      hashCallCount += 1;
+      // Force first two tool_call IDs to hash to the same value
+      if (hashCallCount <= 2) {
+        return originalCreateHash(algorithm).update("collision_seed");
+      }
+      return originalUpdate(data);
+    };
+    hash.digest = originalDigest;
+    return hash;
+  };
+
+  try {
+    const transformed = await transforms.transformRequest(provider, {
+      model: "auto-coding",
+      messages: [
+        { role: "user", content: "Call tools." },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "call_original_long_id_12345", type: "function", function: { name: "Read", arguments: "{}" } },
+            { id: "call_different_long_id_67890", type: "function", function: { name: "Write", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_original_long_id_12345", content: "result1" },
+        { role: "tool", tool_call_id: "call_different_long_id_67890", content: "result2" },
+      ],
+    });
+
+    const assistantMsg = transformed.messages.find((m) => m.role === "assistant" && m.tool_calls);
+    const toolMsgs = transformed.messages.filter((m) => m.role === "tool");
+
+    // The two tool calls should have different IDs despite hash collision
+    assert.equal(assistantMsg.tool_calls.length, 2);
+    assert.notEqual(assistantMsg.tool_calls[0].id, assistantMsg.tool_calls[1].id);
+
+    // Tool results should have matching remapped IDs
+    assert.equal(toolMsgs[0].tool_call_id, assistantMsg.tool_calls[0].id);
+    assert.equal(toolMsgs[1].tool_call_id, assistantMsg.tool_calls[1].id);
+
+    // The second ID should have collision suffix (last 2 chars changed)
+    const id1 = assistantMsg.tool_calls[0].id;
+    const id2 = assistantMsg.tool_calls[1].id;
+    assert.equal(id1.length, 9);
+    assert.equal(id2.length, 9);
+    assert.equal(id1.slice(0, 7), id2.slice(0, 7)); // First 7 chars same (collision)
+    assert.notEqual(id1.slice(7), id2.slice(7)); // Last 2 chars different (suffix)
+  } finally {
+    require("crypto").createHash = originalCreateHash;
+  }
+});
+
+test("transformRequest remaps tool_call_id on tool messages to match shortened assistant tool_call ID", async () => {
+  const transformed = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [
+      { role: "user", content: "Call a tool." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "call_with_very_long_identifier_that_exceeds_nine_chars", type: "function", function: { name: "Read", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_with_very_long_identifier_that_exceeds_nine_chars", content: "result" },
+    ],
+  });
+
+  const assistantMsg = transformed.messages.find((m) => m.role === "assistant" && m.tool_calls);
+  const toolMsg = transformed.messages.find((m) => m.role === "tool");
+
+  // The assistant tool_call ID should be shortened to 9 chars
+  assert.equal(assistantMsg.tool_calls[0].id.length, 9);
+  assert.match(assistantMsg.tool_calls[0].id, /^[a-zA-Z0-9]{9}$/);
+
+  // The tool message tool_call_id should match the shortened ID
+  assert.equal(toolMsg.tool_call_id, assistantMsg.tool_calls[0].id);
+});
+
+test("transformRequest does not overlay the proxy persona on proxy-hosted Codex subagents", async () => {
+  // A proxy-hosted Codex subagent must keep the identity it was spawned with;
+  // injecting the proxy system prompt made it introduce itself as the proxy.
+  const base = { model: "auto-coding", messages: [
+    { role: "system", content: "WORKER_ID_KEEP" },
+    { role: "user", content: "who are you" },
+  ] };
+  const sysText = (r) => {
+    const m = (r.messages || []).find((x) => x.role === "system");
+    return typeof m?.content === "string" ? m.content : JSON.stringify(m?.content || "");
+  };
+
+  const sub = await transforms.transformRequest(provider, { ...base, _llmProxyClient: "codex_virtual_subagent" });
+  assert.equal(/LLM_PROXY_SYSTEM_PROMPT_START|LLM PROXY/i.test(sysText(sub)), false);
+  assert.match(sysText(sub), /WORKER_ID_KEEP/);
+
+  // Sanity: a normal Codex request still gets the proxy system injected.
+  const norm = await transforms.transformRequest(provider, { ...base, _llmProxyClient: "codex" });
+  assert.equal(/LLM_PROXY_SYSTEM_PROMPT_START|LLM PROXY/i.test(sysText(norm)), true);
+});
+
+test("transformRequest injects placeholder user message for Anthropic-native provider when request is system-only", async () => {
+  // Windsurf sends schema validation requests with only a system message.
+  // Anthropic rejects these with HTTP 400 "messages: at least one message is required".
+  const claudeProvider = {
+    name: "Claude-Sonnet45",
+    model: "claude/claude-sonnet-4-5-20250929",
+    family: "claude",
+    url: "http://proxy.local/v1/chat/completions",
+    key: "test",
+    context: 200000,
+    tier: 1,
+  };
+
+  const result = await transforms.transformRequest(claudeProvider, {
+    model: "auto-coding",
+    messages: [{ role: "system", content: "You are a validator. Schema: {}" }],
+    _llmProxyBypassOptimizations: true,
+  });
+
+  const userMsgs = result.messages.filter((m) => m.role === "user");
+  assert.equal(userMsgs.length, 1, "should have injected exactly one user message");
+  assert.equal(userMsgs[0].content, "Continue.");
+});
+
+test("transformRequest does not inject placeholder user message when user message already present", async () => {
+  const claudeProvider = {
+    name: "Claude-Sonnet45",
+    model: "claude/claude-sonnet-4-5-20250929",
+    family: "claude",
+    url: "http://proxy.local/v1/chat/completions",
+    key: "test",
+    context: 200000,
+    tier: 1,
+  };
+
+  const result = await transforms.transformRequest(claudeProvider, {
+    model: "auto-coding",
+    messages: [
+      { role: "system", content: "System prompt." },
+      { role: "user", content: "Hello." },
+    ],
+    _llmProxyBypassOptimizations: true,
+  });
+
+  const userMsgs = result.messages.filter((m) => m.role === "user" && m.content === "Continue.");
+  assert.equal(userMsgs.length, 0, "should not inject placeholder when user message exists");
+});
+
+test("transformRequest does not inject placeholder user message for non-Anthropic provider", async () => {
+  // OpenAI/Windsurf providers handle system-only requests differently; don't modify.
+  const result = await transforms.transformRequest(provider, {
+    model: "auto-coding",
+    messages: [{ role: "system", content: "System only." }],
+    _llmProxyBypassOptimizations: true,
+  });
+
+  const userMsgs = result.messages.filter((m) => m.role === "user" && m.content === "Continue.");
+  assert.equal(userMsgs.length, 0, "should not inject placeholder for non-Anthropic provider");
 });

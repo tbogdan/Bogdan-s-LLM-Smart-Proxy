@@ -226,6 +226,59 @@ test("drops artificial whitespace assistant separators before native Claude requ
   assert.equal(textBlocks.some((text) => String(text || "").trim() === ""), false);
 });
 
+test("toAnthropicRequest deduplicates tool_use IDs that appear in multiple assistant messages", () => {
+  const provider = { upstream_model: "claude-sonnet-4-5" };
+  // Same tool_use id "DZrfWFgJ4" appears in two separate assistant turns — the bug that caused
+  // "messages.205: tool_use ids were..." errors from the Anthropic API.
+  const output = anthropic.toAnthropicRequest(provider, {
+    model: "claude/claude-sonnet-4-5",
+    messages: [
+      { role: "user", content: "First tool use" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "DZrfWFgJ4", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "DZrfWFgJ4", content: "first result" },
+      { role: "user", content: "Second tool use" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "DZrfWFgJ4", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "DZrfWFgJ4", content: "second result" },
+    ],
+  });
+
+  // Locate the two assistant messages and the two tool-result messages
+  const assistantMsgs = output.messages.filter((m) => m.role === "assistant");
+  const toolResultMsgs = output.messages.filter((m) => m.role === "user" && Array.isArray(m.content) && m.content[0]?.type === "tool_result");
+
+  assert.equal(assistantMsgs.length, 2);
+  assert.equal(toolResultMsgs.length, 2);
+
+  const firstToolUseId = assistantMsgs[0].content[0].id;
+  const secondToolUseId = assistantMsgs[1].content[0].id;
+
+  // The two tool_use IDs must be different
+  assert.notEqual(firstToolUseId, secondToolUseId);
+
+  // Each tool_result must reference the tool_use ID from the same turn
+  const firstToolResultId = toolResultMsgs[0].content[0].tool_use_id;
+  const secondToolResultId = toolResultMsgs[1].content[0].tool_use_id;
+
+  assert.equal(firstToolResultId, firstToolUseId);
+  assert.equal(secondToolResultId, secondToolUseId);
+
+  // The second tool_use ID should have a collision suffix (first 7 chars match, last 2 differ)
+  assert.equal(firstToolUseId.slice(0, 7), secondToolUseId.slice(0, 7));
+  assert.notEqual(firstToolUseId.slice(7), secondToolUseId.slice(7));
+});
+
 test("converts buffered Anthropic text stream to OpenAI SSE", () => {
   const output = anthropic.toOpenAIStream(
     "claude/claude-sonnet-4-5",
@@ -335,27 +388,33 @@ test("builds Claude Code first-party headers for managed OAuth token", () => {
         CLAUDE_CODE_BILLING_BUILD: "bbb",
         CLAUDE_CODE_STAINLESS_PACKAGE_VERSION: "0.94.0",
         CLAUDE_CODE_BETAS: "claude-code-20250219,effort-2025-11-24",
+        LLM_PROXY_CLAUDE_CODE_OS: "MacOS",
+        LLM_PROXY_CLAUDE_CODE_ARCH: "arm64",
       },
     }
   );
 
   assert.equal(headers.Authorization, "Bearer oauth-token");
-  assert.equal(headers["user-agent"], "claude-cli/2.1.150 (external, sdk-cli)");
+  // Interactive CLI identifies as "(external, cli)", not the SDK/headless "sdk-cli".
+  assert.equal(headers["user-agent"], "claude-cli/2.1.150 (external, cli)");
   assert.equal(headers["x-app"], "cli");
   assert.equal(headers["anthropic-dangerous-direct-browser-access"], "true");
   assert.match(headers["anthropic-beta"], /claude-code-20250219/);
   assert.match(headers["anthropic-beta"], /effort-2025-11-24/);
-  assert.match(headers["x-anthropic-billing-header"], /cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=sdk-cli; cch=[a-f0-9]{5};/);
+  assert.match(headers["x-anthropic-billing-header"], /cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=cli; cch=[a-f0-9]{5};/);
   // analytics/session/fingerprint headers must not be forwarded upstream
   assert.equal(headers["x-claude-code-session-id"], undefined);
   assert.equal(headers["x-client-request-id"], undefined);
-  assert.equal(headers["x-stainless-lang"], undefined);
-  assert.equal(headers["x-stainless-package-version"], undefined);
-  assert.equal(headers["x-stainless-arch"], undefined);
-  assert.equal(headers["x-stainless-os"], undefined);
-  assert.equal(headers["x-stainless-runtime"], undefined);
-  assert.equal(headers["x-stainless-runtime-version"], undefined);
-  assert.equal(headers["x-stainless-retry-count"], undefined);
+  // @anthropic-ai/sdk x-stainless-* fingerprint headers must be present (the
+  // genuine bundled SDK always sends them).
+  assert.equal(headers["x-stainless-lang"], "js");
+  assert.equal(headers["x-stainless-package-version"], "0.94.0");
+  assert.equal(headers["x-stainless-arch"], "arm64");
+  assert.equal(headers["x-stainless-os"], "MacOS");
+  assert.equal(headers["x-stainless-runtime"], "node");
+  assert.equal(headers["x-stainless-runtime-version"], process.version.replace(/^v/, ""));
+  assert.equal(headers["x-stainless-retry-count"], "0");
+  // timeout header is only set by the SDK when a timeout is configured; proxy omits it.
   assert.equal(headers["x-stainless-timeout"], undefined);
 });
 
@@ -368,7 +427,7 @@ test("computes Claude Code billing header from the first user message", () => {
     },
   );
 
-  assert.equal(headers["x-anthropic-billing-header"], "cc_version=2.1.37.0d9; cc_entrypoint=sdk-cli; cch=fa690;");
+  assert.equal(headers["x-anthropic-billing-header"], "cc_version=2.1.37.0d9; cc_entrypoint=cli; cch=fa690;");
 });
 
 test("builds Claude Code first-party headers for Claude providers using managed API key", () => {
@@ -387,7 +446,7 @@ test("builds Claude Code first-party headers for Claude providers using managed 
   );
 
   assert.equal(headers["x-api-key"], "sk-ant-api03-test");
-  assert.equal(headers["user-agent"], "claude-cli/2.1.150 (external, sdk-cli)");
+  assert.equal(headers["user-agent"], "claude-cli/2.1.150 (external, cli)");
   assert.equal(headers["x-app"], "cli");
   assert.match(headers["anthropic-beta"], /claude-code-20250219/);
 });
@@ -458,7 +517,7 @@ test("builds Claude Code request metadata and shape for first-party Claude provi
   assert.deepEqual(output.system, [
     {
       type: "text",
-      text: "x-anthropic-billing-header: cc_version=2.1.150.c38; cc_entrypoint=sdk-cli; cch=c1bd7;",
+      text: "x-anthropic-billing-header: cc_version=2.1.150.c38; cc_entrypoint=cli; cch=c1bd7;",
     },
     {
       type: "text",
@@ -526,7 +585,7 @@ test("prepends Claude Code SDK system before proxy system for native Claude prov
     }
   );
 
-  assert.match(output.system[0].text, /^x-anthropic-billing-header: cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=sdk-cli; cch=[a-f0-9]{5};$/);
+  assert.match(output.system[0].text, /^x-anthropic-billing-header: cc_version=2\.1\.150\.[a-f0-9]{3}; cc_entrypoint=cli; cch=[a-f0-9]{5};$/);
   assert.equal(output.system[0].cache_control, undefined);
   assert.equal(output.system[1].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.");
   assert.equal(output.system[2].text, "LLM proxy routing note: preserve the user request.");
@@ -719,7 +778,7 @@ test("postAnthropic appends beta query for Claude Code managed OAuth token", asy
 
     assert.equal(output.status, 200);
     assert.equal(capturedUrl, "/v1/messages?beta=true");
-    assert.equal(capturedHeaders["user-agent"], "claude-cli/2.1.150 (external, sdk-cli)");
+    assert.equal(capturedHeaders["user-agent"], "claude-cli/2.1.150 (external, cli)");
     assert.equal(capturedHeaders["x-app"], "cli");
     assert.match(capturedHeaders["anthropic-beta"], /claude-code-20250219/);
   } finally {
@@ -773,4 +832,49 @@ test("postAnthropic extracts only the billing header line from multiline system 
       });
     });
   }
+});
+
+test("toAnthropicRequest drops trailing artifact-only assistant prefill", () => {
+  const request = anthropic.toAnthropicRequest({ upstream_model: "claude-opus-4-8" }, {
+    model: "claude-opus-4-8",
+    messages: [
+      { role: "user", content: "Check deploy." },
+      { role: "assistant", content: "<task-notification>\n\"agent_path\":\"/root/sg_list_agents_v3\",\"status\":\"completed\":null}}\n</task-notification>" },
+    ],
+  });
+
+  assert.equal(request.messages.length, 1);
+  assert.equal(request.messages[0].role, "user");
+});
+
+test("toAnthropicRequest preserves assistant messages with real content", () => {
+  const request = anthropic.toAnthropicRequest({ upstream_model: "claude-opus-4-8" }, {
+    model: "claude-opus-4-8",
+    messages: [
+      { role: "user", content: "Check deploy." },
+      { role: "assistant", content: "Deploy looks good. <task-notification>\n\"status\":\"complete\"}\n</task-notification>" },
+    ],
+  });
+
+  assert.equal(request.messages.length, 2);
+  assert.equal(request.messages[1].role, "assistant");
+  assert.equal(request.messages[1].content, "Deploy looks good.");
+});
+
+test("toAnthropicRequest preserves assistant messages with tool calls", () => {
+  const request = anthropic.toAnthropicRequest({ upstream_model: "claude-opus-4-8" }, {
+    model: "claude-opus-4-8",
+    messages: [
+      { role: "user", content: "Run tests." },
+      {
+        role: "assistant",
+        content: "<task-notification>\n\"status\":\"running\"}\n</task-notification>",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "exec_command", arguments: "\"command\":\"npm test\"}" } }],
+      },
+    ],
+  });
+
+  assert.equal(request.messages.length, 2);
+  assert.equal(request.messages[1].role, "assistant");
+  assert.equal(request.messages[1].content.length, 1);
 });

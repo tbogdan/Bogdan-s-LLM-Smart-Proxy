@@ -10,6 +10,7 @@ const anthropicAdapter = require("./lib/anthropic-adapter");
 const copilotToken = require("./lib/copilot-token");
 const providerAdapters = require("./lib/provider-adapters");
 const providerConfig = require("./lib/provider-config");
+const providerMetadataOverrides = require("./lib/provider-metadata-overrides");
 const routingPolicy = require("./lib/routing-policy");
 const windsurfCloud = require("./lib/windsurf-cloud");
 
@@ -232,8 +233,8 @@ function isProxyVirtualModelEntry(modelData) {
 
   const owner = String(modelData.owned_by || modelData.ownedBy || "").trim().toLowerCase();
   const proxyOwned = owner === "llm-proxy" ||
-    owner === "Project-llm-smart-proxy" ||
-    owner === "Project llm smart proxy" ||
+    owner === "Bogdan-llm-smart-proxy" ||
+    owner === "Bogdan llm smart proxy" ||
     owner.includes("llm smart proxy");
 
   return modelData.is_group === true || modelData.provider_count !== undefined || proxyOwned;
@@ -265,7 +266,15 @@ function providersFromEndpointModels(ep, models) {
       : hasEndpointModels
         ? discoverableModels
         : undefined;
-    return windsurfCloud.buildWindsurfProviders(configuredModels).map((provider) => withDiscoveryName(ep.name || "Windsurf", provider));
+    return windsurfCloud.buildWindsurfProviders(configuredModels).map((provider) => {
+      const named = withDiscoveryName(ep.name || "Windsurf", provider);
+      const overlaid = providerMetadataOverrides.applyProviderMetadataOverrides(named);
+      return {
+        ...overlaid,
+        ...routingPolicy.classifyProvider(overlaid),
+        routing_level: overlaid.routing_level ?? routingPolicy.providerMaxRoutingLevel(overlaid),
+      };
+    });
   }
 
   return discoverableModels.filter((modelData) => {
@@ -296,9 +305,11 @@ function providersFromEndpointModels(ep, models) {
       seed: false,
       last_tested: new Date().toISOString(),
     };
+    const overlaid = providerMetadataOverrides.applyProviderMetadataOverrides(provider);
     return {
-      ...provider,
-      ...routingPolicy.classifyProvider(provider),
+      ...overlaid,
+      ...routingPolicy.classifyProvider(overlaid),
+      routing_level: overlaid.routing_level ?? routingPolicy.providerMaxRoutingLevel(overlaid),
     };
   });
 }
@@ -638,6 +649,7 @@ function saveDiscovery(data) {
 }
 
 function discoveryEntryFromProvider(ep, provider, existing, now) {
+  provider = providerMetadataOverrides.applyProviderMetadataOverrides(provider);
   return {
     provider: ep.name,
     name: provider.name,
@@ -648,10 +660,12 @@ function discoveryEntryFromProvider(ep, provider, existing, now) {
     max_tokens: provider.max_tokens,
     max_tools: provider.max_tools,
     thinking_effort: provider.thinking_effort,
+    thinking_level: provider.thinking_level,
     speed_group: provider.speed_group,
     cost_group: provider.cost_group,
     cost_multiplier: provider.cost_multiplier,
     quality_group: provider.quality_group,
+    routing_level: provider.routing_level,
     app_cost_tier: provider.app_cost_tier,
     display_name: provider.display_name,
     description: provider.description,
@@ -693,6 +707,32 @@ function discoveryEntryFromProvider(ep, provider, existing, now) {
     visibility: provider.visibility,
     supported_in_api: provider.supported_in_api,
     truncation_policy: provider.truncation_policy,
+    canonical_provider: provider.canonical_provider,
+    canonical_model: provider.canonical_model,
+    model_status: provider.model_status,
+    public_context_length: provider.public_context_length,
+    public_max_output_tokens: provider.public_max_output_tokens,
+    cost_group_rule_applied: provider.cost_group_rule_applied,
+    cost_bucket_reference_usd_per_1m: provider.cost_bucket_reference_usd_per_1m,
+    cost_multiplier_basis: provider.cost_multiplier_basis,
+    cost_multiplier_original: provider.cost_multiplier_original,
+    cost_group_original: provider.cost_group_original,
+    cost_basis: provider.cost_basis,
+    input_usd_per_1m: provider.input_usd_per_1m,
+    cached_input_usd_per_1m: provider.cached_input_usd_per_1m,
+    cache_write_usd_per_1m: provider.cache_write_usd_per_1m,
+    output_usd_per_1m: provider.output_usd_per_1m,
+    blended_3in_1out_usd_per_1m: provider.blended_3in_1out_usd_per_1m,
+    price_tier_note: provider.price_tier_note,
+    confidence: provider.confidence,
+    correction_notes: provider.correction_notes,
+    evidence_urls: provider.evidence_urls,
+    original_source: provider.original_source,
+    original_source_type: provider.original_source_type,
+    original_context_length: provider.original_context_length,
+    original_max_tokens: provider.original_max_tokens,
+    metadata_audit_generated_utc: provider.metadata_audit_generated_utc,
+    metadata_audit_source: provider.metadata_audit_source,
     discovered_at: existing?.discovered_at || now,
     refreshed_at: now,
     chat_tested: existing?.chat_tested ?? false,
@@ -825,6 +865,8 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     "quality_group",
     "speed_group",
     "thinking_effort",
+    "thinking_level",
+    "routing_level",
     "description",
     "smart_friend_model_uid",
     "display_name",
@@ -865,7 +907,32 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
     "is_chat_default",
     "is_chat_fallback",
     "supported_endpoints",
-    "thinking_level",
+    "canonical_provider",
+    "canonical_model",
+    "model_status",
+    "public_context_length",
+    "public_max_output_tokens",
+    "cost_group_rule_applied",
+    "cost_bucket_reference_usd_per_1m",
+    "cost_multiplier_basis",
+    "cost_multiplier_original",
+    "cost_group_original",
+    "cost_basis",
+    "input_usd_per_1m",
+    "cached_input_usd_per_1m",
+    "cache_write_usd_per_1m",
+    "output_usd_per_1m",
+    "blended_3in_1out_usd_per_1m",
+    "price_tier_note",
+    "confidence",
+    "correction_notes",
+    "evidence_urls",
+    "original_source",
+    "original_source_type",
+    "original_context_length",
+    "original_max_tokens",
+    "metadata_audit_generated_utc",
+    "metadata_audit_source",
     "source",
   ];
 
@@ -885,19 +952,21 @@ function mergeProvidersConfig(seed, discoveredProviders, existingConfig) {
       legacyMap.set(providerKey(sp), { ...sp, alive: false, disabled_reason: "unsupported provider family/protocol/model namespace" });
       continue;
     }
-    const key = providerKey(sp);
+    const overlaidSeed = providerMetadataOverrides.applyProviderMetadataOverrides(sp);
+    const key = providerKey(overlaidSeed);
     const existing = previousStatus.get(key);
     providerMap.set(key, {
-      ...sp,
+      ...overlaidSeed,
       seed: true,
       alive: existing?.alive ?? true,
-      last_tested: existing?.last_tested ?? sp.last_tested ?? null,
-      ...((existing?.alive === false || sp.alive === false) ? { reason: existing?.reason ?? sp.reason } : {}),
+      last_tested: existing?.last_tested ?? overlaidSeed.last_tested ?? null,
+      ...((existing?.alive === false || overlaidSeed.alive === false) ? { reason: existing?.reason ?? overlaidSeed.reason } : {}),
     });
   }
 
   // Merge current scan results (update alive status, add new discoveries)
-  for (const dp of discoveredProviders) {
+  for (const discoveredProvider of discoveredProviders) {
+    const dp = providerMetadataOverrides.applyProviderMetadataOverrides(discoveredProvider);
     if (!isSupportedProvider(dp)) {
       legacyMap.set(providerKey(dp), { ...dp, alive: false, disabled_reason: "unsupported provider family/protocol/model namespace" });
       continue;

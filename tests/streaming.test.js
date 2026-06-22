@@ -211,7 +211,7 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
         "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity\n",
-        "Project LLM ",
+        "Bogdan LLM ",
         "Smart Proxy.",
       ]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
@@ -224,7 +224,7 @@ test("routeStreamToProvider strips private difficulty marker from streamed conte
 
       const output = clientRes.chunks.join("");
       assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
-      assert.equal(output.includes("Project LLM "), true);
+      assert.equal(output.includes("Bogdan LLM "), true);
       assert.equal(output.includes("Smart Proxy."), true);
     });
   });
@@ -251,6 +251,31 @@ test("routeStreamToProvider strips split private task status marker from streame
       assert.equal(output.includes("LLM_PROXY_TASK_STATUS"), false);
       assert.equal(output.includes("tests_pending"), false);
       assert.equal(output.includes("Continuing with verification."), true);
+    });
+  });
+});
+
+test("routeStreamToProvider suppresses orphan task status reason tails after stripping the marker", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      for (const text of [
+        "LLM_PROXY_TASK_STATUS state=complete\n",
+        "reason=all-steps-done\n",
+        "Migration written and status handling confirmed.",
+      ]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+
+      await routing.routeStreamToProvider(streamProvider(url), requestBody(), clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(output.includes("LLM_PROXY_TASK_STATUS"), false);
+      assert.equal(output.includes("reason=all-steps-done"), false);
+      assert.equal(output.includes("Migration written and status handling confirmed."), true);
     });
   });
 });
@@ -601,7 +626,7 @@ test("routeStreamToProvider preserves attached uppercase content after stream ma
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const text of [
-        "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity_replyProject ",
+        "LLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity_replyBogdan ",
         "LLM ",
         "Smart Proxy.",
       ]) {
@@ -615,7 +640,7 @@ test("routeStreamToProvider preserves attached uppercase content after stream ma
 
       const output = clientRes.chunks.join("");
       assert.equal(output.includes("LLM_PROXY_TASK_DIFFICULTY"), false);
-      assert.equal(output.includes("Project "), true);
+      assert.equal(output.includes("Bogdan "), true);
     });
   });
 });
@@ -711,7 +736,7 @@ test("routeStreamToProvider strips hidden memory markers from streamed content",
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "LLM_PROXY_MEMORY v=1 op=user_correction target=f_123 type=preference confidence=high\nProject " } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "LLM_PROXY_MEMORY v=1 op=user_correction target=f_123 type=preference confidence=high\nBogdan " } }] })}\n\n`);
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Proxy." }, finish_reason: "stop" }] })}\n\n`);
       res.end();
     }, async (url) => {
@@ -721,7 +746,7 @@ test("routeStreamToProvider strips hidden memory markers from streamed content",
 
       const output = clientRes.chunks.join("");
       assert.equal(output.includes("LLM_PROXY_MEMORY"), false);
-      assert.equal(output.includes("Project "), true);
+      assert.equal(output.includes("Bogdan "), true);
       assert.equal(output.includes("Proxy."), true);
     });
   });
@@ -1406,6 +1431,68 @@ test("routeStreamToProvider validates fragmented streamed tool calls before flus
   });
 });
 
+test("routeStreamToProvider repairs StructuredOutput streamed tool calls before flushing", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_1",
+              type: "function",
+              function: { name: "StructuredOutput", arguments: "{\"summary\":\"Done\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      })}\n\n`);
+      res.end();
+    }, async (url) => {
+      const clientRes = new FakeClientResponse();
+      const req = {
+        ...requestBody(),
+        tools: [{
+          type: "function",
+          function: {
+            name: "StructuredOutput",
+            parameters: {
+              type: "object",
+              required: ["summary", "claims"],
+              properties: {
+                summary: { type: "string" },
+                claims: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["text"],
+                    properties: {
+                      text: { type: "string" },
+                    },
+                    additionalProperties: false,
+                  },
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      };
+
+      await routing.routeStreamToProvider(streamProvider(url), req, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.equal(clientRes.ended, true);
+      assert.match(output, /tool_calls/);
+      assert.match(output, /"name":"StructuredOutput"/);
+      assert.match(output, /\\"summary\\":\\"Done\\"/);
+      assert.match(output, /\\"claims\\":\[\]/);
+    });
+  });
+});
+
 test("handleChatCompletion retries OpenAI SSE bare continue during active tool work", async () => {
   await withNoScoreWrites(async () => {
     const originalProviders = state.PROVIDERS;
@@ -1901,6 +1988,83 @@ test("handleChatCompletion strips native historical tool replay text before flus
       assert.doesNotMatch(output, /Historical tool invocation/);
       assert.doesNotMatch(output, /already executed/);
       assert.doesNotMatch(logs.join("\n"), /TOOL-TEXT-NATIVE-INVALID: Native-History-Strip-Test tool_history_replay/);
+    } finally {
+      state.PROVIDERS = originalProviders;
+      providerAdapters.routeNativeStream = originalRouteNativeStream;
+      state.log = originalLog;
+      routing.init({ sendError: () => {}, trackSessionTokens: () => {} });
+    }
+  });
+});
+
+test("handleChatCompletion strips orphaned native tool argument fragments before flushing useful content", async () => {
+  await withNoScoreWrites(async () => {
+    const originalProviders = state.PROVIDERS;
+    const originalRouteNativeStream = providerAdapters.routeNativeStream;
+    const originalLog = state.log;
+    const logs = [];
+    state.log = (message) => logs.push(String(message));
+    routing.init({
+      sendError: (res, status, message, extra = {}) => {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message, ...extra } }));
+      },
+      trackSessionTokens,
+    });
+    state.PROVIDERS = [{
+      name: "Native-Orphan-Args-Strip-Test",
+      model: "native-orphan-args-strip-model",
+      protocol: "windsurf",
+      key: "test",
+      caps: ["text", "coding", "tools"],
+      context: 131072,
+      tier: 1,
+    }];
+    providerAdapters.routeNativeStream = async (_provider, _body, handlers) => {
+      handlers.onChunk(`data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: [
+              "Found the flaky assertion and verified the fix.",
+              "\"/Users/Bogdan.Torcescu/Projects/llm-proxy/tests/responses.test.js\",\"limit\":80,\"offset\":294}",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+      })}\n\n`);
+      handlers.onChunk("data: [DONE]\n\n");
+    };
+    try {
+      const clientRes = new FakeClientResponse();
+      await routing.handleChatCompletion({
+        model: "native-orphan-args-strip-model",
+        stream: true,
+        messages: [{ role: "user", content: "Continue fixing the bug." }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "Read",
+            parameters: {
+              type: "object",
+              required: ["file_path"],
+              properties: {
+                file_path: { type: "string" },
+                offset: { type: "integer" },
+                limit: { type: "integer" },
+              },
+              additionalProperties: false,
+            },
+          },
+        }],
+      }, clientRes);
+
+      const output = clientRes.chunks.join("");
+      assert.equal(clientRes.status, 200);
+      assert.match(output, /Found the flaky asse/);
+      assert.match(output, /he fix\./);
+      assert.doesNotMatch(output, /responses\.test\.js","limit":80,"offset":294/);
+      assert.doesNotMatch(output, /offset":294/);
+      assert.match(logs.join("\n"), /PROXY-RESP-NATIVE-STRIP: Native-Orphan-Args-Strip-Test/);
     } finally {
       state.PROVIDERS = originalProviders;
       providerAdapters.routeNativeStream = originalRouteNativeStream;
@@ -3535,7 +3699,7 @@ test("sendAsSSE streams OpenAI content parts as text", () => {
         message: {
           role: "assistant",
           content: [
-            { type: "text", text: "Project " },
+            { type: "text", text: "Bogdan " },
             { type: "text", text: "Proxy." },
           ],
         },
@@ -3550,7 +3714,7 @@ test("sendAsSSE streams OpenAI content parts as text", () => {
   assert.equal(clientRes.status, 200);
   assert.equal(output.includes("chat.completion.chunk"), true);
   assert.equal(output.includes("\"content\":[{\"type\":\"text\""), false);
-  assert.equal(output.includes("Project "), true);
+  assert.equal(output.includes("Bogdan "), true);
   assert.equal(output.includes("Proxy."), true);
 });
 

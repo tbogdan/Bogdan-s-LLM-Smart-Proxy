@@ -1,10 +1,10 @@
 # Smart Routing, Memory, and Compaction Benchmark
 
-This document summarizes the 2026-05-22 local ladder benchmark for Project LLM Smart Proxy.
+This document summarizes the 2026-05-22 local ladder benchmark for Bogdan LLM Smart Proxy.
 
 ## Executive Summary
 
-Project LLM Smart Proxy matched direct Opus quality on the tested workload while materially reducing estimated model spend.
+Bogdan LLM Smart Proxy matched direct Opus quality on the tested workload while materially reducing estimated model spend.
 
 | Metric | Direct Opus | Proxy smart routing | Result |
 | --- | ---: | ---: | --- |

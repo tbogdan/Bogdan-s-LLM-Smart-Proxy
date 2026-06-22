@@ -411,6 +411,16 @@ test("buildHeaders keeps compatibility opt-ins explicit", () => {
   assert.equal(headers["user-agent"], "custom-windsurf-ua");
 });
 
+test("buildHeaders prefers caller user-agent over provider fallback", () => {
+  const headers = cloud.buildHeaders({
+    windsurf_user_agent: "provider-windsurf-ua",
+  }, {
+    userAgent: "ide-windsurf-ua",
+  });
+
+  assert.equal(headers["user-agent"], "ide-windsurf-ua");
+});
+
 test("resolveWindsurfOrigin supports app API and chat origin overrides", () => {
   const env = {
     WINDSURF_API_ORIGIN: "https://server.enterprise.windsurf.com",
@@ -860,4 +870,27 @@ test("streamWindsurfCloud uses a stream idle timeout and resets it after chunks"
   } finally {
     await closeServer(server);
   }
+});
+
+test("mergeWindsurfToolArguments keeps accumulating instead of dropping the wrapper on a self-parsing fragment", () => {
+  const merge = cloud.mergeWindsurfToolArguments;
+  // Streamed update_plan {plan:[...]} fragments: a later fragment can self-parse,
+  // but must not replace the in-progress prefix (which would yield malformed args
+  // and a Windsurf 422 on the strict update_plan tool).
+  let acc = "";
+  for (const frag of ['{"plan":[{"step":"a"', ',"status":"pending"}', ',{"step":"b","status":"in_progress"}]}']) {
+    acc = merge(acc, frag);
+  }
+  const parsed = JSON.parse(acc);
+  assert.ok(Array.isArray(parsed.plan));
+  assert.equal(parsed.plan.length, 2);
+  assert.equal(parsed.plan[0].step, "a");
+
+  // A partial wrapper followed by a standalone object fragment must reassemble.
+  assert.equal(merge('{"plan":[', '{"step":"x","status":"pending"}]}'), '{"plan":[{"step":"x","status":"pending"}]}');
+
+  // A genuine fuller resend (superset of keys, same shape) still replaces.
+  assert.equal(merge('{"a":1}', '{"a":1,"b":2}'), '{"a":1,"b":2}');
+  // An empty object is always replaced by real content.
+  assert.equal(merge("{}", '{"a":1}'), '{"a":1}');
 });

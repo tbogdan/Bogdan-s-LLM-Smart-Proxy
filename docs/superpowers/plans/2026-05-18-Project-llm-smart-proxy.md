@@ -1,8 +1,8 @@
-# Project LLM Smart Proxy Implementation Plan
+# LLM Smart Proxy Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the cloned proxy into Project LLM Smart Proxy: one local Docker OpenAI-compatible proxy with scoped discovery and routing for Windsurf, Claude, and Codex provider families.
+**Goal:** Convert the cloned proxy into LLM Smart Proxy: one local Docker OpenAI-compatible proxy with scoped discovery and routing for Windsurf, Claude, and Codex provider families.
 
 **Architecture:** Keep the existing Node.js proxy, scoring, compaction, and OpenAI-compatible client surface. Replace the broad provider catalog with three provider families, add protocol adapters for Claude Anthropic Messages and Windsurf cloud transport, keep Codex through the existing local OpenAI-compatible proxy, and preserve discovery as a scoped provider-refresh worker.
 
@@ -100,7 +100,7 @@ Also set:
 
 ```json
 {
-  "name": "Project-llm-smart-proxy",
+  "name": "Bogdan-llm-smart-proxy",
   "description": "Local Docker LLM smart proxy for Windsurf, Claude, and Codex provider families"
 }
 ```
@@ -571,7 +571,7 @@ function registerWindsurfOneTimeToken(tokenInput) {
       method: "POST",
       headers: {
         "content-type": "application/proto",
-        "user-agent": "Project-llm-smart-proxy",
+        "user-agent": "Bogdan-llm-smart-proxy",
         "content-length": body.length,
       },
     }, (res) => {
@@ -1136,7 +1136,7 @@ Change:
 to:
 
 ```js
-`You are Project LLM Smart Proxy — senior staff engineer. Date: ${dateStr} ${timeStr}.`
+`You are LLM Smart Proxy — senior staff engineer. Date: ${dateStr} ${timeStr}.`
 ```
 
 Change the strip marker from:
@@ -1148,7 +1148,7 @@ const proxyMarker = "You are Bogdan's LLM Smart Proxy";
 to:
 
 ```js
-const proxyMarker = "You are Project LLM Smart Proxy";
+const proxyMarker = "You are LLM Smart Proxy";
 ```
 
 Also strip legacy injected prompts by removing any existing `You are Bogdan's LLM Smart Proxy` block before adding the new one.
@@ -1275,7 +1275,7 @@ Keep it focused:
 #!/bin/bash
 set -e
 
-echo "=== Project LLM Smart Proxy Setup ==="
+echo "=== LLM Smart Proxy Setup ==="
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: Docker not installed."
@@ -1369,7 +1369,7 @@ Expected: exit 0 and services `llm-proxy`, `llm-discovery`, `codex-proxy`, `memp
 ```bash
 rtk git add Dockerfile docker-compose.yml .env.example setup.sh
 rtk git add -u Dockerfile.kiro kiro-auth.js
-rtk git commit -m "chore: simplify docker setup for Project providers"
+rtk git commit -m "chore: simplify docker setup for Bogdan providers"
 ```
 
 ## Task 7: Documentation And Branding
@@ -1390,11 +1390,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 
-test("public docs use Project branding and supported providers only", () => {
+test("public docs use Bogdan branding and supported providers only", () => {
   const files = ["README.md", "INSTRUCTIONS.md", "package.json", "lib/transforms.js"];
   const text = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
   assert.equal(text.includes("Bogdan's LLM Smart Proxy"), false);
-  assert.equal(text.includes("Project LLM Smart Proxy"), true);
+  assert.equal(text.includes("LLM Smart Proxy"), true);
   for (const removed of ["Groq", "SambaNova", "Kiro", "OpenRouter", "ModelScope", "Cline Provider"]) {
     assert.equal(text.includes(removed), false, `${removed} should not appear in public setup docs`);
   }
@@ -1416,7 +1416,7 @@ Expected: FAIL because current docs still mention old branding and removed provi
 Include these sections, in this order:
 
 ```markdown
-# Project LLM Smart Proxy
+# LLM Smart Proxy
 
 Local Docker smart proxy for three multi-model provider families: Windsurf, Claude, and Codex. Clients talk to one OpenAI-compatible endpoint; the proxy discovers models, scores providers, routes by capability, and fails over when an upstream is unavailable.
 
@@ -1469,7 +1469,7 @@ Add these sections after the test example: `## Discovery`, `## Smart Groups`, `#
 Make it agent-focused:
 
 ```markdown
-# Project LLM Smart Proxy Instructions
+# LLM Smart Proxy Instructions
 
 Use this project as a local Docker OpenAI-compatible proxy for Windsurf, Claude, and Codex.
 
@@ -1505,7 +1505,7 @@ Expected: PASS.
 
 ```bash
 rtk git add README.md INSTRUCTIONS.md tests/branding-docs.test.js
-rtk git commit -m "docs: rewrite setup for Project proxy"
+rtk git commit -m "docs: rewrite setup for Bogdan proxy"
 ```
 
 ## Task 8: Full Verification
@@ -1586,7 +1586,7 @@ If all verification passes and no uncommitted changes remain from prior task com
 
 ```bash
 rtk git add .
-rtk git commit -m "fix: complete Project proxy verification"
+rtk git commit -m "fix: complete Bogdan proxy verification"
 ```
 
 ## Manual Live Checks

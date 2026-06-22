@@ -8,7 +8,7 @@ const home = require("../lib/http-home");
 test("renderHomePage links to available commands and core endpoints", () => {
   const html = home.renderHomePage({ activeProviders: 89, totalProviders: 100, groups: ["auto", "auto-coding"] });
 
-  assert.match(html, /Project LLM Smart Proxy/);
+  assert.match(html, /Bogdan LLM Smart Proxy/);
   assert.match(html, /class="shell"/);
   assert.match(html, /href="\/commands"/);
   assert.match(html, /Available commands/);

@@ -1,6 +1,6 @@
-# Project LLM Smart Proxy Instructions
+# Bogdan LLM Smart Proxy Instructions
 
-Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. The proxy listens on one local endpoint and routes `auto` model requests across the enabled provider families.
+Use Bogdan LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsurf, Claude, Codex, and GitHub Copilot. The proxy listens on one local endpoint and routes `auto` model requests across the enabled provider families.
 
 ## Setup Steps
 
@@ -10,12 +10,15 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
    cp .env.example .env
    ```
 
-2. Enable the provider families you want in `.env`.
+2. Enable the provider families you want in `.env`. Keep current host ports unless another checkout already owns them.
 
    ```dotenv
+   LLM_PROXY_PORT=18900
+   CODEX_PROXY_PORT=10531
    ENABLE_WINDSURF=true
    ENABLE_CLAUDE=true
    ENABLE_CODEX=true
+   LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS=true
    ENABLE_COPILOT=true
    ```
 
@@ -59,6 +62,25 @@ Use Project LLM Smart Proxy as a local Docker OpenAI-compatible proxy for Windsu
 
 OpenAI-compatible clients can also request `auto-coding`, `coding-sm`, `auto-thinking`, `auto-tools`, `auto-text`, `auto-max`, or a specific namespaced model from an enabled provider family.
 
+For Codex CLI or plugin, use llm-proxy on port 18900:
+
+```toml
+# ~/.codex/config.toml
+model = "auto-coding"
+model_provider = "llm-proxy"
+
+[model_providers.llm-proxy]
+name = "Bogdan LLM Smart Proxy (OpenAI-compatible)"
+base_url = "http://localhost:18900/v1"
+env_key = "OPENAI_API_KEY"
+```
+
+```bash
+export OPENAI_API_KEY=proxy
+```
+
+Do not point Codex at codex-proxy on port 10531 for normal use. codex-proxy is only the OAuth/auth shim container that llm-proxy uses as a Codex backend.
+
 Claude Code uses Anthropic Messages endpoints instead of OpenAI chat completions. Point it at the proxy root URL:
 
 ```bash
@@ -73,10 +95,13 @@ Or add the same values under `env` in `.claude/settings.local.json`.
 ## Operational Notes
 
 - Discovery is scoped to the supported provider families: Windsurf, Claude, Codex, and Copilot.
+- Host ports: llm-proxy listens on `LLM_PROXY_PORT=18900`; codex-proxy listens on `CODEX_PROXY_PORT=10531` and exists only for Codex OAuth/auth refresh.
+- Keep `LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS=true` unless you need to disable Codex subagent synthesis for debugging. It lets Codex subagents work through llm-proxy by mapping to native `multi_agent_v1` tools.
 - Windsurf discovery uses the built-in model catalog. Set `WINDSURF_ENTERPRISE=true` when the source should use the enterprise app API origin.
 - Windsurf cloud requests use native Connect/protobuf tool definitions plus app-like compatibility defaults from code and Compose.
-- Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, and `LLM_SPEED_TARGET`; these are soft targets, not hard caps.
-- Context compaction uses an internal self-call to the Compose default summary model so compacted turns carry an AI-generated summary in the current request.
+- Smart routing is optimized by `LLM_COST_TARGET`, `LLM_THINKING_TARGET`, `LLM_SPEED_TARGET`, and `LLM_ROUTING_POLICY`; these are soft targets, not hard caps.
+- Context pressure raises `contextLevel` only when the current context tier would leave less than 30% unused headroom. Large context alone should prefer a same-capability provider with a larger window before upgrading to a higher capability tier.
+- Context compaction can add an AI summary through an internal self-call to `/v1/chat/completions` using `LLM_PROXY_AI_SUMMARY_MODEL` (default `auto-text`), and summaries are cached by digest.
 - The active memory layer is `lib/memory`. Docker Compose enables the local Neo4j graph backend by default; the in-process backend is only for tests or temporary non-Docker runs.
 - Graphiti MCP runs as a semantic sidecar behind the proxy. Keep the proxy's direct Neo4j ledger authoritative for automatic saves, user corrections, and compaction archives.
 - Graphiti MCP uses the proxy as its OpenAI-compatible endpoint with `auto-memory`. The local proxy serves `/v1/embeddings`, so a real `OPENAI_API_KEY` is not required for the sidecar path.

@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 
@@ -323,12 +324,12 @@ test("translateInput preserves Responses runtime capability contract for routing
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.plans, ["update_plan"]);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.goals, ["create_goal"]);
   assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcpResources, ["list_mcp_resources"]);
-  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp__node_repl", "mcp:mempalace"]);
+  assert.deepEqual(chat._llmProxyCapabilityContract.capabilities.mcp, ["mcp__node_repl"]);
   assert.equal(chat.tools.some((tool) => tool.function.name === "multi_agent_v1.spawn_agent"), true);
   assert.equal(chat.tools.some((tool) => tool.function.name === "spawn_agent"), false);
 });
 
-test("translateInput keeps tool_search alongside always-on Codex virtual subagents", async () => {
+test("translateInput keeps tool_search alongside proxy-hosted Codex virtual subagent placeholders", async () => {
   const chat = responses.translateInput({
     model: "gpt-5.4-mini",
     client_metadata: { originator: "Codex Desktop" },
@@ -386,13 +387,13 @@ test("translateInput auto-detects Codex metadata and proxy-hosts bare spawn_agen
   assert.equal(names.includes("tool_search"), true);
   assert.deepEqual(chat.tool_choice, { type: "function", function: { name: "spawn_agent" } });
   assert.equal(chat._llmProxyClient, "codex");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.shadowOnly, undefined);
   assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
 });
 
-test("translateInput preserves bare Codex spawn_agent when deferred discovery is absent", () => {
+test("translateInput proxy-hosts bare Codex spawn_agent when deferred discovery is absent", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4-mini",
     metadata: { originator: "Codex Desktop" },
@@ -407,12 +408,12 @@ test("translateInput preserves bare Codex spawn_agent when deferred discovery is
   const names = chat.tools.map((tool) => tool.function.name);
   assert.equal(names.includes("spawn_agent"), true);
   assert.equal(chat.tool_choice.function.name, "spawn_agent");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
-  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
   assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
 });
 
-test("translateInput injects Codex virtual subagents even without deferred discovery", () => {
+test("translateInput injects Codex virtual subagents when native targets are absent", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4-mini",
     client_metadata: { originator: "Codex Desktop" },
@@ -430,6 +431,53 @@ test("translateInput injects Codex virtual subagents even without deferred disco
   assert.equal(names.includes("spawn_agent"), true);
   assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
   assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), true);
+});
+
+test("translateInput prefers native Codex multi_agent_v1 subagents when present", () => {
+  const chat = responses.translateInput({
+    model: "gpt-5.4-mini",
+    client_metadata: { originator: "Codex Desktop" },
+    input: [{ role: "user", content: "Use subagents if helpful." }],
+    tools: [
+      { type: "function", name: "multi_agent_v1.spawn_agent", parameters: { type: "object" } },
+      { type: "function", name: "multi_agent_v1.wait_agent", parameters: { type: "object" } },
+      { type: "function", name: "update_plan", parameters: { type: "object" } },
+    ],
+  }, {
+    client: "codex",
+    headers: { "user-agent": "Codex Desktop/0.136.0-alpha.2" },
+  });
+
+  const names = chat.tools.map((tool) => tool.function.name);
+  assert.equal(names.includes("spawn_agent"), false);
+  assert.equal(names.includes("multi_agent_v1.spawn_agent"), true);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, false);
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.shadowOnly, true);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("spawn_agent"), false);
+  assert.equal(chat._llmProxyCapabilityContract.capabilities.subagents.includes("multi_agent_v1.spawn_agent"), true);
+});
+
+test("translateInput forces proxyHosted=false for virtual subagents when FORCE_NATIVE_SUBAGENTS=true", async () => {
+  await withEnv("LLM_PROXY_CODEX_FORCE_NATIVE_SUBAGENTS", "true", async () => {
+    const chat = responses.translateInput({
+      model: "gpt-5.4-mini",
+      client_metadata: { originator: "Codex Desktop" },
+      input: [{ role: "user", content: "Use subagents if helpful." }],
+      tools: [
+        { type: "function", name: "update_plan", parameters: { type: "object" } },
+        { type: "function", name: "functions.exec_command", parameters: { type: "object" } },
+      ],
+    }, {
+      client: "codex",
+      headers: { "user-agent": "Codex Desktop/0.136.0-alpha.2" },
+    });
+
+    const names = chat.tools.map((tool) => tool.function.name);
+    assert.equal(names.includes("spawn_agent"), true);
+    assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+    assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, false);
+    assert.equal(chat._llmProxyResponsesToolRegistry.byName.spawn_agent.nativeTarget, "multi_agent_v1.spawn_agent");
+  });
 });
 
 test("translateInput keeps non-subagent capabilities conditional while Codex virtual subagents stay on", async () => {
@@ -660,6 +708,129 @@ test("MockResponse strips split speed-only private assessment metadata from Resp
   assert.equal(completed.response.output[0].content[0].text.includes("commit_changes"), false);
 });
 
+test("MockResponse strips task notification artifact blocks from Responses API deltas", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"content":"Before\\n<task-notification>\\n{\\"agent_path\\":\\"/root/sg_list_agents_v3\\",\\"status\\":{\\"completed\\":null}}\\n</task-notification>\\nAfter"},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+  res.end();
+
+  const deltas = events.filter((event) => event.type === "response.output_text.delta").map((event) => event.delta).join("");
+  assert.equal(deltas.includes("Before"), true);
+  assert.equal(deltas.includes("After"), true);
+  assert.equal(deltas.includes("task-notification"), false);
+  assert.equal(deltas.includes("agent_path"), false);
+  const completed = events.find((event) => event.type === "response.completed");
+  const text = completed.response.output[0].content[0].text;
+  assert.equal(text.includes("task-notification"), false);
+  assert.equal(text.includes("agent_path"), false);
+});
+
+test("handleResponsesHTTP strips artifact text from stored history replay", async () => {
+  const captured = [];
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      captured.push(JSON.parse(JSON.stringify(req)));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (captured.length === 1) {
+        res.end(JSON.stringify({
+          id: "chatcmpl_artifact_tool",
+          object: "chat.completion",
+          created: 1779437101,
+          model: req.model,
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: null,
+	      tool_calls: [{
+	        id: "call_artifact",
+	        type: "function",
+	        function: { name: "Read", arguments: "{\"file_path\":\"/tmp/example\"}" },
+	      }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        id: "chatcmpl_artifact_done",
+        object: "chat.completion",
+        created: 1779437102,
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "Clean summary." },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 20, completion_tokens: 4, total_tokens: 24 },
+      }));
+    },
+  });
+
+  const makeRes = () => ({
+    statusCode: null,
+    headers: {},
+    body: "",
+    writeHead(status, headers = {}) {
+      this.statusCode = status;
+      this.headers = headers;
+    },
+    write(chunk) {
+      this.body += chunk.toString();
+    },
+    end(chunk) {
+      if (chunk) this.write(chunk);
+    },
+  });
+
+  const first = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex/1.0" } },
+    first,
+    JSON.stringify({
+      model: "gpt-5.4",
+	      input: [{ role: "user", content: "Use a tool." }],
+	      tools: [{ type: "function", name: "Read", parameters: { type: "object" } }],
+      tool_choice: "required",
+    }),
+  );
+  const firstBody = JSON.parse(first.body);
+  const callId = firstBody.output.find((item) => item.type === "function_call").call_id;
+
+  const second = makeRes();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex/1.0" } },
+    second,
+    JSON.stringify({
+      model: "gpt-5.4",
+      previous_response_id: firstBody.id,
+      input: [{
+        type: "function_call_output",
+        call_id: callId,
+        output: "Before\n<task-notification>\n{\"agent_path\":\"/root/sg_list_agents_v3\",\"status\":{\"completed\":null}}\n</task-notification>\nAfter",
+      }],
+    }),
+  );
+
+  assert.equal(second.statusCode, 200);
+  const stored = responses.responseContextForPreviousResponse({ previous_response_id: firstBody.id });
+  const serialized = JSON.stringify(stored.messages);
+  assert.equal(serialized.includes("task-notification"), false);
+  assert.equal(serialized.includes("agent_path"), false);
+  assert.equal(serialized.includes("/root/sg_list_agents_v3"), false);
+  assert.equal(serialized.includes("Before"), false);
+  assert.equal(serialized.includes("After"), false);
+});
+
 test("MockResponse strips split legacy bare assessment metadata from Responses API deltas", () => {
   const events = [];
   const res = new responses.MockResponse(
@@ -730,7 +901,7 @@ test("MockResponse finalizes streaming tool calls when upstream finishes with st
   assert.equal(events.filter((event) => event.type === "response.function_call_arguments.done").length, 1);
 });
 
-test("MockResponse routes streamed Codex virtual subagent calls through tool_search", () => {
+test("MockResponse passes streamed Codex virtual subagent calls through by default", () => {
   const events = [];
   const res = new responses.MockResponse(
     (event) => events.push(event),
@@ -740,7 +911,7 @@ test("MockResponse routes streamed Codex virtual subagent calls through tool_sea
       client: "codex",
       toolRegistry: {
         byName: {
-          spawn_agent: { kind: "virtual_codex_subagent", discoveryQuery: "spawn_agent" },
+          spawn_agent: { kind: "virtual_codex_subagent", discoveryQuery: "spawn_agent", proxyHosted: false },
           tool_search: { kind: "deferred" },
         },
       },
@@ -748,7 +919,39 @@ test("MockResponse routes streamed Codex virtual subagent calls through tool_sea
   );
 
   res.writeHead(200);
-  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_spawn","type":"function","function":{"name":"spawn_agent","arguments":"{\\"message\\":\\"Inspect logs\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_spawn","type":"function","function":{"name":"spawn_agent","arguments":"\\"message\\":\\"Inspect logs\\"}"}}]},"finish_reason":null}]}\n\n');
+  res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+  res.end();
+
+  const added = events.find((event) => event.type === "response.output_item.added");
+  const argsDone = events.find((event) => event.type === "response.function_call_arguments.done");
+  const completed = events.find((event) => event.type === "response.completed");
+  assert.equal(added.item.name, "spawn_agent");
+  assert.equal(argsDone.call_id, "call_spawn");
+  assert.equal(argsDone.name, "spawn_agent");
+  assert.equal(argsDone.arguments, "\"message\":\"Inspect logs\"}");
+  assert.equal(completed.response.output[0].name, "spawn_agent");
+});
+
+test("MockResponse routes proxy-hosted Codex virtual subagent calls through tool_search", () => {
+  const events = [];
+  const res = new responses.MockResponse(
+    (event) => events.push(event),
+    (status, body) => events.push({ type: "error", status, body }),
+    () => {},
+    {
+      client: "codex",
+      toolRegistry: {
+        byName: {
+          spawn_agent: { kind: "virtual_codex_subagent", discoveryQuery: "spawn_agent", proxyHosted: true },
+          tool_search: { kind: "deferred" },
+        },
+      },
+    },
+  );
+
+  res.writeHead(200);
+  res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_spawn","type":"function","function":{"name":"spawn_agent","arguments":"\\"message\\":\\"Inspect logs\\"}"}}]},"finish_reason":null}]}\n\n');
   res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
   res.end();
 
@@ -758,7 +961,7 @@ test("MockResponse routes streamed Codex virtual subagent calls through tool_sea
   assert.equal(added.item.name, "tool_search");
   assert.equal(argsDone.call_id, "call_spawn");
   assert.equal(argsDone.name, "tool_search");
-  assert.equal(argsDone.arguments, "{\"query\":\"spawn_agent\",\"limit\":8}");
+  assert.equal(argsDone.arguments, '{"query":"spawn_agent","limit":8}');
   assert.equal(completed.response.output[0].name, "tool_search");
 });
 
@@ -1005,28 +1208,27 @@ test("handleResponsesHTTP sends translated Responses requests as internal proxy 
   assert.equal(capturedReq.tools.some((tool) => tool.function.name === "spawn_agent"), true);
 });
 
-test("handleResponsesHTTP executes Codex virtual subagent calls inside proxy", async () => {
+test("handleResponsesHTTP proxy-hosts injected Codex virtual subagent calls by default", async () => {
   const capturedReqs = [];
   responses.init({
     handleChatCompletion: async (req, res) => {
       capturedReqs.push(req);
       res.writeHead(200, { "Content-Type": "application/json" });
-      const hasVirtualOutput = req.messages.some((message) => message.role === "tool" && message.name === "spawn_agent");
       if (req._llmProxyClient === "codex_virtual_subagent") {
         res.end(JSON.stringify({
           id: "chatcmpl_virtual_worker",
           model: req.model,
-          choices: [{ index: 0, message: { role: "assistant", content: "Logs look clean from the virtual sidecar." }, finish_reason: "stop" }],
+          choices: [{ index: 0, message: { role: "assistant", content: "Virtual worker inspected logs." }, finish_reason: "stop" }],
           usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
         }));
         return;
       }
-      if (hasVirtualOutput) {
+      if (req.messages.some((message) => message.role === "tool" && message.name === "spawn_agent")) {
         res.end(JSON.stringify({
-          id: "chatcmpl_after_virtual_agent",
+          id: "chatcmpl_virtual_done",
           model: req.model,
-          choices: [{ index: 0, message: { role: "assistant", content: "Done after integrating virtual subagent result." }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+          choices: [{ index: 0, message: { role: "assistant", content: "Finished after proxy-hosted subagent." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
         }));
         return;
       }
@@ -1083,7 +1285,68 @@ test("handleResponsesHTTP executes Codex virtual subagent calls inside proxy", a
   assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
   assert.equal(capturedReqs.some((req) => req._llmProxyClient === "codex_virtual_subagent"), true);
   assert.equal(body.output[0].type, "message");
-  assert.equal(body.output[0].content[0].text, "Done after integrating virtual subagent result.");
+  assert.match(body.output[0].content[0].text, /Finished after proxy-hosted subagent/);
+});
+
+test("proxy-hosted subagent forwards no tools and reports honestly when the worker only emits tool calls", async () => {
+  let subagentReq = null;
+  let spawnToolResult = "";
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req._llmProxyClient === "codex_virtual_subagent") {
+        subagentReq = req;
+        // Worker tries to call a host tool; nothing executes it, so content is empty.
+        res.end(JSON.stringify({
+          id: "chatcmpl_worker_toolonly",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [
+            { id: "c_exec", type: "function", function: { name: "exec_command", arguments: "{\"cmd\":\"ls\"}" } },
+          ] }, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+        }));
+        return;
+      }
+      const toolMsg = req.messages.find((m) => m.role === "tool" && m.name === "spawn_agent");
+      if (toolMsg) {
+        spawnToolResult = typeof toolMsg.content === "string" ? toolMsg.content : JSON.stringify(toolMsg.content);
+        res.end(JSON.stringify({
+          id: "chatcmpl_after",
+          model: req.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "Done." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        id: "chatcmpl_main",
+        model: req.model,
+        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [
+          { id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: "{\"message\":\"Read /etc/hosts\"}" } },
+        ] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 6, completion_tokens: 1, total_tokens: 7 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex Desktop/0.136.0-alpha.2" } },
+    res,
+    JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Spawn a subagent to read a host file.",
+      tools: [{ type: "function", name: "exec_command", parameters: { type: "object" } }],
+    }),
+  );
+
+  // The subagent sub-completion must NOT receive forwarded tools (it has no executor).
+  assert.ok(subagentReq, "subagent completion ran");
+  assert.equal(subagentReq.tools, undefined);
+  // The spawn_agent tool result must explain the no-host-access limit, not be empty.
+  assert.match(spawnToolResult, /without host tool access|could not execute|exec_command/);
+  assert.doesNotMatch(spawnToolResult, /No textual result returned/);
 });
 
 test("handleResponsesHTTP proxy-hosts bare Codex subagent placeholders before client execution", async () => {
@@ -1159,10 +1422,11 @@ test("handleResponsesHTTP proxy-hosts bare Codex subagent placeholders before cl
   const toolNames = firstReq.tools.map((tool) => tool.function.name);
   assert.equal(toolNames.includes("spawn_agent"), true);
   assert.equal(toolNames.includes("tool_search"), true);
-  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "function");
-  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, undefined);
-  assert.equal(body.output[0].type, "function_call");
-  assert.equal(body.output[0].name, "spawn_agent");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "virtual_codex_subagent");
+  assert.equal(firstReq._llmProxyResponsesToolRegistry.byName.spawn_agent.proxyHosted, true);
+  assert.equal(capturedReqs.some((req) => req._llmProxyClient === "codex_virtual_subagent"), true);
+  assert.equal(body.output[0].type, "message");
+  assert.match(body.output[0].content[0].text, /Finished without exposing unsupported spawn_agent to Codex/);
 });
 
 test("handleResponsesHTTP preserves namespace-declared Codex subagent calls", async () => {
@@ -1224,12 +1488,164 @@ test("handleResponsesHTTP preserves namespace-declared Codex subagent calls", as
   assert.equal(capturedReq._llmProxyResponsesToolRegistry.byName.spawn_agent.kind, "namespace_function");
   assert.equal(capturedReq._llmProxyResponsesToolRegistry.byName.spawn_agent.namespace, "multi_agent_v1");
   assert.equal(body.output[0].type, "function_call");
+  // Codex routes by a separate (namespace, name) pair (ResponseItem::FunctionCall
+  // has a `namespace` field; names must match ^[a-zA-Z0-9_-]+$). The name stays
+  // bare and the reserved namespace is re-attached, else the runtime rejects it
+  // as "unsupported call".
   assert.equal(body.output[0].name, "spawn_agent");
+  assert.equal(body.output[0].namespace, "multi_agent_v1");
   assert.equal(body.output[0].call_id, "call_spawn_real");
   assert.equal(body.output[0].arguments, "{\"message\":\"Inspect logs\",\"agent_type\":\"explorer\"}");
 });
 
-test("translateInput injects proxy-hosted Codex fallbacks when flat native aliases are present but other virtual tools are absent", () => {
+test("handleResponsesHTTP re-attaches the namespace for Codex MCP/app tool calls", async () => {
+  // Regression: a real Codex session declares js/mempalace_*/read_thread_terminal
+  // under mcp__node_repl / mcp__mempalace / codex_app namespaces. The proxy must
+  // forward bare child names to the provider but return them with the originating
+  // `namespace` field so Codex's (namespace, name) router matches the handler
+  // instead of failing with "unsupported call".
+  let capturedReq;
+  responses.init({
+    handleChatCompletion: async (req, res) => {
+      capturedReq = req;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl_ns",
+        model: req.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              { id: "c1", type: "function", function: { name: "js", arguments: "{\"code\":\"1+1\"}" } },
+              { id: "c2", type: "function", function: { name: "mempalace_search", arguments: "{\"query\":\"x\"}" } },
+              { id: "c3", type: "function", function: { name: "read_thread_terminal", arguments: "{}" } },
+            ],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    { headers: { accept: "application/json", "user-agent": "Codex Desktop/0.136.0-alpha.2" } },
+    res,
+    JSON.stringify({
+      model: "gpt-5.5",
+      stream: false,
+      input: "Run js, search memory, read the terminal.",
+      tools: [
+        { type: "namespace", name: "mcp__node_repl", tools: [{ type: "function", name: "js", parameters: { type: "object" } }] },
+        { type: "namespace", name: "mcp__mempalace", tools: [{ type: "function", name: "mempalace_search", parameters: { type: "object" } }] },
+        { type: "namespace", name: "codex_app", tools: [{ type: "function", name: "read_thread_terminal", parameters: { type: "object" } }] },
+      ],
+    }),
+  );
+
+  // Provider received bare child names (upstream function-name regex rejects dots).
+  const forwardedNames = (capturedReq.tools || []).map((t) => t.function?.name);
+  assert.ok(forwardedNames.includes("js"));
+  assert.ok(forwardedNames.includes("mempalace_search"));
+  assert.ok(forwardedNames.includes("read_thread_terminal"));
+
+  // Client receives bare names plus the originating namespace field.
+  const body = JSON.parse(res.body);
+  const calls = body.output.filter((o) => o.type === "function_call");
+  const byCall = Object.fromEntries(calls.map((c) => [c.call_id, c]));
+  assert.equal(byCall.c1.name, "js");
+  assert.equal(byCall.c1.namespace, "mcp__node_repl");
+  assert.equal(byCall.c2.name, "mempalace_search");
+  assert.equal(byCall.c2.namespace, "mcp__mempalace");
+  assert.equal(byCall.c3.name, "read_thread_terminal");
+  assert.equal(byCall.c3.namespace, "codex_app");
+});
+
+test("translateInput forwards a replayed namespaced tool call to the provider by its bare name", () => {
+  // Codex replays the call as a bare name + separate namespace field; the provider
+  // only knows the flat name, so the namespace is dropped on the way in.
+  const chat = responses.translateInput({
+    model: "gpt-5.5",
+    input: [
+      { role: "user", content: "again" },
+      { type: "function_call", call_id: "c9", name: "js", namespace: "mcp__node_repl", arguments: "{\"code\":\"2\"}" },
+      { type: "function_call_output", call_id: "c9", output: "2" },
+    ],
+    tools: [
+      { type: "namespace", name: "mcp__node_repl", tools: [{ type: "function", name: "js", parameters: { type: "object" } }] },
+    ],
+  }, { client: "codex" });
+
+  const assistant = chat.messages.find((m) => m.role === "assistant" && Array.isArray(m.tool_calls));
+  assert.equal(assistant.tool_calls[0].function.name, "js");
+  const toolResult = chat.messages.find((m) => m.role === "tool" && m.tool_call_id === "c9");
+  assert.equal(toolResult.name, "js");
+});
+
+test("handleResponsesHTTP strips Claude-style subagent workflow artifacts from visible response text", async () => {
+  responses.init({
+    handleChatCompletion: async (_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl_artifacts",
+        model: "auto-coding",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: [
+              "<task-notification>",
+              "<task-id>wrx4h43pf</task-id>",
+              "<tool-use-id>call_uCKSuRhIOXkWkhEh6cH4WlMm</tool-use-id>",
+              "<summary>Dynamic workflow completed</summary>",
+              "<result>{\"summary\":\"internal artifact\"}</result>",
+              "</task-notification>",
+              "Show less",
+              "Update Todos",
+              "Revert capabilityRequestBase that broke 3 tests",
+              "Historical tool invocation (already executed): Bash {\"command\":\"pwd\"}",
+              "Run full test suite and verify",
+              "agentId: aac16101ca904c21e (use SendMessage with to: 'aac16101ca904c21e' to continue this agent)",
+              "<usage>total_tokens: 0",
+              "tool_uses: 0",
+              "duration_ms: 182138</usage>",
+            ].join("\n"),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      }));
+    },
+  });
+
+  const res = new FakeSseResponse();
+  await responses.handleResponsesHTTP(
+    {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Claude-Code/2.1.165",
+      },
+    },
+    res,
+    JSON.stringify({
+      model: "auto-coding",
+      stream: false,
+      input: "Continue the task.",
+    }),
+  );
+
+  const body = JSON.parse(res.body);
+  const text = body.output[0].content[0].text;
+  assert.match(text, /Revert capabilityRequestBase that broke 3 tests/);
+  assert.match(text, /Run full test suite and verify/);
+  assert.doesNotMatch(text, /task-notification|tool-use-id|Show less|Update Todos/i);
+  assert.doesNotMatch(text, /Historical tool invocation|agentId:|SendMessage|<usage>|total_tokens/i);
+});
+
+test("translateInput injects proxy-hosted Codex placeholders when flat native aliases are present but other virtual tools are absent", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4",
     client_metadata: { originator: "Codex Desktop" },
@@ -1865,4 +2281,45 @@ test("handleResponsesHTTP falls back to a minimal schema object when structured 
 
   const body = JSON.parse(res.body);
   assert.equal(body.output[0].content[0].text, "{\"summarized_entities\":[]}");
+});
+
+test("handleResponsesWS sends session.created immediately on connect", () => {
+  const sent = [];
+  const handlers = {};
+  const fakeWs = {
+    readyState: 1,
+    send(data) { sent.push(JSON.parse(data)); },
+    on(event, handler) { handlers[event] = handler; },
+  };
+  const fakeReq = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
+
+  responses.handleResponsesWS(fakeWs, fakeReq);
+
+  assert.equal(sent.length, 1, "exactly one message sent on open");
+  const msg = sent[0];
+  assert.equal(msg.type, "session.created");
+  assert.ok(msg.event_id, "event_id present");
+  assert.ok(msg.session?.id, "session.id present");
+  assert.equal(msg.session?.object, "realtime.session");
+});
+
+test("handleResponsesWS session.updated includes session id", async () => {
+  const sent = [];
+  const handlers = {};
+  const fakeWs = {
+    readyState: 1,
+    send(data) { sent.push(JSON.parse(data)); },
+    on(event, handler) { handlers[event] = handler; },
+  };
+  const fakeReq = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
+
+  responses.handleResponsesWS(fakeWs, fakeReq);
+  const sessionId = sent[0].session.id;
+
+  await handlers.message(Buffer.from(JSON.stringify({ type: "session.update", session: { model: "gpt-4o" } })));
+
+  const updated = sent.find((m) => m.type === "session.updated");
+  assert.ok(updated, "session.updated sent");
+  assert.equal(updated.session.id, sessionId, "session.id preserved in session.updated");
+  assert.equal(updated.session.model, "gpt-4o");
 });

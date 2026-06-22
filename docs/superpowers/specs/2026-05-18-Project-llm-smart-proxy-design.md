@@ -1,10 +1,10 @@
-# Project LLM Smart Proxy Design
+# LLM Smart Proxy Design
 
 Date: 2026-05-18
 
 ## Goal
 
-Build **Project LLM Smart Proxy** from the existing Bogdan's LLM Smart Proxy codebase. The proxy remains OpenAI-compatible at the client edge and routes to exactly three upstream provider families: Windsurf, Claude, and Codex. Each family can expose multiple models through discovery and participates in the same scoring, fallback, health, and statistics flow.
+Build **LLM Smart Proxy** from the existing Bogdan's LLM Smart Proxy codebase. The proxy remains OpenAI-compatible at the client edge and routes to exactly three upstream provider families: Windsurf, Claude, and Codex. Each family can expose multiple models through discovery and participates in the same scoring, fallback, health, and statistics flow.
 
 ## Scope
 
@@ -94,7 +94,7 @@ Tool calling support should remain part of the contract where the upstream suppo
 
 Docker Compose should start:
 
-- `llm-proxy`: the main Project proxy on `18900`.
+- `llm-proxy`: the main Bogdan proxy on `18900`.
 - `llm-discovery`: the scoped discovery worker.
 - `codex-proxy`: enabled when `ENABLE_CODEX=true`, using `data/codex-auth.json`.
 
@@ -118,7 +118,7 @@ The generated `.env.example` should contain only variables relevant to these mod
 
 ## Documentation
 
-Rename all user-facing references from **Bogdan's LLM Smart Proxy** to **Project LLM Smart Proxy**.
+Rename all user-facing references from **Bogdan's LLM Smart Proxy** to **LLM Smart Proxy**.
 
 Rewrite `README.md` and `INSTRUCTIONS.md` around:
 

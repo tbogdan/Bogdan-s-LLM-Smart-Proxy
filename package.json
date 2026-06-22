@@ -1,5 +1,5 @@
 {
-  "name": "Project-llm-smart-proxy",
+  "name": "Bogdan-llm-smart-proxy",
   "version": "1.0.0",
   "description": "Local Docker LLM smart proxy for Windsurf, Claude, Codex, and Copilot provider families",
   "main": "llm-proxy.js",

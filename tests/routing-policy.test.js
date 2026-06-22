@@ -5,6 +5,26 @@ const assert = require("node:assert/strict");
 
 const policy = require("../lib/routing-policy");
 const seedProviders = require("../seed-providers.json");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const providerMetadataOverrides = require("../lib/provider-metadata-overrides");
+
+function withRoutingAudit(audit, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "routing-metadata-audit-"));
+  const auditPath = path.join(dir, "audit.json");
+  fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2));
+  const previous = process.env.PROVIDER_METADATA_AUDIT_FILE;
+  process.env.PROVIDER_METADATA_AUDIT_FILE = auditPath;
+  providerMetadataOverrides.clearCache();
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env.PROVIDER_METADATA_AUDIT_FILE;
+    else process.env.PROVIDER_METADATA_AUDIT_FILE = previous;
+    providerMetadataOverrides.clearCache();
+  }
+}
 
 test("classifyProvider assigns five cost groups across supported model families", () => {
   assert.equal(policy.classifyProvider({ family: "claude", model: "claude/claude-opus-4-7", name: "Claude-Opus47" }).cost_group, 4);
@@ -17,6 +37,44 @@ test("classifyProvider assigns five cost groups across supported model families"
   assert.equal(policy.classifyProvider({ family: "windsurf", model: "windsurf/swe-1.6-fast", name: "Windsurf-SWE16Fast" }).cost_group, 1);
   assert.equal(policy.classifyProvider({ family: "windsurf", model: "windsurf/minimax-m2.5", name: "Windsurf-MinimaxM25" }).cost_group, 1);
 });
+
+test("classifyProvider and providerMaxRoutingLevel honor authoritative metadata audit overrides", () => withRoutingAudit({
+  generated_utc: "2026-06-16T09:05:10Z",
+  provider_metadata_overrides: {
+    "windsurf/gpt-5-4-high": {
+      cost_group: 4,
+      cost_multiplier: 1.125,
+      quality_group: 5,
+      speed_group: 3,
+      thinking_effort: "high",
+      thinking_level: 4,
+      routing_level: 5,
+      source: "windsurf_app",
+      source_type: "model",
+    },
+  },
+}, () => {
+  const provider = {
+    name: "Windsurf-GPT54HighThinking",
+    family: "windsurf",
+    model: "windsurf/gpt-5-4-high",
+    upstream_model: "gpt-5-4-high",
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 5,
+    thinking_effort: "medium",
+    thinking_level: 3,
+  };
+
+  assert.deepEqual(policy.classifyProvider(provider), {
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "high",
+    thinking_level: 4,
+  });
+  assert.equal(policy.providerMaxRoutingLevel(provider), 5);
+}));
 
 test("classifyProvider keeps API cost multipliers out of global cost groups", () => {
   assert.equal(policy.classifyProvider({ family: "copilot", model: "copilot/gpt-4.1", name: "Copilot-GPT41", cost_multiplier: 0 }).cost_group, 3);
@@ -138,7 +196,7 @@ test("classifyProvider caps Haiku even when discovered metadata is too optimisti
   assert.equal(policy.providerMaxRoutingLevel(provider), 3);
 });
 
-test("source-local cost multiplier bonus compares only providers from the same source", () => {
+test("cost multiplier bonus compares only providers from the same cost group", () => {
   const req = {
     messages: [{ role: "user", content: "Summarize this short status update." }],
     _estimatedTokens: 1200,
@@ -159,21 +217,21 @@ test("source-local cost multiplier bonus compares only providers from the same s
     model: "copilot/expensive-sonnet",
     cost_multiplier: 3,
   };
-  const windsurf = {
+  const premium = {
     ...cheap,
-    name: "Windsurf-Expensive",
-    family: "windsurf",
-    model: "windsurf/expensive",
-    cost_multiplier: 3,
+    name: "Premium-Cheap-Multiplier",
+    model: "copilot/premium-cheap-multiplier",
+    cost_group: 5,
+    cost_multiplier: 1.1,
   };
 
   assert.equal(policy.providerPolicyBonus(cheap, req), policy.providerPolicyBonus(expensive, req));
   assert.equal(
-    policy.sourceLocalCostMultiplierBonus(cheap, [cheap, expensive, windsurf], req) >
-      policy.sourceLocalCostMultiplierBonus(expensive, [cheap, expensive, windsurf], req),
+    policy.sourceLocalCostMultiplierBonus(cheap, [cheap, expensive, premium], req) >
+      policy.sourceLocalCostMultiplierBonus(expensive, [cheap, expensive, premium], req),
     true,
   );
-  assert.equal(policy.sourceLocalCostMultiplierBonus(windsurf, [cheap, expensive, windsurf], req), 0);
+  assert.equal(policy.sourceLocalCostMultiplierBonus(premium, [cheap, expensive, premium], req), 0);
 });
 
 test("providerPolicyBonus nudges frontier requests toward Opus 4.8 over older Opus", () => {
@@ -439,7 +497,9 @@ test("assessRequestDifficulty keeps identity questions cheap even with agent too
   assert.equal(result.speedTarget, 5);
 });
 
-test("assessRequestDifficulty treats large Claude Code tool requests as complex even when user ask is hidden", () => {
+test("assessRequestDifficulty routes Claude Code startup request with tool schemas at standard level", () => {
+  // 75 tools × ~470tok = ~35k — all schema overhead, not rich conversation.
+  // IDE tool catalog size is not a complexity signal; 35k input < 80k threshold → level=3, not 4.
   const result = policy.assessRequestDifficulty(
     [
       { role: "system", content: "You are Claude Code running as a software engineering agent with repository tools." },
@@ -452,12 +512,55 @@ test("assessRequestDifficulty treats large Claude Code tool requests as complex 
     },
   );
 
-  assert.equal(result.level, 4);
+  assert.equal(result.level, 3);
   assert.equal(result.taskLevel, 3);
-  assert.equal(result.contextLevel, 4);
+  assert.equal(result.contextLevel, 3);
   assert.equal(result.costTarget, 3);
   assert.equal(result.thinkingEffort, "medium");
   assert.equal(result.speedTarget, 4);
+});
+
+test("assessRequestDifficulty does not false-escalate Windsurf agentic session with 156-tool schema at 60k input", () => {
+  // Windsurf sends 150+ IDE tools by default; 60k input is mostly schema tokens.
+  // Should route at level=3, not level=4, to avoid unnecessary cost escalation.
+  const result = policy.assessRequestDifficulty(
+    [
+      { role: "system", content: "You are an AI assistant." },
+      { role: "user", content: "fix the bug in the router" },
+    ],
+    {
+      tools: Array.from({ length: 156 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+      _inputTokens: 60883,
+      _estimatedTokens: 92883,
+    },
+  );
+
+  assert.equal(result.level, 3);
+  assert.equal(result.taskLevel, 3);
+  assert.equal(result.contextLevel, 3);
+});
+
+test("assessRequestDifficulty escalates context only below 30 percent headroom", () => {
+  const baseReq = {
+    messages: [{ role: "user", content: "Continue implementing this routing fix and run tests." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+  };
+
+  const comfortable = policy.assessRequestDifficulty(baseReq.messages, {
+    ...baseReq,
+    _inputTokens: 85000,
+    _estimatedTokens: 97000,
+  });
+  const tight = policy.assessRequestDifficulty(baseReq.messages, {
+    ...baseReq,
+    _inputTokens: 90000,
+    _estimatedTokens: 102000,
+  });
+
+  assert.equal(comfortable.taskLevel, 3);
+  assert.equal(comfortable.contextLevel, 3);
+  assert.equal(tight.taskLevel, 3);
+  assert.equal(tight.contextLevel, 4);
 });
 
 test("assessRequestDifficulty separates task complexity from large context pressure", () => {
@@ -494,6 +597,7 @@ test("detectTaskKind covers the prompt-injection task matrix", () => {
     ["verification", "Verify whether the proxy health endpoint responds correctly."],
     ["code_review", "Code review this diff and find behavioral bugs."],
     ["test_generation", "Add regression tests for this API parser."],
+    ["test_generation", "Generate unit tests following the existing test style for this class."],
     ["debugging", "Debug this provider 500 error from the proxy logs."],
     ["security_review", "Review this auth endpoint for SQL injection and secret leakage."],
     ["refactor", "Refactor the routing module into smaller functions."],
@@ -810,6 +914,17 @@ test("task status markers are parsed and stripped from OpenAI responses", () => 
   assert.equal(JSON.parse(result.body).choices[0].message.content, "I found the root cause.");
 });
 
+test("task status marker stripping removes orphan trailing reason lines", () => {
+  const stripped = policy.stripTaskStatusMarkerFromText(
+    "LLM_PROXY_TASK_STATUS state=complete\nreason=all-steps-done\nI completed the migration and verified the auth path.",
+  );
+
+  assert.equal(stripped.marker.state, "complete");
+  assert.equal(stripped.marker.reason, "all-steps-done");
+  assert.equal(stripped.content, "I completed the migration and verified the auth path.");
+  assert.equal(stripped.changed, true);
+});
+
 test("sentinel private effort markers can request higher rerouting levels", () => {
   const marker = policy.parseDifficultyMarker("LLM_PROXY_INTERNAL_ROUTING effort=xhigh speed=2 reason=edit_recovery");
 
@@ -874,7 +989,7 @@ test("difficulty marker stripping removes leading blank lines before marker", ()
       {
         message: {
           role: "assistant",
-          content: "\n\nLLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity-question\n\nMy name is Project LLM Smart Proxy.",
+          content: "\n\nLLM_PROXY_TASK_DIFFICULTY level=1 effort=none speed=5 reason=identity-question\n\nMy name is Bogdan LLM Smart Proxy.",
         },
       },
     ],
@@ -883,7 +998,7 @@ test("difficulty marker stripping removes leading blank lines before marker", ()
   const result = policy.stripDifficultyMarkerFromResponseBody(body);
 
   assert.equal(result.marker.level, 1);
-  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Project LLM Smart Proxy.");
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Bogdan LLM Smart Proxy.");
 });
 
 test("difficulty marker stripping preserves attached uppercase same-line content", () => {
@@ -892,7 +1007,7 @@ test("difficulty marker stripping preserves attached uppercase same-line content
       {
         message: {
           role: "assistant",
-          content: "LLM_PROXY_TASK_DIFFICULTY level=1 effort=minimal speed=5 reason=identity_replyMy name is Project LLM Smart Proxy.",
+          content: "LLM_PROXY_TASK_DIFFICULTY level=1 effort=minimal speed=5 reason=identity_replyMy name is Bogdan LLM Smart Proxy.",
         },
       },
     ],
@@ -902,7 +1017,7 @@ test("difficulty marker stripping preserves attached uppercase same-line content
 
   assert.equal(result.marker.level, 1);
   assert.equal(result.marker.reason, "identity_reply");
-  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Project LLM Smart Proxy.");
+  assert.equal(JSON.parse(result.body).choices[0].message.content, "My name is Bogdan LLM Smart Proxy.");
 });
 
 test("difficulty marker stripping supports OpenAI content parts", () => {
@@ -912,7 +1027,7 @@ test("difficulty marker stripping supports OpenAI content parts", () => {
         message: {
           role: "assistant",
           content: [
-            { type: "text", text: "LLM_PROXY_TASK_DIFFICULTY level=2 effort=low speed=4 reason=content_parts\nProject " },
+            { type: "text", text: "LLM_PROXY_TASK_DIFFICULTY level=2 effort=low speed=4 reason=content_parts\nBogdan " },
             { type: "text", text: "LLM Smart Proxy." },
           ],
         },
@@ -925,7 +1040,7 @@ test("difficulty marker stripping supports OpenAI content parts", () => {
 
   assert.equal(result.marker.level, 2);
   assert.deepEqual(content, [
-    { type: "text", text: "Project " },
+    { type: "text", text: "Bogdan " },
     { type: "text", text: "LLM Smart Proxy." },
   ]);
 });
@@ -1124,6 +1239,54 @@ test("providerPolicyBonus favors right-sized models by task complexity", () => {
   assert.equal(policy.providerPolicyBonus(frontier, frontierContext, { env }) > policy.providerPolicyBonus(intermediate, frontierContext, { env }), true);
 });
 
+test("providerPolicyBonus routes output-heavy unit test generation to cheap executors", () => {
+  const cheap = {
+    name: "Codex-GPT54Mini",
+    family: "codex",
+    model: "codex/gpt-5.4-mini",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 2,
+    quality_group: 3,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const balanced = {
+    name: "Claude-Sonnet46",
+    family: "claude",
+    model: "claude/claude-sonnet-4-6",
+    caps: ["text", "coding", "tools", "thinking"],
+    cost_group: 3,
+    quality_group: 4,
+    speed_group: 4,
+    thinking_effort: "medium",
+  };
+  const frontier = {
+    name: "Codex-GPT55",
+    family: "codex",
+    model: "codex/gpt-5.5",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 4,
+    thinking_effort: "xhigh",
+  };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    max_tokens: 4000,
+    messages: [{ role: "user", content: "Generate unit tests following the existing test style for this class. Cover validation failures and edge cases." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _estimatedTokens: 9000,
+  };
+
+  const profile = policy.effectiveRequestProfile(req, env);
+
+  assert.equal(profile.taskKind, "test_generation");
+  assert.equal(profile.costTarget <= 2, true);
+  assert.equal(profile.thinkingLevel <= 2, true);
+  assert.equal(policy.providerPolicyBonus(cheap, req, { env }) > policy.providerPolicyBonus(balanced, req, { env }), true);
+  assert.equal(policy.providerPolicyBonus(cheap, req, { env }) > policy.providerPolicyBonus(frontier, req, { env }), true);
+});
+
 test("providerPolicyBonus does not reward heavy thinking for context-only pressure", () => {
   const medium = { name: "Medium-Context-Fit", model: "custom/medium", cost_group: 2, quality_group: 3, speed_group: 5, thinking_effort: "medium" };
   const high = { name: "High-Context-Fit", model: "custom/high", cost_group: 2, quality_group: 3, speed_group: 5, thinking_effort: "high" };
@@ -1177,7 +1340,7 @@ test("providerPolicyBonus prefers larger low-thinking context for context-only t
   };
 
   assert.equal(policy.effectiveRequestProfile(req, env).taskLevel, 3);
-  assert.equal(policy.effectiveRequestProfile(req, env).contextLevel, 5);
+  assert.equal(policy.effectiveRequestProfile(req, env).contextLevel, 4);
   assert.equal(
     policy.providerPolicyBonus(codexMiniLow, req, { env }) > policy.providerPolicyBonus(sonnetThinking, req, { env }),
     true,
@@ -1309,6 +1472,44 @@ test("providerPolicyBonus prefers adequate context over one-million frontier for
 
   assert.equal(policy.providerPolicyBonus(adequate, req, { env }) > policy.providerPolicyBonus(millionOpus, req, { env }), true);
   assert.equal(policy.providerPolicyBonus(adequate, req, { env }) > policy.providerPolicyBonus(gpt55, req, { env }), true);
+});
+
+test("providerPolicyBonus prefers same-level large context over frontier context upgrades", () => {
+  const longContextStandard = {
+    name: "Windsurf-Gemini3FlashLow",
+    family: "windsurf",
+    model: "windsurf/google-gemini-3-0-flash-low",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 1048576,
+    cost_group: 1,
+    quality_group: 4,
+    speed_group: 5,
+    thinking_effort: "low",
+  };
+  const frontier = {
+    name: "Windsurf-ClaudeOpus461M",
+    family: "windsurf",
+    model: "windsurf/claude-opus-4-6-1m",
+    caps: ["text", "coding", "tools", "thinking", "max"],
+    context: 1000000,
+    cost_group: 4,
+    quality_group: 5,
+    speed_group: 3,
+    thinking_effort: "xhigh",
+  };
+  const env = { LLM_COST_TARGET: "3", LLM_THINKING_TARGET: "medium", LLM_SPEED_TARGET: "4", LLM_ROUTING_POLICY: "balanced" };
+  const req = {
+    messages: [{ role: "user", content: "Continue implementing the routing patch with tests." }],
+    tools: [{ type: "function", function: { name: "Edit" } }],
+    _inputTokens: 225000,
+    _estimatedTokens: 257000,
+  };
+  const profile = policy.effectiveRequestProfile(req, env);
+
+  assert.equal(profile.taskLevel, 3);
+  assert.equal(profile.contextLevel, 4);
+  assert.equal(policy.providerMaxRoutingLevel(longContextStandard), 3);
+  assert.equal(policy.providerPolicyBonus(longContextStandard, req, { env }) > policy.providerPolicyBonus(frontier, req, { env }), true);
 });
 
 test("providerPolicyBonus treats SWE as task-list and summary specialist, not default coding choice", () => {
@@ -1754,7 +1955,7 @@ test("failed edit recovery escalates to Opus-class routing instead of cheap larg
 
   assert.equal(assessment.taskKind, "edit_recovery");
   assert.equal(assessment.taskLevel, 4);
-  assert.equal(assessment.contextLevel, 5);
+  assert.equal(assessment.contextLevel, 4);
   assert.equal(assessment.thinkingEffort, "xhigh");
   assert.equal(policy.providerPolicyBonus(opus1m, req, { env }) > policy.providerPolicyBonus(flash, req, { env }), true);
 });
@@ -2123,7 +2324,7 @@ test("trusted AI assessment keeps heuristic task level when only context is larg
   assert.equal(policy.assessRequestDifficulty(req.messages, req).taskLevel, 3);
   assert.equal(profile.taskKind, "agentic_coding");
   assert.equal(profile.taskLevel, 3);
-  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.contextLevel, 4);
   assert.equal(profile.level, 5);
 
   const effective = policy.effectiveRequestProfile({
@@ -2134,6 +2335,30 @@ test("trusted AI assessment keeps heuristic task level when only context is larg
   assert.equal(effective.costTarget, 3);
   assert.equal(effective.thinkingLevel, 3);
   assert.equal(effective.speedTarget, 4);
+});
+
+test("trusted AI assessment cannot escalate context above deterministic headroom", () => {
+  const req = {
+    tools: Array.from({ length: 108 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{ role: "user", content: "Continue the agentic coding task and run tests." }],
+    _inputTokens: 129072,
+    _estimatedTokens: 161072,
+  };
+
+  const profile = policy.profileFromTrustedTaskAssessment(req, {
+    level: 5,
+    taskLevel: 4,
+    contextLevel: 5,
+    effort: "high",
+    speed: 3,
+    reason: "agentic_coding",
+  });
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).contextLevel, 4);
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.taskLevel, 4);
+  assert.equal(profile.contextLevel, 4);
+  assert.equal(profile.level, 4);
 });
 
 test("post-route marker keeps heuristic task level when only context is large", () => {
@@ -2149,8 +2374,28 @@ test("post-route marker keeps heuristic task level when only context is large", 
 
   assert.equal(profile.taskKind, "agentic_coding");
   assert.equal(profile.taskLevel, 3);
-  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.contextLevel, 4);
   assert.equal(profile.level, 5);
+});
+
+test("post-route marker cannot escalate context above deterministic headroom", () => {
+  const req = {
+    tools: Array.from({ length: 108 }, (_, i) => ({ type: "function", function: { name: `tool_${i}` } })),
+    messages: [{ role: "user", content: "Continue the agentic coding task and run tests." }],
+    _inputTokens: 129072,
+    _estimatedTokens: 161072,
+  };
+  const marker = policy.stripDifficultyMarkerFromText(
+    "{\"level\":5,\"taskLevel\":4,\"contextLevel\":5,\"effort\":\"high\",\"speed\":3,\"reason\":\"agentic_coding\"}",
+  ).marker;
+
+  const profile = policy.profileFromAssessmentMarker(req, marker);
+
+  assert.equal(policy.assessRequestDifficulty(req.messages, req).contextLevel, 4);
+  assert.equal(profile.taskKind, "agentic_coding");
+  assert.equal(profile.taskLevel, 4);
+  assert.equal(profile.contextLevel, 4);
+  assert.equal(profile.level, 4);
 });
 
 test("balanced policy preserves security and destructive routing floors", () => {
@@ -2213,7 +2458,7 @@ test("large list summaries keep text-only cost and thinking targets", () => {
 
   assert.equal(profile.taskKind, "list_summary");
   assert.equal(profile.taskLevel, 2);
-  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.contextLevel, 4);
   assert.equal(profile.qualityTarget, 3);
   assert.equal(profile.costTarget <= 2, true);
   assert.equal(profile.thinkingLevel <= 2, true);
@@ -2241,7 +2486,7 @@ test("trusted assessments cannot turn large list summaries into expensive reason
 
   assert.equal(profile.taskKind, "list_summary");
   assert.equal(profile.taskLevel, 2);
-  assert.equal(profile.contextLevel, 5);
+  assert.equal(profile.contextLevel, 4);
   assert.equal(profile.qualityTarget, 3);
   assert.equal(profile.costTarget <= 2, true);
   assert.equal(profile.thinkingLevel <= 2, true);
