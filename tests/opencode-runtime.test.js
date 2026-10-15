@@ -131,6 +131,31 @@ test("Console insufficient funds falls back to the same Go model and keeps the s
   });
 });
 
+test("an unavailable explicit route starts on its equivalent model before unrelated inventory", async (t) => {
+  const hosted = parseWorkspaceConfig(config()).routes.map(p => ({ ...p, key: "fixture", tier: 1 }));
+  const unrelated = { ...hosted[0], name: "unrelated", model: "other/unrelated", upstream_model: "unrelated", canonical_model: "other/unrelated", tier: 1 };
+  const routes = [unrelated, ...hosted];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-initial-fallback-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const runtime = createTaskRuntime({ dataDir: dir, getProviders: () => routes });
+  t.after(() => runtime.close());
+  // The requested route has already failed compatibility/cooldown checks before
+  // this new task; no pin exists yet, as in real direct routing.
+  runtime.setEligibility(p => p.name !== hosted[0].name);
+  await runtime.handle(
+    { model: hosted[0].model, messages: [{ role: "user", content: "Reply OK" }] },
+    { setHeader() {} },
+    { headers: { "x-llm-proxy-task-id": "unavailable-at-start", "x-llm-proxy-client-id": "fixture" } },
+    async body => {
+      assert.deepEqual(runtime.orderCandidates([hosted[0]], body), []);
+      const selected = await runtime.beforeDispatch(hosted[0], body);
+      assert.equal(selected.family, "opencode-go");
+      assert.equal(selected.upstream_model, hosted[0].upstream_model);
+      assert.deepEqual(runtime.inspectTask().models, [canonicalModel(hosted[0])]);
+    },
+  );
+});
+
 test("explicit free request cannot consume a paid fallback after quota exhaustion", async (t) => {
   const routes = parseWorkspaceConfig(config()).routes.map((p, i) => ({
     ...p,
