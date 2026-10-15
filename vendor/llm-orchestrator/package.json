@@ -1,0 +1,66 @@
+{
+  "name": "llm-orchestrator",
+  "version": "1.4.0",
+  "description": "Write /task once — it plans the work, shards it across parallel subagents, gates every phase and verifies before claiming done. Claude Code, Codex, OpenCode, Kilo.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "CC-BY-4.0",
+  "author": {
+    "name": "Bogdan-Gabriel Torcescu",
+    "url": "https://www.linkedin.com/in/bogdantorcescu/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tbogdan/llm-orchestrator.git"
+  },
+  "keywords": [
+    "orchestration",
+    "llm",
+    "agents",
+    "claude-code",
+    "codex",
+    "opencode",
+    "kilo",
+    "mcp"
+  ],
+  "bin": {
+    "llm-orchestrator": "bin/llm-orchestrator.mjs",
+    "llm-orchestrator-install": "bin/install.mjs",
+    "llm-orchestrator-uninstall": "bin/uninstall.mjs",
+    "llm-orchestrator-doctor": "bin/doctor.mjs",
+    "llm-orchestrator-render": "bin/render.mjs"
+  },
+  "files": [
+    "adapters",
+    "bin",
+    "lib",
+    "models",
+    "registries",
+    "schemas",
+    "SKILL.md",
+    "protocol.md",
+    "policies",
+    "workflows",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "skills",
+    "hooks",
+    "agents",
+    "commands",
+    ".claude-plugin"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs tests/models/*.test.mjs",
+    "attribution:check": "node bin/attribution-check.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/tbogdan/llm-orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/tbogdan/llm-orchestrator/issues"
+  }
+}
