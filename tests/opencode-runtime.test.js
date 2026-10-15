@@ -100,6 +100,37 @@ test("provisioning preserves unrelated routes and replacing a provider snapshot 
   assert.ok(!JSON.stringify(b.config).includes("Bearer"));
 });
 
+test("Console insufficient funds falls back to the same Go model and keeps the survivor pinned", async (t) => {
+  const routes = parseWorkspaceConfig(config()).routes.map((p) => ({ ...p, key: "fixture" }));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-credit-fallback-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const runtime = createTaskRuntime({ dataDir: dir, getProviders: () => routes });
+  t.after(() => runtime.close());
+  const options = { headers: {
+    "x-llm-proxy-task-id": "console-credit-fallback",
+    "x-llm-proxy-client-id": "fixture",
+  } };
+  const request = { model: routes[0].model, messages: [{ role: "user", content: "Reply OK" }] };
+  await runtime.handle(request, { setHeader() {} }, options, async (body) => {
+    const consoleRoute = await runtime.beforeDispatch(routes[0], body);
+    const session = buildHeaders(consoleRoute)["x-opencode-session"];
+    const error = { status: 402, body: JSON.stringify({ error: {
+      type: "server_error", message: "Upstream request failed: Insufficient account funds",
+    } }) };
+    assert.equal(runtime.retryable(error), true);
+    await runtime.recordFailure(consoleRoute, error);
+    const fallback = await runtime.beforeDispatch(routes[0], body);
+    assert.equal(fallback.family, "opencode-go");
+    assert.equal(fallback.upstream_model, consoleRoute.upstream_model);
+    assert.equal(buildHeaders(fallback)["x-opencode-session"], session);
+    runtime.recordSuccess(fallback);
+    assert.equal(runtime.inspectTask().models.length, 1);
+  });
+  await runtime.handle(request, { setHeader() {} }, options, async (body) => {
+    assert.equal((await runtime.beforeDispatch(routes[0], body)).family, "opencode-go");
+  });
+});
+
 test("explicit free request cannot consume a paid fallback after quota exhaustion", async (t) => {
   const routes = parseWorkspaceConfig(config()).routes.map((p, i) => ({
     ...p,

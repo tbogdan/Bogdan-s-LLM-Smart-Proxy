@@ -51,6 +51,31 @@ test("retry-after is honored but timeout and request echoes are not depleted cre
   );
 });
 
+test("OpenCode insufficient account funds disables Console routes but leaves Go eligible", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-funds-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = createAccountAvailabilityStore({ dataDir: dir });
+  t.after(() => store.close());
+  const consoleRoute = { family: "opencode", name: "console-a", account_ref: "console" };
+  const failure = classifyUpstreamFailure({
+    providerKind: "opencode",
+    status: 402,
+    errorBody: JSON.stringify({ error: {
+      type: "server_error",
+      message: "Upstream request failed: Insufficient account funds",
+    } }),
+  });
+  assert.equal(failure.kind, "credit_exhausted");
+  assert.equal(failure.scope, "account");
+  store.observe({ route: consoleRoute, failure });
+  assert.equal(store.isEligible({ ...consoleRoute, name: "console-b" }), false);
+  assert.equal(store.isEligible({ family: "opencode-go", name: "go-a", account_ref: "go" }), true);
+  assert.equal(classifyUpstreamFailure({
+    status: 400,
+    errorBody: JSON.stringify({ request: "Insufficient account funds" }),
+  }).kind, "invalid_request");
+});
+
 test("expired circuit allows one recovery probe and success reopens account", () => {
   let now = 1000;
   const s = createAccountAvailabilityStore({
