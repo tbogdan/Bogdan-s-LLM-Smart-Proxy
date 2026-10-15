@@ -17,6 +17,6 @@
   "license": "MIT",
   "dependencies": {
     "neo4j-driver": "^6.0.1",
-    "ws": "^8.20.1"
+    "ws": "^8.22.0"
   }
 }

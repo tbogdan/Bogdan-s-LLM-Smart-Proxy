@@ -6,7 +6,7 @@ import pathlib
 import subprocess
 import sys
 
-from importlib.machinery import SourceFileLoader
+import importlib.util
 
 
 def main():
@@ -24,6 +24,12 @@ def main():
     subprocess.run([sys.executable, "-m", "git_filter_repo", "--version"], check=True,
                    stdout=subprocess.DEVNULL)
     subprocess.run(["git", "clone", "--mirror", "--no-local", str(source), str(destination)], check=True)
+    # App diff snapshots may point directly to trees, which filter-repo skips.
+    # They are editor recovery metadata, not branches/tags; the external source
+    # bundle retains them. Drop only this documented namespace in the new mirror.
+    app_refs = subprocess.check_output(["git", "-C", str(destination), "for-each-ref", "--format=%(refname)", "refs/codex/"]).decode().splitlines()
+    for ref in app_refs:
+        subprocess.run(["git", "-C", str(destination), "update-ref", "-d", ref], check=True)
     expression = "__import__('re').sub(" + repr(__import__('re').escape(term)) + ", b'Project', VALUE, flags=__import__('re').I)"
     callbacks = []
     for flag, variable in [("--filename-callback", "filename"), ("--message-callback", "message"),
@@ -34,7 +40,9 @@ def main():
     callbacks += ["--blob-callback", "blob.data = " + expression.replace("VALUE", "blob.data")]
     subprocess.run([sys.executable, "-m", "git_filter_repo", "--force", *callbacks],
                    cwd=destination, check=True)
-    auditor = SourceFileLoader("history_auditor", str(pathlib.Path(__file__).with_name("audit-history.py"))).load_module()
+    spec = importlib.util.spec_from_file_location("history_auditor", pathlib.Path(__file__).with_name("audit-history.py"))
+    auditor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(auditor)
     result = auditor.audit(str(destination), term)
     subprocess.run(["git", "-C", str(destination), "fsck", "--full"], check=True)
     print(json.dumps({"destination": str(destination), "audit": result}))

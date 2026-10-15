@@ -79,7 +79,8 @@ test(
         "-m",
         "ForbiddenFixture annotation",
       );
-      const before = git("rev-parse", "HEAD");
+      git('update-ref','refs/codex/turn-diffs/captures/fixture',git('rev-parse','HEAD^{tree}'));
+    const before = git("rev-parse", "HEAD");
       const termFile = path.join(dir, "term");
       fs.writeFileSync(termFile, "ForbiddenFixture");
       const destination = path.join(dir, "clean.git");
