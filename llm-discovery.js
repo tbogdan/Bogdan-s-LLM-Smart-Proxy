@@ -100,7 +100,8 @@ function postJSON(urlStr, headers, body) {
 function loadSeed() {
   try {
     const raw = fs.readFileSync(SEED_FILE, "utf8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return { ...parsed, providers: (parsed.providers || []).map(providerConfig.normalizeSeedProvider) };
   } catch (err) {
     log(`WARN: Failed to load seed-providers.json: ${err.message}`);
     return { providers: [], groups: {} };

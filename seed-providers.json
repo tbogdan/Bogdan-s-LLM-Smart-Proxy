@@ -6191,22 +6191,18 @@
     {
       "name": "Kilo-Auto",
       "url": "https://api.kilo.ai/api/openrouter/v1/chat/completions",
-      "key_env": "",
-      "model": "openrouter/free",
+      "key_env": "KILO_TOKEN",
+      "model": "kilo/kilo-auto/free",
+      "upstream_model": "kilo-auto/free",
       "context": 131072,
       "tier": 3,
       "tc": false,
       "caps": [
         "text"
       ],
-      "headers": {
-        "User-Agent": "Kilo-Code/7.2.0",
-        "HTTP-Referer": "https://kilocode.ai",
-        "X-Title": "Kilo Code"
-      },
-      "kilo": true,
-      "default_key": "anonymous",
-      "no_auth": true
+      "family": "kilo",
+      "protocol": "openai",
+      "seed": true
     },
     {
       "name": "Alibaba-QwenMax",

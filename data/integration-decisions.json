@@ -1,0 +1,123 @@
+{
+  "local": "733d5b3",
+  "remote": "c187a42",
+  "strategy": "Retain advanced local runtime/protocol fixes; reconcile remote provider hydration and package commands separately.",
+  "conflicts": [
+    {
+      "path": ".env.example",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "Dockerfile",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "INSTRUCTIONS.md",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "README.md",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "config/graphiti-mcp-neo4j.yaml",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "data/route-smoke.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "docker-compose.yml",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/anthropic-adapter.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/anthropic-gateway.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/copilot-fingerprint.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/http-home.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/human-approval.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/ide-capabilities.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/media-content.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/provider-adapters.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/providers.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/responses.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/routing-policy.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/routing.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/scoring.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/state.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/transforms.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/windsurf-auth.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "lib/windsurf-cloud.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "llm-proxy.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "package-lock.json",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "package.json",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "seed-providers.json",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    },
+    {
+      "path": "windsurf-auth.js",
+      "resolution": "local advanced runtime; remote diff inspected, relevant behavior imported separately"
+    }
+  ]
+}

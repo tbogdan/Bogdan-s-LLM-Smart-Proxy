@@ -17,7 +17,7 @@ test("fallback providers are namespaced and belong to supported families", () =>
   assert.deepEqual([...families].sort(), ["claude", "codex", "copilot", "windsurf"]);
   assert.deepEqual(
     Object.fromEntries(Object.entries(config.FALLBACK_MODELS).map(([family, models]) => [family, models.length])),
-    { windsurf: 114, claude: 10, codex: 6, copilot: 33 },
+    { windsurf: 114, claude: 10, codex: 6, copilot: 35 },
   );
 
   for (const provider of seed.providers) {
@@ -427,7 +427,7 @@ test("Copilot provider can fall back to GitHub token env names", () => {
   }
 });
 
-test("hydrateProvidersFile drops unsupported runtime providers into legacy_providers", () => {
+test("hydrateProvidersFile admits merged legacy families but rejects malformed core routes", () => {
   const hydrated = providers.hydrateProvidersFile({
     providers: [
       {
@@ -454,8 +454,8 @@ test("hydrateProvidersFile drops unsupported runtime providers into legacy_provi
     ],
   });
 
-  assert.deepEqual(hydrated.providers.map((provider) => provider.name), ["Windsurf-adaptive"]);
-  assert.deepEqual(hydrated.legacy_providers.map((provider) => provider.name), ["Removed-FreeRouter", "Malformed-Codex"]);
+  assert.deepEqual(hydrated.providers.map((provider) => provider.name), ["Windsurf-adaptive", "Removed-FreeRouter"]);
+  assert.deepEqual(hydrated.legacy_providers.map((provider) => provider.name), ["Malformed-Codex"]);
 });
 
 test("hydrateSeedProviders can fall back to Claude OAuth token for legacy provider files", () => {

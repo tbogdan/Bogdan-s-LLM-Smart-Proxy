@@ -97,7 +97,7 @@ test("getEndpoints ignores old provider keys without supported enable flags", ()
 test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
-  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["claude", "codex", "copilot", "windsurf"]);
+  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["alibaba", "bigmodel", "cerebras", "claude", "cline", "cloudflare", "codex", "cohere", "copilot", "deepseek", "gemini", "githubmodels", "groq", "huggingface", "kilo", "kiro", "llm7", "mistral", "modelscope", "nvidia", "ollama", "openai", "openrouter", "ovh", "sambanova", "siliconflow", "windsurf"]);
   assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-memory", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
   assert.deepEqual(
     Object.fromEntries(
@@ -106,11 +106,11 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
         seed.providers.filter((provider) => provider.family === family).length,
       ]),
     ),
-    { windsurf: 114, claude: 10, codex: 6, copilot: 33 },
+    { windsurf: 114, claude: 10, codex: 6, copilot: 35 },
   );
 
   for (const provider of seed.providers) {
-    assert.match(provider.model, /^(windsurf|claude|codex|copilot)\//);
+    assert.match(provider.model, /^([a-z0-9]+)\//);
   }
 
   for (const model of [
@@ -338,7 +338,7 @@ test("discoverEndpointModels uses built-in Copilot model list without remote cat
   });
 
   assert.equal(result.source, "configured");
-  assert.equal(result.models.length, 33);
+  assert.equal(result.models.length, 35);
   assert.equal(result.models.some((model) => model.id === "gpt-4.1"), true);
   assert.equal(result.models.some((model) => model.id === "claude-opus-4.8"), true);
   assert.equal(result.models.some((model) => model.id === "claude-sonnet-4.6"), true);
