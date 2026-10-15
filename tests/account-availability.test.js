@@ -70,3 +70,5 @@ test("expired circuit allows one recovery probe and success reopens account", ()
   assert.equal(s.isEligible(route), true);
   s.close();
 });
+
+test('expired credentials disable every route sharing the account',()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'auth-account-'));const store=createAccountAvailabilityStore({dataDir:dir});const route={name:'A',family:'openai',account_ref:'one'};store.observe({route,failure:classifyUpstreamFailure({status:401,errorBody:JSON.stringify({error:{code:'token_expired'}})})});assert.equal(store.isEligible({...route,name:'B'}),false);assert.equal(store.isEligible({...route,name:'C',account_ref:'two'}),true);store.close();});

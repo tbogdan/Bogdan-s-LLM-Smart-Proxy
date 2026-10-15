@@ -33,3 +33,6 @@ __pycache__/
 
 # Public, dated model price evidence belongs in the portable build
 !data/model-catalog-evidence.json
+
+# Local code navigation state
+.serena/
