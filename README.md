@@ -93,10 +93,12 @@ The [older benchmark](docs/smart-routing-memory-benchmark.md) and [historical RE
 ## Provider discovery and pricing
 
 ```bash
-node scripts/refresh-model-catalog.js --mode list --env-file .env --output data/model-inventory.json
+node scripts/refresh-model-catalog.js --mode list --env-file .env --output data/model-inventory.json --catalog-output data/model-catalog-evidence.json
 ```
 
 This path uses bounded model-list requests and never probes every model's context window. Public pricing evidence is in `data/model-catalog-evidence.json`; subscription credit multipliers and actual account access remain distinct. Unknown price/access is never treated as free or verified.
+
+All 35 provider families have explicit source coverage. Region, plan, currency, context and cache tiers remain separate; unavailable or unpublished prices remain unknown. See [catalog refresh and coverage limits](docs/operator/provider-catalog.md).
 
 ## Operations and references
 

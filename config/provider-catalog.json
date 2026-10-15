@@ -1,0 +1,383 @@
+[
+  {
+    "id": "windsurf",
+    "modelsUrl": null,
+    "billingBasis": "subscription",
+    "keyEnvs": [
+      "WINDSURF_API_KEY"
+    ],
+    "pricingUrl": "https://docs.devin.ai/desktop/models",
+    "schema": "windsurf",
+    "native": "windsurf"
+  },
+  {
+    "id": "claude",
+    "modelsUrl": "https://api.anthropic.com/v1/models",
+    "billingBasis": "mixed",
+    "keyEnvs": [
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN"
+    ],
+    "pricingUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "schema": "anthropic"
+  },
+  {
+    "id": "codex",
+    "modelsUrl": null,
+    "billingBasis": "subscription",
+    "keyEnvs": [
+      "CODEX_API_KEY"
+    ],
+    "pricingUrl": "https://learn.chatgpt.com/docs/pricing",
+    "schema": "codex",
+    "native": "codex",
+    "modelRetirements": [
+      {
+        "id": "gpt-5.5",
+        "retiredAt": "2026-10-14T19:00:00Z",
+        "source": "https://learn.chatgpt.com/docs/pricing",
+        "scope": "ChatGPT sign-in; direct OpenAI API unaffected"
+      }
+    ]
+  },
+  {
+    "id": "copilot",
+    "modelsUrl": "https://api.githubcopilot.com/models",
+    "billingBasis": "credits",
+    "keyEnvs": [
+      "COPILOT_GITHUB_TOKEN",
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "COPILOT_TOKEN"
+    ],
+    "pricingUrl": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing",
+    "schema": "copilot"
+  },
+  {
+    "id": "groq",
+    "modelsUrl": "https://api.groq.com/openai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "GROQ_API_KEY"
+    ],
+    "pricingUrl": "https://console.groq.com/docs/models",
+    "schema": "openai"
+  },
+  {
+    "id": "openrouter",
+    "modelsUrl": "https://openrouter.ai/api/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "OPENROUTER_API_KEY"
+    ],
+    "pricingUrl": "https://openrouter.ai/models",
+    "schema": "openrouter",
+    "publicCatalog": true
+  },
+  {
+    "id": "openai",
+    "modelsUrl": "https://api.openai.com/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "OPENAI_API_KEY"
+    ],
+    "pricingUrl": "https://developers.openai.com/api/docs/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "mistral",
+    "modelsUrl": "https://api.mistral.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "MISTRAL_API_KEY"
+    ],
+    "pricingUrl": "https://docs.mistral.ai/inference/pricing",
+    "schema": "mistral"
+  },
+  {
+    "id": "cerebras",
+    "modelsUrl": "https://api.cerebras.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "CEREBRAS_API_KEY"
+    ],
+    "pricingUrl": "https://www.cerebras.ai/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "sambanova",
+    "modelsUrl": "https://api.sambanova.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "SAMBANOVA_API_KEY"
+    ],
+    "pricingUrl": "https://cloud.sambanova.ai/plans/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "nvidia",
+    "modelsUrl": "https://integrate.api.nvidia.com/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "NVIDIA_API_KEY"
+    ],
+    "pricingUrl": "https://docs.api.nvidia.com/nim/docs/product",
+    "schema": "openai"
+  },
+  {
+    "id": "gemini",
+    "modelsUrl": "https://generativelanguage.googleapis.com/v1beta/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY"
+    ],
+    "pricingUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+    "schema": "gemini"
+  },
+  {
+    "id": "llm7",
+    "modelsUrl": "https://api.llm7.io/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "LLM7_API_KEY"
+    ],
+    "pricingUrl": "https://llm7.io/pricing",
+    "schema": "llm7",
+    "publicCatalog": true
+  },
+  {
+    "id": "ovh",
+    "modelsUrl": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "OVH_API_KEY"
+    ],
+    "pricingUrl": "https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
+    "schema": "openai"
+  },
+  {
+    "id": "cloudflare",
+    "modelsUrl": null,
+    "billingBasis": "api",
+    "keyEnvs": [
+      "CLOUDFLARE_API_KEY",
+      "CLOUDFLARE_API_TOKEN"
+    ],
+    "pricingUrl": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
+    "schema": "cloudflare",
+    "native": "cloudflare"
+  },
+  {
+    "id": "siliconflow",
+    "modelsUrl": "https://api.siliconflow.com/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "SILICONFLOW_API_KEY"
+    ],
+    "pricingUrl": "https://www.siliconflow.com/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "bigmodel",
+    "modelsUrl": "https://open.bigmodel.cn/api/paas/v4/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "BIGMODEL_API_KEY"
+    ],
+    "pricingUrl": "https://open.bigmodel.cn/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "deepseek",
+    "modelsUrl": "https://api.deepseek.com/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "DEEPSEEK_API_KEY"
+    ],
+    "pricingUrl": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "schema": "openai"
+  },
+  {
+    "id": "alibaba",
+    "modelsUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "ALIBABA_API_KEY",
+      "DASHSCOPE_API_KEY"
+    ],
+    "pricingUrl": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "cohere",
+    "modelsUrl": "https://api.cohere.com/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "COHERE_API_KEY"
+    ],
+    "pricingUrl": "https://cohere.com/pricing",
+    "schema": "cohere"
+  },
+  {
+    "id": "ollama",
+    "modelsUrl": "https://ollama.com/api/tags",
+    "billingBasis": "mixed",
+    "keyEnvs": [
+      "OLLAMA_API_KEY"
+    ],
+    "pricingUrl": "https://ollama.com/pricing",
+    "schema": "ollama"
+  },
+  {
+    "id": "huggingface",
+    "modelsUrl": "https://router.huggingface.co/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "HF_TOKEN",
+      "HUGGINGFACE_API_KEY"
+    ],
+    "pricingUrl": "https://huggingface.co/docs/inference-providers/pricing",
+    "schema": "huggingface",
+    "publicCatalog": true
+  },
+  {
+    "id": "kiro",
+    "modelsUrl": "http://127.0.0.1:10088/v1/models",
+    "billingBasis": "credits",
+    "keyEnvs": [
+      "KIRO_API_KEY"
+    ],
+    "pricingUrl": "https://kiro.dev/pricing/",
+    "schema": "openai"
+  },
+  {
+    "id": "cline",
+    "modelsUrl": "https://api.cline.bot/api/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "CLINE_API_KEY"
+    ],
+    "pricingUrl": "https://docs.cline.bot/core-features/model-selection-guide",
+    "schema": "openai",
+    "publicCatalog": true
+  },
+  {
+    "id": "modelscope",
+    "modelsUrl": "https://api-inference.modelscope.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "MODELSCOPE_API_KEY"
+    ],
+    "pricingUrl": "https://www.modelscope.cn/docs/model-service/API-Inference/intro",
+    "schema": "openai",
+    "publicCatalog": true
+  },
+  {
+    "id": "githubmodels",
+    "modelsUrl": null,
+    "billingBasis": "retired",
+    "keyEnvs": [
+      "COPILOT_TOKEN",
+      "GITHUB_TOKEN"
+    ],
+    "pricingUrl": "https://docs.github.com/en/github-models",
+    "schema": "retired",
+    "retired": true,
+    "retiredAt": "2026-07-30"
+  },
+  {
+    "id": "kilo",
+    "modelsUrl": "https://api.kilo.ai/api/openrouter/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "KILO_TOKEN"
+    ],
+    "pricingUrl": "https://kilo.ai/docs/gateway/models-and-providers",
+    "schema": "openrouter",
+    "publicCatalog": true
+  },
+  {
+    "id": "kimi",
+    "modelsUrl": "https://api.moonshot.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "KIMI_API_KEY",
+      "MOONSHOT_API_KEY"
+    ],
+    "pricingUrl": "https://platform.kimi.ai/docs/pricing/chat",
+    "schema": "openai"
+  },
+  {
+    "id": "xiaomi",
+    "modelsUrl": "https://api.xiaomimimo.com/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "XIAOMI_API_KEY",
+      "MIMO_API_KEY"
+    ],
+    "pricingUrl": "https://mimo.mi.com/docs/en-US/price/pay-as-you-go",
+    "schema": "openai"
+  },
+  {
+    "id": "xai",
+    "modelsUrl": "https://api.x.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "XAI_API_KEY"
+    ],
+    "pricingUrl": "https://docs.x.ai/developers/models",
+    "schema": "openai"
+  },
+  {
+    "id": "perplexity",
+    "modelsUrl": "https://api.perplexity.ai/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "PERPLEXITY_API_KEY"
+    ],
+    "pricingUrl": "https://docs.perplexity.ai/docs/getting-started/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "together",
+    "modelsUrl": "https://api.together.xyz/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "TOGETHER_API_KEY"
+    ],
+    "pricingUrl": "https://www.together.ai/pricing",
+    "schema": "together"
+  },
+  {
+    "id": "fireworks",
+    "modelsUrl": "https://api.fireworks.ai/inference/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "FIREWORKS_API_KEY"
+    ],
+    "pricingUrl": "https://fireworks.ai/pricing",
+    "schema": "openai"
+  },
+  {
+    "id": "nebius",
+    "modelsUrl": "https://tokenfactory.nebius.com/api/public/models_info",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "NEBIUS_API_KEY"
+    ],
+    "pricingUrl": "https://tokenfactory.nebius.com/prices",
+    "schema": "nebius",
+    "publicCatalog": true
+  },
+  {
+    "id": "hyperbolic",
+    "modelsUrl": "https://api.hyperbolic.xyz/v1/models",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "HYPERBOLIC_API_KEY"
+    ],
+    "pricingUrl": "https://www.hyperbolic.ai/pricing",
+    "schema": "openai"
+  }
+]
