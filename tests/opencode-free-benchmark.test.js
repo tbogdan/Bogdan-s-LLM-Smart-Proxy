@@ -18,6 +18,29 @@ const p = {
     observedAt: new Date().toISOString(),
   },
 };
+test("native benchmark preserves tool history and qualifies repeated automatic tool round trips", async () => {
+  const r=await bench.run({config:{providers:[p]},toolRounds:3,requestTimeoutMs:45000,route:async(_provider,body,options)=>{
+    const prompt=body.messages.find(m=>m.role==='user')?.content||'',last=body.messages.at(-1);
+    let content='fixture-ok',calls;
+    if(last.role==='tool'){
+      // Return wrong contents if the benchmark changed the original prompt or
+      // dropped its system message instead of continuing the same conversation.
+      content=body.messages[0].role==='system'&&prompt==='Read fixture.txt using read. Then reply with its exact contents and nothing else.'?'fixture-value-47':'invalid history';
+    }else if(prompt.includes('Read fixture.txt')){
+      if(body.tool_choice!=='auto')throw Object.assign(Error('only auto supported'),{status:400});
+      calls=[{id:'c1',type:'function',function:{name:'read',arguments:'{"path":"fixture.txt"}'}}];content=null;
+    }else if(prompt.includes('sum'))content='{"sum":42,"even":true}';
+    else if(prompt.includes('const a='))content='[4,16]';
+    else if(prompt.includes('ready and pending'))content='{"ready":["api","health"],"pending":["cache","docs"]}';
+    else if(prompt.includes('stream-ok'))content='stream-ok';
+    else if(prompt.includes('cache-ok'))content='cache-ok';
+    else if(prompt.includes('parallel-ok'))content='parallel-ok';
+    const usage={prompt_tokens:10,completion_tokens:3,total_tokens:13},message={role:'assistant',content,...(calls?{tool_calls:calls}:{})};
+    if(options.handlers){const delta=calls?{tool_calls:calls.map(t=>({...t,index:0}))}:{content};options.handlers.onChunk('data: '+JSON.stringify({choices:[{delta,finish_reason:calls?'tool_calls':'stop'}],usage})+'\n\ndata: [DONE]\n\n');return;}
+    return{status:200,body:JSON.stringify({choices:[{message,finish_reason:calls?'tool_calls':'stop'}],usage})};
+  }});
+  assert.equal(r.requests,25);assert.equal(r.models[0].evidence.toolChecks,9);assert.equal(r.models[0].evidence.toolPassed,9);assert.equal(r.models[0].eligible,true);
+});
 test("benchmark stops entire provider batch on quota without paid requests or identity retries", async () => {
   let calls = 0;
   const r = await bench.run({

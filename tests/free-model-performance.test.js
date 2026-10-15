@@ -26,6 +26,9 @@ const now = Date.parse("2026-10-15T12:00:00Z"),
     billing_basis: "api",
     benchmark_evidence: evidence(),
   };
+test("a budget-truncated deep suite cannot qualify from an otherwise passing prefix", () => {
+  assert.equal(perf.eligible({...evidence(), plannedSamples:25},{now}),false);
+});
 test("only fresh measured free evidence with protocol proof can affect routing", () => {
   assert.ok(perf.routingBonus(provider, { model: "auto-coding" }, { now }) > 0);
   assert.equal(

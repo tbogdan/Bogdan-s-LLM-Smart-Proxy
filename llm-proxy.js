@@ -234,6 +234,7 @@ function handleModels(query) {
       access_policy: p.access_policy,
       performance_evidence: p.benchmark_evidence,
       required_tools: p.access_policy === "native_tool_profile" ? ["read"] : undefined,
+      supported_tool_choices: require('./lib/opencode').supportedToolChoices(p),
       display_name: p.display_name,
       description: p.description,
       context_window: p.context_window,

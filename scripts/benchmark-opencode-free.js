@@ -30,7 +30,7 @@ const json = (s) => {
     return null;
   }
 };
-function cases() {
+function cases({ toolRounds = 1 } = {}) {
   const out = [];
   for (let round = 0; round < 3; round++)
     out.push(
@@ -73,12 +73,12 @@ function cases() {
         );
       },
     });
-  for (let i = 0; i < 2; i++)
+  for (let i = 0; i < toolRounds * 2; i++)
     out.push({
       id: "tool-" + i,
       category: "tools",
-      stream: i === 1,
-      prompt: "Read fixture.txt using the read tool. Do not answer in text.",
+      stream: i % 2 === 1,
+      prompt: "Read fixture.txt using read. Then reply with its exact contents and nothing else.",
       tool: true,
       check: (b) => {
         const calls = b.choices?.[0]?.message?.tool_calls;
@@ -222,15 +222,20 @@ async function run({
   output,
   maxRequests = 220,
   maxRuntimeMs = 900000,
+  toolRounds = 1,
+  requestTimeoutMs = 45000,
+  models,
   route = gateway.route,
   now = Date.now,
   onProgress = () => {},
 }) {
+  if (!Number.isInteger(toolRounds) || toolRounds < 1 || toolRounds > 5) throw Error("toolRounds must be between 1 and 5");
+  if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs < 1000 || requestTimeoutMs > 120000) throw Error("requestTimeoutMs must be between 1000 and 120000");
   const started = now(),
     report = {
       version: 1,
       startedAt: new Date(started).toISOString(),
-      budget: { maxRequests, maxRuntimeMs, paidRequests: 0 },
+      budget: { maxRequests, maxRuntimeMs, requestTimeoutMs, toolRounds, paidRequests: 0 },
       models: [],
       stopped: null,
     },
@@ -242,7 +247,11 @@ async function run({
       p.billing_class === "free_limited" &&
       p.billing_basis === "api",
   );
+  if (models) {
+    if (!Array.isArray(models) || models.some(id => !candidates.some(p => p.model === id))) throw Error("Requested model is not a configured free OpenCode candidate");
+  }
   for (const source of candidates) {
+    if (models && !models.includes(source.model)) continue;
     if (report.stopped) break;
     let p;
     try {
@@ -302,13 +311,10 @@ async function run({
               model: p.model,
               messages,
               tools: [READ],
-              max_completion_tokens: 768,
+              max_completion_tokens: 4096,
               ...(c.tool
                 ? {
-                    tool_choice: {
-                      type: "function",
-                      function: { name: "read" },
-                    },
+                    tool_choice: "auto",
                   }
                 : {}),
             };
@@ -316,7 +322,7 @@ async function run({
             const response = await route(p, body, {
               timeoutMs: Math.max(
                 1,
-                Math.min(20000, maxRuntimeMs - (now() - started)),
+                Math.min(requestTimeoutMs, maxRuntimeMs - (now() - started)),
               ),
               signal: controller.signal,
               ...(c.stream
@@ -336,8 +342,10 @@ async function run({
             row.cachedInputTokens =
               b.usage?.prompt_tokens_details?.cached_tokens ?? null;
             row.finishReason = b.choices?.[0]?.finish_reason;
-            if (c.tool && row.passed && !c.stream)
+            if (c.tool && row.passed && !c.stream) {
               row.toolMessage = b.choices[0].message;
+              row.toolHistory = messages;
+            }
           } catch (e) {
             row.status = Number(e.status) || null;
             row.error =
@@ -357,22 +365,21 @@ async function run({
       samples.push(row);
       return row;
     };
-    for (const c of cases()) {
+    for (const c of cases({ toolRounds })) {
       if (report.stopped || transportFailures >= 2) break;
       const row = await call(c);
       if (!row) break;
       if (c.tool && row.passed && !c.stream) {
         const toolMessage = row.toolMessage;
+        const history = row.toolHistory;
         delete row.toolMessage;
+        delete row.toolHistory;
         await call({
-          id: "tool-result",
+          id: c.id + "-result",
           category: "tools",
           session: c.session || c.id,
           messages: [
-            {
-              role: "user",
-              content: "Read fixture.txt and reply with its exact contents.",
-            },
+            ...history,
             toolMessage,
             {
               role: "tool",
@@ -398,7 +405,7 @@ async function run({
           }),
         ),
       );
-    const evidence = summarize(samples, now()),
+    const evidence = { ...summarize(samples, now()), plannedSamples: 19 + (toolRounds - 1) * 3 },
       row = {
         model: p.model,
         protocol: p.protocol,
@@ -451,6 +458,9 @@ async function main() {
   const report = await run({
     config,
     output,
+    models: arg("--models", "").split(",").filter(Boolean).length ? arg("--models", "").split(",").filter(Boolean) : undefined,
+    toolRounds: Number(arg("--tool-rounds", "1")),
+    requestTimeoutMs: Number(arg("--timeout-ms", "45000")),
     onProgress: (r) => console.log(JSON.stringify(r)),
   });
   if (a.includes("--promote")) {

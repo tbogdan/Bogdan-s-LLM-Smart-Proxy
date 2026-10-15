@@ -35,6 +35,34 @@ test("same hosted model is canonical across Console and Go rather than consuming
   const r = parseWorkspaceConfig(config()).routes;
   assert.equal(canonicalModel(r[0]), canonicalModel(r[1]));
 });
+
+test("a task-specific tool capability failure does not disable future tasks on the account", async (t) => {
+  const routes=parseWorkspaceConfig(config()).routes.map(p=>({...p,key:'fixture'}));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tool-capability-task-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const runtime=createTaskRuntime({dataDir:dir,getProviders:()=>routes});t.after(()=>runtime.close());
+  for(const id of ['forced-tool','automatic-tool'])await runtime.handle(
+    {model:routes[0].model,messages:[{role:'user',content:'Read fixture'}]}, {setHeader(){}},
+    {headers:{'x-llm-proxy-task-id':id,'x-llm-proxy-client-id':'fixture'}},async body=>{
+      const selected=await runtime.beforeDispatch(routes[0],body);
+      assert.equal(selected.name,routes[0].name);
+      if(id==='forced-tool')await runtime.recordFailure(selected,{status:422,body:JSON.stringify({error:{code:'unsupported_tool_choice',message:'This tool control is unsupported'}})});
+    });
+});
+
+test("tool capability failure releases an expired rate-limit recovery probe", async (t) => {
+ const routes=parseWorkspaceConfig(config()).routes.slice(0,1).map(p=>({...p,key:'fixture'}));let clock=1000;
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tool-half-open-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const runtime=createTaskRuntime({dataDir:dir,getProviders:()=>routes,now:()=>clock});t.after(()=>runtime.close());
+ for(const id of ['limited','unsupported-tool','new-auto-task']){
+  if(id==='unsupported-tool')clock=3000;
+  await runtime.handle({model:routes[0].model,messages:[{role:'user',content:'Reply'}]},{setHeader(){}},{headers:{'x-llm-proxy-task-id':id}},async body=>{
+   const selected=await runtime.beforeDispatch(routes[0],body);assert.equal(selected.name,routes[0].name);
+   if(id==='limited')await runtime.recordFailure(selected,{status:429,headers:{'retry-after':'1'},body:'{"error":{"message":"rate limited"}}'});
+   if(id==='unsupported-tool')await runtime.recordFailure(selected,{status:422,body:'{"error":{"code":"unsupported_tool_choice"}}'});
+  });
+ }
+});
 test("quota fallback preserves upstream model, stable task session and survivor pin", async (t) => {
   const routes = parseWorkspaceConfig(config()).routes.map((p) => ({
     ...p,
