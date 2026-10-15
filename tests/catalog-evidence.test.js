@@ -72,7 +72,7 @@ test("public evidence strips account access and preserves region/currency price 
       ],
     },
   ]);
-  assert.equal(result.providers.length, 35);
+  assert.equal(result.providers.length, 37);
   assert.equal(result.prices.length, 2);
   assert.ok(!JSON.stringify(result).includes("private-account"));
   assert.equal(result.models[0].availability, undefined);

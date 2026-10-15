@@ -66,6 +66,13 @@ async function refresh({
     }
     if (keyEnv) headers.Authorization = "Bearer " + env[keyEnv];
     try {
+      if(def.native==='opencode'){
+        const gateway=require('../lib/opencode');const raw=await gateway.fetchWorkspaceConfig({key:env[keyEnv],fetchFn,timeoutMs});
+        if(!raw.providers[def.id])throw new Error('Provider missing in workspace config');
+        const parsed=gateway.parseWorkspaceConfig({providers:{[def.id]:raw.providers[def.id]}},{observedAt});
+        observations.push(...parsed.models.map(m=>({...m,availability:'exposed',accountRef:keyEnv})));prices.push(...parsed.prices);
+        report.listingStatus='listed';report.pages=1;report.modelCount=parsed.models.length;report.priceCount=parsed.prices.length;report.priceStatus='workspace_scoped_rates';providers.push(report);return;
+      }
       if (def.native === "windsurf") {
         const rows = await fetchWindsurfFn({
           key: env[keyEnv],

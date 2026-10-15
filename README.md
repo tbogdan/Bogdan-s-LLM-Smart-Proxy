@@ -98,7 +98,7 @@ node scripts/refresh-model-catalog.js --mode list --env-file .env --output data/
 
 This path uses bounded model-list requests and never probes every model's context window. Public pricing evidence is in `data/model-catalog-evidence.json`; subscription credit multipliers and actual account access remain distinct. Unknown price/access is never treated as free or verified.
 
-All 35 provider families have explicit source coverage. Region, plan, currency, context and cache tiers remain separate; unavailable or unpublished prices remain unknown. See [catalog refresh and coverage limits](docs/operator/provider-catalog.md).
+All 37 provider families have explicit source coverage. Region, plan, currency, context and cache tiers remain separate; unavailable or unpublished prices remain unknown. See [catalog refresh and coverage limits](docs/operator/provider-catalog.md).
 
 ## Operations and references
 
@@ -107,3 +107,7 @@ All 35 provider families have explicit source coverage. Region, plan, currency, 
 - Read-only endpoints: `/health`, `/v1/models`, `/v1/capabilities`, `/v1/orchestration`, `/stats`.
 - Design references: [Headroom](https://github.com/headroomlabs-ai/headroom) for recoverable context/cache patterns; [Agents Library](https://github.com/cleanunicorn/agents-library) for focused roles and evidence-backed review. These references are not installed as plugins or mandatory services.
 - Bundled orchestrator: CC BY 4.0, Bogdan-Gabriel Torcescu; retain its LICENSE/NOTICE and attribution. Proxy package: MIT.
+
+### OpenCode Console and Go
+
+Both sources retain separate credentials and billing classes. Console paid models use credits; Go models consume included subscription allowances. Free-tier entries remain cataloged but disabled for this external client after the provider returned `FreeTierError`; requests for those entries never silently switch to paid models. See [provisioning, protocols and task cache](docs/operator/opencode.md).

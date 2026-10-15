@@ -379,5 +379,27 @@
     ],
     "pricingUrl": "https://www.hyperbolic.ai/pricing",
     "schema": "openai"
+  },
+  {
+    "id": "opencode",
+    "modelsUrl": "https://opencode.ai/console/api/v2/config",
+    "billingBasis": "api",
+    "keyEnvs": [
+      "OPENCODE_API_KEY"
+    ],
+    "pricingUrl": "https://opencode.ai/v2/docs/console/models/",
+    "schema": "opencode-workspace",
+    "native": "opencode"
+  },
+  {
+    "id": "opencode-go",
+    "modelsUrl": "https://opencode.ai/console/api/v2/config",
+    "billingBasis": "subscription",
+    "keyEnvs": [
+      "OPENCODE_GO_API_KEY"
+    ],
+    "pricingUrl": "https://opencode.ai/v2/docs/console/go/",
+    "schema": "opencode-workspace",
+    "native": "opencode"
   }
 ]

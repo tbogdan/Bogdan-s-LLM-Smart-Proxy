@@ -4,6 +4,10 @@ const {
   normalizePriceObservation,
   estimatedCost,
 } = require("../lib/model-pricing");
+test('normalized Anthropic cache writes are removed from total input before pricing',()=>{
+ const p=normalizePriceObservation({billingBasis:'api',inputPerMTok:2,outputPerMTok:10,cacheReadPerMTok:.2,cacheWritePerMTok:2.5});
+ assert.equal(estimatedCost({prompt_tokens:1300,completion_tokens:10,prompt_tokens_details:{cached_tokens:1000,cache_creation_tokens:200}},p),.001);
+});
 test("OpenAI Responses cached input remains part of total input", () => {
   const price = normalizePriceObservation({
     providerId: "openai",

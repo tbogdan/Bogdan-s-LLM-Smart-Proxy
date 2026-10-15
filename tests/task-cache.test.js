@@ -25,3 +25,11 @@ test("cache prefix detector preserves caller instructions and supported explicit
   });
   assert.notEqual(a.prefixHash, b.prefixHash);
 });
+
+test("cache usage retains normalized gateway cache writes", () => {
+  const u = require("../lib/task-cache").cacheUsage({
+    prompt_tokens_details: { cached_tokens: 12, cache_creation_tokens: 8 },
+  });
+  assert.equal(u.readTokens, 12);
+  assert.equal(u.writeTokens, 8);
+});
