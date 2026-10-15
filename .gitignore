@@ -19,3 +19,17 @@ data/human-approvals.jsonl
 .playwright-mcp/
 docs/superpowers
 .claude/
+data/tasks/
+data/accounts/
+data/originals/
+data/config-backup-*.env
+.superpowers/
+!docs/operator/
+!docs/operator/**
+
+# Local Python tooling caches
+__pycache__/
+*.pyc
+
+# Public, dated model price evidence belongs in the portable build
+!data/model-catalog-evidence.json

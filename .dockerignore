@@ -1,0 +1,12 @@
+.git
+.claude
+.serena
+.superpowers
+node_modules
+.env
+.env.*
+!.env.example
+data/**
+!data/model-catalog-evidence.json
+docs
+*.log

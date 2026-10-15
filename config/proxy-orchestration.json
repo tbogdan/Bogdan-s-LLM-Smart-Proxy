@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "maxAgents": 3,
+  "maxIterationsPerRole": 6,
+  "maxOutputTokens": 8192,
+  "proxyHostedPermissions": "RO",
+  "reviewEvidence": "independent trusted executor at current revision",
+  "flows": {
+    "FEATURE": ["understand", "plan", "implement", "verify"],
+    "BUG_FIX": ["reproduce", "diagnose", "fix", "verify"],
+    "REVIEW": ["scope", "inspect", "verify_findings"]
+  }
+}

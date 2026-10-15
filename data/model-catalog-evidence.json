@@ -1,0 +1,131 @@
+{
+  "observedAt": "2026-10-15T00:00:00Z",
+  "note": "Standard direct API USD rates. Subscription/reseller prices and account access must be observed separately. New models are not promoted by invented quality scores.",
+  "prices": [
+    {
+      "providerId": "openai",
+      "upstreamModel": "gpt-6-luna",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 0.1,
+      "outputPerMTok": 0.5,
+      "cacheReadPerMTok": 0.01,
+      "cacheWritePerMTok": 0.125,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": {
+        "inputMultiplier": 2,
+        "outputMultiplier": 1.5,
+        "threshold": "provider model-specific; verify before applying"
+      },
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "openai",
+      "upstreamModel": "gpt-6.1-sol",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 2,
+      "outputPerMTok": 10,
+      "cacheReadPerMTok": 0.1,
+      "cacheWritePerMTok": 2.5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": {
+        "inputMultiplier": 2,
+        "outputMultiplier": 1.5,
+        "threshold": "provider model-specific; verify before applying"
+      },
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "openai",
+      "upstreamModel": "gpt-6-astra",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 10,
+      "outputPerMTok": 50,
+      "cacheReadPerMTok": 1,
+      "cacheWritePerMTok": 12.5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": {
+        "inputMultiplier": 2,
+        "outputMultiplier": 1.5,
+        "threshold": "provider model-specific; verify before applying"
+      },
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "claude",
+      "upstreamModel": "claude-haiku-5-5",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 0.1,
+      "outputPerMTok": 0.5,
+      "cacheReadPerMTok": 0.01,
+      "cacheWritePerMTok": 0.125,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": {
+        "threshold": 100000,
+        "inputMultiplier": 5,
+        "outputMultiplier": 5
+      },
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "claude",
+      "upstreamModel": "claude-sonnet-5-5",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 2,
+      "outputPerMTok": 10,
+      "cacheReadPerMTok": 0.1,
+      "cacheWritePerMTok": 2.5,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": null,
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "claude",
+      "upstreamModel": "claude-opus-5-5",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 4,
+      "outputPerMTok": 20,
+      "cacheReadPerMTok": 0.2,
+      "cacheWritePerMTok": 5,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": null,
+      "quality": "unmeasured-in-this-proxy"
+    },
+    {
+      "providerId": "claude",
+      "upstreamModel": "claude-fable-5-1",
+      "billingBasis": "api",
+      "serviceTier": "standard",
+      "currency": "USD",
+      "inputPerMTok": 10,
+      "outputPerMTok": 50,
+      "cacheReadPerMTok": 0.25,
+      "cacheWritePerMTok": 12.5,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "observedAt": "2026-10-15T00:00:00Z",
+      "longContext": null,
+      "quality": "unmeasured-in-this-proxy"
+    }
+  ],
+  "sources": [
+    "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "https://docs.devin.ai/desktop/models"
+  ]
+}

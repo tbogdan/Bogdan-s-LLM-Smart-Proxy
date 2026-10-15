@@ -52,8 +52,9 @@ function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) 
 // ---------------------------------------------------------------------------
 // Wire late-bound dependencies into routing
 // ---------------------------------------------------------------------------
-routing.init({ sendError, trackSessionTokens });
-responses.init({ handleChatCompletion: routing.handleChatCompletion });
+const taskRuntime = require("./lib/task-runtime").createTaskRuntime({ dataDir: state.DATA_DIR, getProviders: () => state.PROVIDERS, compression: process.env.LLM_PROXY_CONTEXT_OPTIMIZER !== "off" });
+routing.init({ sendError, trackSessionTokens, taskRuntime: process.env.LLM_PROXY_TASK_ROUTING === "off" ? undefined : taskRuntime });
+responses.init({ handleChatCompletion: routing.handleChatCompletion, taskRuntime: process.env.LLM_PROXY_TASK_ROUTING === "off" ? undefined : taskRuntime });
 anthropicGateway.init({ handleChatCompletion: routing.handleChatCompletion });
 
 // ---------------------------------------------------------------------------
@@ -227,6 +228,7 @@ function handleModels(query) {
       speed_group: profile.speed_group,
       thinking_effort: profile.thinking_effort,
       supported_thinking_efforts: p.supported_thinking_efforts,
+      price_evidence: p.price_evidence,
       display_name: p.display_name,
       description: p.description,
       context_window: p.context_window,
@@ -533,7 +535,8 @@ const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-LLM-Proxy-Approval, X-LLM-Proxy-Approval-Token, X-Approved-By-User");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-LLM-Proxy-Task-ID, X-LLM-Proxy-Conversation-ID, X-LLM-Proxy-Client-ID, X-LLM-Proxy-Optimize, X-LLM-Proxy-Approval, X-LLM-Proxy-Approval-Token, X-Approved-By-User");
+  res.setHeader("Access-Control-Expose-Headers", "X-LLM-Proxy-Task-ID, X-LLM-Proxy-Task-Identity");
   if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   try {
@@ -606,6 +609,11 @@ const server = http.createServer(async (req, res) => {
     if (method === "POST" && pathname === "/v1/messages/count_tokens") {
       const body = await readBody(req);
       return anthropicGateway.handleCountTokens(req, res, body);
+    }
+
+    if (method === "GET" && pathname === "/v1/orchestration") {
+      res.writeHead(200, {"Content-Type":"application/json"});
+      res.end(JSON.stringify(taskRuntime.diagnostics())); return;
     }
 
     // GET /v1/models
@@ -724,7 +732,7 @@ scoring.loadScores();
 scoring.loadQuotaDisabled();
 scoring.loadCompat();
 providersMod.loadProviders();
-providersMod.watchProvidersFile(() => { probeThinking().catch(() => {}); });
+providersMod.watchProvidersFile(() => { if (process.env.LLM_PROXY_PROBE_ENABLED === "true") probeThinking().catch(() => {}); });
 
 // Re-apply learned context limits
 for (const [name, c] of Object.entries(state.providerCompat)) {
@@ -758,8 +766,10 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-probeThinking().catch(() => {});
-setInterval(() => { probeThinking().catch(() => {}); }, THINKING_PROBE_INTERVAL);
+if (process.env.LLM_PROXY_PROBE_ENABLED === "true") {
+  probeThinking().catch(() => {});
+  setInterval(() => { probeThinking().catch(() => {}); }, THINKING_PROBE_INTERVAL);
+}
 setInterval(() => {
   const now = Date.now();
   const maxAge = 24 * 3600_000;
@@ -788,5 +798,5 @@ setInterval(() => {
   if (evicted > 0) state.log(`SESSION-CLEANUP: evicted ${evicted} expired cache entries`);
 }, 3600_000);
 
-process.on("SIGTERM", () => { scoring.saveScores(); process.exit(0); });
-process.on("SIGINT", () => { scoring.saveScores(); process.exit(0); });
+process.on("SIGTERM", () => { scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });
+process.on("SIGINT", () => { scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });

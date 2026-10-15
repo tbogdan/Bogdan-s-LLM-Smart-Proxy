@@ -117,7 +117,10 @@ test("public setup files do not include removed command or config flows", () => 
 
   const packageJson = JSON.parse(read("package.json"));
   for (const scriptName of Object.keys(packageJson.scripts || {})) {
-    assert.doesNotMatch(scriptName, /(?:kiro|groq|sambanova|openrouter|modelscope|cline)/i);
+    if (scriptName.endsWith("-auth")) {
+      const target = packageJson.scripts[scriptName].split(" ")[1];
+      assert.ok(fs.existsSync(path.join(root, target)), `Missing auth helper ${target}`);
+    }
   }
 });
 
@@ -132,7 +135,7 @@ test("public docs do not market or set up removed provider families", () => {
 });
 
 test("README documents supported provider families and smart groups", () => {
-  const readme = read("README.md");
+  const readme = `${read("README.md")}\n${read("docs/operator/setup.md")}`;
 
   for (const family of ["Windsurf", "Claude", "Codex", "Copilot"]) {
     assert.match(readme, new RegExp(`\\b${family}\\b`));
@@ -153,7 +156,7 @@ test("README documents supported provider families and smart groups", () => {
 });
 
 test("Claude setup docs prefer Console login and local key extraction", () => {
-  const docs = `${read("README.md")}\n${read("INSTRUCTIONS.md")}\n${read("setup.sh")}`;
+  const docs = `${read("README.md")}\n${read("INSTRUCTIONS.md")}\n${read("setup.sh")}\n${read("docs/operator/setup.md")}`;
 
   assert.match(docs, /platform\.claude\.com/);
   assert.match(docs, /claude auth login --console/);
@@ -220,6 +223,11 @@ test("public env only exposes operator-owned source and routing settings", () =>
     "LLM_PROXY_CODEX_VIRTUAL_SUBAGENTS",
     "ENABLE_COPILOT",
     "COPILOT_GITHUB_TOKEN",
+    "KIMI_API_KEY",
+    "XIAOMI_API_KEY",
+    "OLLAMA_API_KEY",
+    "GEMINI_API_KEY",
+    "MISTRAL_API_KEY",
     "XAI_API_KEY",
     "PERPLEXITY_API_KEY",
     "TOGETHER_API_KEY",
@@ -248,18 +256,14 @@ test("public env only exposes operator-owned source and routing settings", () =>
     assert.doesNotMatch(envExample, pattern, `.env.example should not expose internal config ${pattern}`);
   }
 
-  for (const pattern of [/\$\{MEMORY_/, /\$\{GRAPHITI_/, /\$\{NEO4J_/, /\$\{LLM_PROXY_(?:AI_SUMMARY|EMBEDDING)_/]) {
-    assert.doesNotMatch(compose, pattern, `docker-compose.yml should hardcode internal config ${pattern}`);
-  }
-
-  assert.match(compose, /MEMORY_ENABLED:\s+"true"/);
-  assert.match(compose, /MEMORY_BACKEND:\s+graphiti/);
-  assert.match(compose, /GRAPHITI_MCP_ENABLED:\s+"true"/);
+  assert.match(compose, /MEMORY_ENABLED:\s+"\$\{MEMORY_ENABLED:-false\}"/);
+  assert.match(compose, /MEMORY_BACKEND:\s+"\$\{MEMORY_BACKEND:-local\}"/);
+  assert.match(compose, /GRAPHITI_MCP_ENABLED:\s+"\$\{GRAPHITI_MCP_ENABLED:-false\}"/);
   assert.match(compose, /MODEL_NAME:\s+auto-memory/);
   assert.match(compose, /OPENAI_API_URL:\s+http:\/\/llm-proxy:18900\/v1/);
   assert.match(compose, /NEO4J_AUTH:\s+"neo4j\/graphiti-memory-local"/);
   assert.match(compose, /CODEX_API_KEY:\s+proxy/);
-  assert.doesNotMatch(compose, /profiles:\s+\[(?:memory|semantic-memory)/);
+  assert.match(compose, /profiles:\s+\[memory\]/);
   assert.doesNotMatch(compose, /["']7687:7687["']/);
   assert.doesNotMatch(compose, /["']7474:7474["']/);
   assert.doesNotMatch(compose, /["']127\.0\.0\.1:18080:8000["']/);

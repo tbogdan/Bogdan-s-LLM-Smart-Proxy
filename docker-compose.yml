@@ -2,21 +2,21 @@ services:
   llm-proxy:
     build: .
     ports:
-      - "${LLM_PROXY_PORT:-18900}:18900"
+      - "127.0.0.1:${LLM_PROXY_PORT:-18900}:18900"
     env_file:
       - path: .env
         required: false
     environment:
       LLM_PROXY_PORT: "18900"
-      MEMORY_ENABLED: "true"
-      MEMORY_BACKEND: graphiti
+      MEMORY_ENABLED: "${MEMORY_ENABLED:-false}"
+      MEMORY_BACKEND: "${MEMORY_BACKEND:-local}"
       MEMORY_MAX_INJECT_TOKENS: "2000"
       MEMORY_ARCHIVE_MAX_CHARS: "30000"
       GRAPHITI_NEO4J_URI: bolt://graphiti-neo4j:7687
       GRAPHITI_NEO4J_USER: neo4j
       GRAPHITI_NEO4J_PASSWORD: graphiti-memory-local
       GRAPHITI_NEO4J_DATABASE: neo4j
-      GRAPHITI_MCP_ENABLED: "true"
+      GRAPHITI_MCP_ENABLED: "${GRAPHITI_MCP_ENABLED:-false}"
       GRAPHITI_MCP_URL: http://graphiti-mcp:8000/mcp/
       GRAPHITI_MCP_GROUP_ID: llm-proxy
       GRAPHITI_MCP_TIMEOUT_MS: "1200"
@@ -37,6 +37,7 @@ services:
     restart: unless-stopped
 
   llm-discovery:
+    profiles: [discovery]
     build: .
     command: ["node", "llm-discovery.js"]
     env_file:
@@ -55,11 +56,12 @@ services:
     volumes:
       - ./data/codex-auth.json:/root/.codex/auth.json
     ports:
-      - "${CODEX_PROXY_PORT:-10531}:10531"
+      - "127.0.0.1:${CODEX_PROXY_PORT:-10531}:10531"
     restart: unless-stopped
     profiles: [codex]
 
   graphiti-neo4j:
+    profiles: [memory]
     image: neo4j:5.26.0-community
     environment:
       NEO4J_AUTH: "neo4j/graphiti-memory-local"
@@ -77,6 +79,7 @@ services:
     restart: unless-stopped
 
   graphiti-mcp:
+    profiles: [memory]
     build:
       context: .
       dockerfile: Dockerfile.graphiti-mcp
