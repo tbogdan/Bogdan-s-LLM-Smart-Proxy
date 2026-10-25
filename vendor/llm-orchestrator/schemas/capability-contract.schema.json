@@ -25,6 +25,7 @@
       "required": ["type"],
       "properties": {
         "type": { "type": "string", "minLength": 1 },
+        "domain": { "type": "string", "description": "The pre-evaluation domain (FRONTEND, BACKEND, DB, INFRA, UNKNOWN or a project domain); matched case-insensitively by any_task_domains." },
         "signals": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "requires_shell": { "type": "boolean" },
         "nontrivial": { "type": "boolean" },

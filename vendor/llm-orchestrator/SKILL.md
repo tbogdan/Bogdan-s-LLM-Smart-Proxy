@@ -77,6 +77,14 @@ Four more gates are equally mandatory, at their own trigger rather than on every
 | `tool.discovery` | harness-native tool search | Before saying a tool or MCP is unavailable | [capabilities](policies/capabilities.md) |
 | `user.native_question` | the harness's native question mechanism | Whenever the user must be asked — one batched question, never free text at the end of a message | [questions](policies/questions.md) |
 
+One more is mandatory by domain — on every task whose domain is `FRONTEND`, or that creates,
+changes, reviews or audits UI or visual design (`registries/core-profile.json` order 13,
+`domain_conditional: true`):
+
+| # | Capability | Item | When | Contract |
+|---|---|---|---|---|
+| D1 | `ui.design_system` | `impeccable` (`/impeccable <command> <target>`) | Any `FRONTEND`-domain task, or any task that creates, changes, reviews or audits UI or visual design | `/impeccable shape` (or `critique`) before building — `init` first when `PRODUCT.md` is missing; `audit` + `polish` before G5; per-phase commands in `workflows/<type>.md`. `ui-ux-pro-max`, `frontend-design`, `design-system`, `ui-styling` and `web-design-guidelines` are complements — they never substitute for it silently |
+
 Plus every row of the project's `## Orchestration bindings (project)` section marked mandatory.
 
 ### When a mandatory item is not installed (portability rule)

@@ -6,13 +6,17 @@
   "scripts": {
     "start": "node llm-proxy.js",
     "discovery": "node llm-discovery.js",
+    "seed:refresh": "node scripts/refresh-seed-from-catalog.js --write",
+    "providers:merge": "node scripts/merge-seed-into-providers.js --write",
     "benchmark": "node scripts/benchmark.js",
+    "benchmark:fixture": "node scripts/performance-fixture.js",
     "test": "node --test tests/*.test.js",
     "kiro-auth": "node kiro-auth.js",
     "claude-auth": "node claude-auth.js",
     "copilot-auth": "node github-copilot-auth.js",
     "windsurf-auth": "node windsurf-auth.js",
-    "smoke:core": "node -e \"require('./lib/routing-policy'); require('./lib/provider-config'); require('./lib/provider-adapters'); require('./lib/anthropic-gateway'); require('./lib/embeddings'); require('./lib/http-home'); console.log('core smoke ok')\""
+    "smoke:core": "node -e \"require('./lib/routing-policy'); require('./lib/provider-config'); require('./lib/provider-adapters'); require('./lib/anthropic-gateway'); require('./lib/embeddings'); require('./lib/http-home'); console.log('core smoke ok')\"",
+    "proxy": "node proxy.js"
   },
   "license": "MIT",
   "dependencies": {

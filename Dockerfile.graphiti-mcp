@@ -1,52 +1,20 @@
+# Upstream already forwards `config.providers.openai.api_url` as the LLM
+# `base_url`, which is what routes Graphiti traffic through llm-proxy. The
+# MCP server only enables DNS-rebinding protection when it binds to
+# localhost, and this stack binds 0.0.0.0 (config/graphiti-mcp-neo4j.yaml),
+# so no source patch is required anymore.
 FROM zepai/knowledge-graph-mcp:standalone
 
+# Fail the build instead of silently calling api.openai.com at runtime if a
+# future upstream image stops wiring the configured OpenAI base URL.
 RUN python - <<'PY'
+import re
 from pathlib import Path
 
-path = Path("/app/mcp/src/services/factories.py")
-text = path.read_text()
-needle = "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    model=config.model,"
-replacement = "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    base_url=config.providers.openai.api_url,\n                    model=config.model,"
-if "llm_config = CoreLLMConfig(\n                    api_key=api_key,\n                    base_url=config.providers.openai.api_url," not in text:
-    if needle not in text:
-        raise SystemExit("Graphiti OpenAI LLM factory shape changed; update Dockerfile.graphiti-mcp")
-    text = text.replace(needle, replacement, 1)
-    path.write_text(text)
-
-server_path = Path("/app/mcp/src/graphiti_mcp_server.py")
-server = server_path.read_text()
-if "from mcp.server.transport_security import TransportSecuritySettings" not in server:
-    if "from mcp.server.fastmcp import FastMCP\n" not in server:
-        raise SystemExit("Graphiti MCP server import shape changed; update Dockerfile.graphiti-mcp")
-    server = server.replace(
-        "from mcp.server.fastmcp import FastMCP\n",
-        "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n",
-        1,
+factories = Path("/app/mcp/src/services/factories.py").read_text()
+pattern = r"CoreLLMConfig\([^)]*base_url\s*=\s*config\.providers\.openai\.api_url"
+if not re.search(pattern, factories, re.S):
+    raise SystemExit(
+        "Graphiti OpenAI LLM factory no longer forwards base_url; update Dockerfile.graphiti-mcp"
     )
-
-mcp_needle = """mcp = FastMCP(
-    'Graphiti Agent Memory',
-    instructions=GRAPHITI_MCP_INSTRUCTIONS,
-)
-"""
-mcp_replacement = """mcp = FastMCP(
-    'Graphiti Agent Memory',
-    instructions=GRAPHITI_MCP_INSTRUCTIONS,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-        allowed_hosts=['graphiti-mcp', 'graphiti-mcp:*', 'graphiti-mcp:8000', 'localhost', 'localhost:8000', '127.0.0.1', '127.0.0.1:8000', '[::1]', '[::1]:8000'],
-    ),
-)
-"""
-if "transport_security=TransportSecuritySettings(" not in server:
-    if mcp_needle not in server:
-        raise SystemExit("Graphiti MCP server FastMCP shape changed; update Dockerfile.graphiti-mcp")
-    server = server.replace(mcp_needle, mcp_replacement, 1)
-
-server_path.write_text(server)
-server_check = server_path.read_text()
-if "from mcp.server.transport_security import TransportSecuritySettings" not in server_check:
-    raise SystemExit("Graphiti MCP server transport security import patch did not apply")
-if "transport_security=TransportSecuritySettings(" not in server_check:
-    raise SystemExit("Graphiti MCP server FastMCP transport security patch did not apply")
 PY

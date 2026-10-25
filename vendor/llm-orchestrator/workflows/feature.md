@@ -11,11 +11,19 @@
 - **The test-engineer writes the failing test first.** No builder is dispatched before G3 RED.
 - Discover project conventions and acceptance criteria before designing against them.
 - Independent review wherever a risk floor applies.
+- **`impeccable` on any UI** (domain `FRONTEND`, or the feature creates or changes UI or visual
+  design — `ui.design_system`): **Plan** — `/impeccable init` when the project has no `PRODUCT.md`,
+  then `/impeccable shape` before any UI code; **Build** — an ordinary `/impeccable` new-work
+  request after `shape`, or the targeted command the plan names (`layout`, `typeset`, `colorize`,
+  `animate`, `adapt`, …); **Review** — `/impeccable critique` + `/impeccable audit` on the changed
+  surface; **Verify** — `/impeccable polish` before G5. Design-system, UI-styling,
+  `frontend-design` and `ui-ux-pro-max` skills are complements, never a substitute.
 
 ## Optional (trigger)
 
 - `context7` — any library or SDK API surface, **including familiar ones**; training data lags.
-- Design-system + UI-styling skills — any new UI.
+- Design-system + UI-styling skills — alongside `impeccable` when the project has its own design
+  system to follow.
 - Payment-provider best-practices skill — the change touches a money path.
 - Semantic-code MCP — a large cross-file edit.
 

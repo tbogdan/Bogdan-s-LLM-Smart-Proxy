@@ -204,6 +204,9 @@ function collectDependencyDomains(names, evidence, facts) {
   }
 }
 
+/** UI frameworks whose presence makes the project a frontend one (ui.design_system can apply). */
+const FRONTEND_PACKAGES = ['vue', '@vue/runtime-dom', 'nuxt', 'react', 'react-dom', 'next', 'svelte', '@sveltejs/kit', '@angular/core', 'solid-js', 'preact', 'astro', 'lit'];
+
 function collectPackageFacts(manifest, evidence, cwd, packageManager, facts, commands) {
   const names = dependencyNames(manifest);
   const scripts = manifest.scripts && typeof manifest.scripts === 'object' ? manifest.scripts : {};
@@ -217,6 +220,7 @@ function collectPackageFacts(manifest, evidence, cwd, packageManager, facts, com
     addFacts(facts, 'framework', names.has('next') ? 'next' : 'react', evidence);
     addFacts(facts, 'domain', 'web', evidence);
   }
+  if (FRONTEND_PACKAGES.some((name) => names.has(name))) addFacts(facts, 'domain', 'frontend', evidence);
   if (names.has('@capacitor/core') || names.has('@capacitor/cli')) {
     addFacts(facts, 'framework', 'capacitor', evidence);
     addFacts(facts, 'domain', 'mobile', evidence);

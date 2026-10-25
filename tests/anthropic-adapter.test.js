@@ -878,3 +878,26 @@ test("toAnthropicRequest preserves assistant messages with tool calls", () => {
   assert.equal(request.messages[1].role, "assistant");
   assert.equal(request.messages[1].content.length, 1);
 });
+
+test("scaffold retry never exceeds Anthropic cache_control block limit", () => {
+  // Regression: after a 429 the scaffold retry re-applied a fresh budget of 4
+  // on top of the client's own breakpoints -> "max 4 blocks, found 6" 400.
+  const provider = { upstream_model: "claude-sonnet-4-5", key_env: "CLAUDE_CODE_OAUTH_TOKEN" };
+  const cc = { type: "ephemeral" };
+  const request = {
+    model: "claude/claude-sonnet-5",
+    system: [
+      { type: "text", text: "sys-a", cache_control: cc },
+      { type: "text", text: "sys-b", cache_control: cc },
+    ],
+    messages: [
+      { role: "user", content: [{ type: "text", text: "hi", cache_control: cc }] },
+      { role: "assistant", content: [{ type: "text", text: "hey", cache_control: cc }] },
+    ],
+    tools: [{ name: "t", description: "d", input_schema: { type: "object" }, cache_control: cc }],
+  };
+  const out = anthropic.withClaudeCodeSdkScaffold(provider, request, { env: { CLAUDE_CODE_VERSION: "2.1.310" } });
+  let count = 0;
+  JSON.stringify(out, (k, v) => { if (k === "cache_control") count += 1; return v; });
+  assert.ok(count <= 4, `expected at most 4 cache_control blocks, found ${count}`);
+});

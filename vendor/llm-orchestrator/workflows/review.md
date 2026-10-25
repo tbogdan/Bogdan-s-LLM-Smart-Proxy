@@ -15,6 +15,10 @@
   described as independent.
 - Minor findings and out-of-scope calls are batched into one explicit "skip or fix?" question — never
   silently parked.
+- **`impeccable` when the diff or target is UI or visual design** (`ui.design_system`): **Analyze** —
+  `/impeccable critique` (UX review) + `/impeccable audit` (accessibility, performance, responsive,
+  anti-pattern detectors); their findings join the severity-ranked list. A guidelines skill
+  complements them, never replaces them.
 
 ## Optional (trigger)
 

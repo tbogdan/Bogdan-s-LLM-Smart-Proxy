@@ -9,6 +9,7 @@ const memory = require("./lib/memory");
 
 const state = require("./lib/state");
 const scoring = require("./lib/scoring");
+const performanceMetrics = require("./lib/performance-metrics");
 const providersMod = require("./lib/providers");
 const compaction = require("./lib/compaction");
 const transforms = require("./lib/transforms");
@@ -21,6 +22,18 @@ const httpHome = require("./lib/http-home");
 const discoveryTools = require("./llm-discovery");
 const embeddings = require("./lib/embeddings");
 const humanApproval = require("./lib/human-approval");
+const {
+  AdmissionError,
+  BodyLimitError,
+  BodyTimeoutError,
+  createBodyAdmission,
+  positiveInteger,
+  readBody,
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_BODY_TIMEOUT_MS,
+  DEFAULT_MAX_INFLIGHT_REQUESTS,
+  DEFAULT_MAX_INFLIGHT_BODY_BYTES,
+} = require("./lib/http-body");
 const { WebSocketServer } = require("ws");
 
 // ---------------------------------------------------------------------------
@@ -28,6 +41,12 @@ const { WebSocketServer } = require("ws");
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.env.LLM_PROXY_PORT || "18900", 10);
 const THINKING_PROBE_INTERVAL = 60 * 60_000;
+const MAX_BODY_BYTES = positiveInteger(process.env.LLM_PROXY_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES);
+const BODY_TIMEOUT_MS = positiveInteger(process.env.LLM_PROXY_BODY_TIMEOUT_MS, DEFAULT_BODY_TIMEOUT_MS);
+const bodyAdmission = createBodyAdmission({
+  maxInflightRequests: positiveInteger(process.env.LLM_PROXY_MAX_INFLIGHT_REQUESTS, DEFAULT_MAX_INFLIGHT_REQUESTS),
+  maxInflightBodyBytes: positiveInteger(process.env.LLM_PROXY_MAX_INFLIGHT_BODY_BYTES, DEFAULT_MAX_INFLIGHT_BODY_BYTES),
+});
 
 // ---------------------------------------------------------------------------
 // Session token tracking
@@ -37,6 +56,7 @@ function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) 
     state.sessionStats[sessionId] = { totalInputTokens: 0, totalOutputTokens: 0, requests: 0, startTime: Date.now(), lastRequest: 0, providers: {} };
   }
   const s = state.sessionStats[sessionId];
+  if (!s) return; // Oversized diagnostic keys may skip retention.
   s.totalInputTokens += inputTokens;
   s.totalOutputTokens += outputTokens || 0;
   if (inputTokens > 0) s.requests++;
@@ -71,13 +91,15 @@ async function probeThinking() {
   if (thinkingProviders.length === 0) return;
   state.log(`Thinking probe: ${thinkingProviders.length} unverified providers`);
   for (const p of thinkingProviders) {
+    let resp;
     try {
       const body = await transforms.transformRequest(p, {
         messages: [{ role: "user", content: "What is 15 * 37? Return only the final number." }],
         max_tokens: 64,
       });
-      const resp = await routing.makeRequest(p.url, {
+      resp = await routing.makeRequest(p.url, {
         method: "POST",
+        metricCategory: "helper",
         headers: transforms.buildHeaders(p),
       }, JSON.stringify(body));
 
@@ -87,10 +109,11 @@ async function probeThinking() {
         scoring.recordThinkingOk(p.name);
         state.log(`Thinking OK: ${p.name}`);
       }
-    } catch {
+    } catch (error) {
+      if (require("./lib/http-transport").isLocalFailure(error)) break;
       const s = scoring.getScore(p.name);
       s._probeAttempts = (s._probeAttempts || 0) + 1;
-    }
+    } finally { resp?.release?.(); }
   }
 }
 
@@ -98,6 +121,13 @@ async function probeThinking() {
 // Models endpoint
 // ---------------------------------------------------------------------------
 function handleModels(query) {
+  // Sorting every smart group compares the same providers repeatedly. Keep
+  // classification local to this catalog request so reloads cannot go stale.
+  const profiles = new Map();
+  const profileFor = (provider) => {
+    if (!profiles.has(provider)) profiles.set(provider, routingPolicy.classifyProvider(provider));
+    return profiles.get(provider);
+  };
   const capFilter = query.get("cap");
   let list = state.PROVIDERS.filter((p) => p.key && p.alive !== false);
   if (capFilter) {
@@ -145,8 +175,8 @@ function handleModels(query) {
     return 1;
   };
   const representativeProvider = (providersList, groupName) => [...providersList].sort((a, b) => {
-    const ap = routingPolicy.classifyProvider(a);
-    const bp = routingPolicy.classifyProvider(b);
+    const ap = profileFor(a);
+    const bp = profileFor(b);
     return (
       preferredProviderScore(b, groupName) - preferredProviderScore(a, groupName) ||
       (bp.quality_group || 0) - (ap.quality_group || 0) ||
@@ -164,7 +194,7 @@ function handleModels(query) {
       for (const cap of ideCapabilities.modelSupportedCapabilityList(p)) supported.add(cap);
     }
     const reference = representativeProvider(groupProviders, groupName);
-    const referenceProfile = reference ? routingPolicy.classifyProvider(reference) : {};
+    const referenceProfile = reference ? profileFor(reference) : {};
     return {
       capabilities: uniqueSorted([...capabilities]),
       supported_capabilities: uniqueSorted([...supported]),
@@ -202,7 +232,7 @@ function handleModels(query) {
   };
 
   const providerModelRow = (p, options = {}) => {
-    const profile = routingPolicy.classifyProvider(p);
+    const profile = profileFor(p);
     return Object.fromEntries(Object.entries({
       id: options.id || p.model,
       object: "model",
@@ -446,14 +476,13 @@ function sendHTML(res, html, status = 200) {
   res.end(html);
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
+const BUFFERED_BODY_ROUTES = new Set([
+  "/v1/chat/completions",
+  "/v1/embeddings",
+  "/v1/responses",
+  "/v1/messages",
+  "/v1/messages/count_tokens",
+]);
 
 // Reverse-proxy the ChatGPT ancillary backend-api surface (config bundle,
 // requirements, accounts, plugins, analytics) to the real upstream so Codex can
@@ -461,34 +490,24 @@ function readBody(req) {
 // locally and never reaches this path. Forwards method/headers/body verbatim
 // (incl. the client's Authorization) and streams the response back.
 const CODEX_BACKEND_UPSTREAM = (process.env.LLM_PROXY_CODEX_BACKEND_UPSTREAM || "https://chatgpt.com").replace(/\/+$/, "");
+const { proxyCodexBackend: streamCodexBackend, DEFAULT_CODEX_BACKEND_TIMEOUT_MS } = require("./lib/codex-passthrough");
+const CODEX_BACKEND_TIMEOUT_MS = positiveInteger(process.env.LLM_PROXY_CODEX_BACKEND_TIMEOUT_MS, DEFAULT_CODEX_BACKEND_TIMEOUT_MS);
 function proxyCodexBackend(req, res, fullPath) {
-  let target;
-  try { target = new URL(CODEX_BACKEND_UPSTREAM + fullPath); }
-  catch { res.writeHead(502); res.end("bad upstream"); return; }
-  const headers = { ...req.headers };
-  delete headers["content-length"];
-  delete headers["accept-encoding"]; // avoid passing through compressed bodies we don't re-handle
-  headers.host = target.host;
-  const client = target.protocol === "http:" ? http : https;
-  const upstream = client.request(
-    target,
-    { method: req.method, headers },
-    (up) => {
-      const respHeaders = { ...up.headers };
-      delete respHeaders["transfer-encoding"];
-      res.writeHead(up.statusCode || 502, respHeaders);
-      up.on("data", (c) => res.write(c));
-      up.on("end", () => res.end());
+  return streamCodexBackend(req, res, fullPath, {
+    upstream: CODEX_BACKEND_UPSTREAM,
+    admission: bodyAdmission,
+    maxBytes: MAX_BODY_BYTES,
+    bodyTimeoutMs: BODY_TIMEOUT_MS,
+    timeoutMs: CODEX_BACKEND_TIMEOUT_MS,
+    onError: err => {
+      state.log(`CODEX-BACKEND-PROXY-ERR: ${req.method} ${fullPath}: ${err.message}`);
+      if (err?.code === "UPSTREAM_CLIENT_ABORTED") res._performanceObservation?.abort();
+      else res._performanceObservation?.fail("upstream_error");
     },
-  );
-  upstream.on("error", (err) => {
-    state.log(`CODEX-BACKEND-PROXY-ERR: ${req.method} ${fullPath} -> ${target.host}: ${err.message}`);
-    if (!res.headersSent) { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "codex backend passthrough failed", detail: err.message })); }
-    else { try { res.end(); } catch {} }
+    onComplete: result => {
+      if (result.outcome === "error") res._performanceObservation?.fail("upstream_error");
+    },
   });
-  req.on("data", (c) => upstream.write(c));
-  req.on("end", () => upstream.end());
-  req.on("error", () => { try { upstream.destroy(); } catch {} });
 }
 
 function formatUptime(seconds) {
@@ -507,11 +526,17 @@ function formatUptime(seconds) {
 // ---------------------------------------------------------------------------
 // Tracks unique unmapped ChatGPT backend-api paths so they are logged once, not
 // per-request (Codex polls plugins/accounts/analytics very frequently).
-const codexBackendUnmappedSeen = new Set();
+const codexBackendUnmappedSeen = state.codexBackendUnmappedSeen;
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   let pathname = urlObj.pathname;
   const method = req.method;
+  let bodyLease = null;
+  // Operational probes are excluded so polling cannot keep inflight non-zero
+  // or inflate workload totals consumed by performance gates.
+  if (pathname !== "/health" && pathname !== "/metrics") {
+    res._performanceObservation = performanceMetrics.observeClient(req, res);
+  }
 
   // First-party ChatGPT backend impersonation: when Codex is pointed at this
   // proxy via `chatgpt_base_url` (so it runs as the builtin "chatgpt" provider
@@ -532,8 +557,8 @@ const server = http.createServer(async (req, res) => {
       return proxyCodexBackend(req, res, urlObj.pathname + urlObj.search);
     }
     const key = `${method} ${pathname.replace(/\/[0-9a-f-]{8,}\//gi, "/<id>/")}`;
-    if (!codexBackendUnmappedSeen.has(key)) {
-      codexBackendUnmappedSeen.add(key);
+    if (!codexBackendUnmappedSeen.get(key)) {
+      codexBackendUnmappedSeen.set(key, true);
       state.log(`CODEX-BACKEND-UNMAPPED: ${key} (logged once)`);
     }
   }
@@ -546,6 +571,10 @@ const server = http.createServer(async (req, res) => {
   if (method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   try {
+    if (method === "POST" && BUFFERED_BODY_ROUTES.has(pathname)) {
+      bodyLease = bodyAdmission.admit();
+      bodyLease.bindResponse(res);
+    }
     // GET /
     if (method === "GET" && pathname === "/") {
       const active = state.PROVIDERS.filter((p) => p.key && p.alive !== false).length;
@@ -568,7 +597,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /v1/chat/completions
     if (method === "POST" && pathname === "/v1/chat/completions") {
-      const body = await readBody(req);
+      const body = await readBody(req, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS, admission: bodyLease });
       let parsed;
       try { parsed = JSON.parse(body); } catch {
         return sendError(res, 400, "Invalid JSON body");
@@ -589,7 +618,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /v1/embeddings
     if (method === "POST" && pathname === "/v1/embeddings") {
-      const body = await readBody(req);
+      const body = await readBody(req, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS, admission: bodyLease });
       let parsed;
       try { parsed = JSON.parse(body); } catch {
         return sendError(res, 400, "Invalid JSON body");
@@ -599,21 +628,21 @@ const server = http.createServer(async (req, res) => {
 
     // POST /v1/responses (Responses API bridge for Codex-style clients)
     if (method === "POST" && pathname === "/v1/responses") {
-      const body = await readBody(req);
+      const body = await readBody(req, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS, admission: bodyLease });
       state.log(`Responses API: POST body=${body.length}chars`);
       return await responses.handleResponsesHTTP(req, res, body);
     }
 
     // POST /v1/messages (Anthropic Messages bridge for Claude Code LLM Gateway)
     if (method === "POST" && pathname === "/v1/messages") {
-      const body = await readBody(req);
+      const body = await readBody(req, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS, admission: bodyLease });
       state.log(`Anthropic Messages API: POST body=${body.length}chars`);
       return await anthropicGateway.handleMessagesHTTP(req, res, body);
     }
 
     // POST /v1/messages/count_tokens
     if (method === "POST" && pathname === "/v1/messages/count_tokens") {
-      const body = await readBody(req);
+      const body = await readBody(req, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS, admission: bodyLease });
       return anthropicGateway.handleCountTokens(req, res, body);
     }
 
@@ -624,7 +653,10 @@ const server = http.createServer(async (req, res) => {
 
     // GET /v1/models
     if (method === "GET" && pathname === "/v1/models") {
-      return sendJSON(res, handleModels(urlObj.searchParams));
+      const catalog = handleModels(urlObj.searchParams);
+      return sendJSON(res, urlObj.searchParams.has("client_version")
+        ? require("./lib/codex-models").codexModelsResponse(catalog)
+        : catalog);
     }
 
     // GET /v1/capabilities
@@ -723,11 +755,24 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (method === "GET" && pathname === "/metrics") {
+      return sendJSON(res, performanceMetrics.snapshot());
+    }
+
     // 404
     sendError(res, 404, "Not found");
   } catch (err) {
+    if (err instanceof BodyLimitError || err instanceof BodyTimeoutError || err instanceof AdmissionError) {
+      const status = err.statusCode;
+      if (err instanceof AdmissionError) res.setHeader("Retry-After", "1");
+      res.setHeader("Connection", "close");
+      sendError(res, status, err.message, { code: err.code });
+      res.once("finish", () => { if (!req.readableEnded) req.destroy(); });
+      return;
+    }
+    bodyLease?.release();
     state.log(`Server error: ${err.message}`);
-    sendError(res, 500, "Internal server error", { detail: err.message });
+    if (!res.destroyed && !res.writableEnded) sendError(res, 500, "Internal server error", { detail: err.message });
   }
 });
 
@@ -754,7 +799,7 @@ server.listen(PORT, () => {
   state.log(`Active providers: ${active}/${state.PROVIDERS.length}`);
   state.log(`Smart groups: ${Object.keys(state.GROUPS).join(", ")}`);
   state.log(`Config source: ${fs.existsSync(state.PROVIDERS_FILE) ? "providers.json" : "seed-providers.json (fallback)"}`);
-  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/embeddings, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats`);
+  state.log(`Endpoints: /, /commands, /benchmark, /v1/chat/completions, /v1/embeddings, /v1/responses, /v1/messages, /v1/models, /v1/capabilities, /health, /scores, /discovery, /stats, /metrics`);
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -776,33 +821,8 @@ if (process.env.LLM_PROXY_PROBE_ENABLED === "true") {
   probeThinking().catch(() => {});
   setInterval(() => { probeThinking().catch(() => {}); }, THINKING_PROBE_INTERVAL);
 }
-setInterval(() => {
-  const now = Date.now();
-  const maxAge = 24 * 3600_000;
-  const compactMaxAge = 30 * 60_000;
-  let evicted = 0;
+state.retention.start();
+server.once("close", () => state.retention.stop());
 
-  for (const [id, stats] of Object.entries(state.sessionStats)) {
-    if (now - (stats.lastRequest || 0) > maxAge) {
-      delete state.sessionStats[id];
-      evicted++;
-    }
-  }
-  for (const [id, cache] of Object.entries(state.sessionCompactCache)) {
-    if (now - (cache.timestamp || 0) > compactMaxAge) {
-      delete state.sessionCompactCache[id];
-      evicted++;
-    }
-  }
-  for (const id of Object.keys(state.compactionDropCache)) {
-    if (!state.sessionStats[id]) {
-      delete state.compactionDropCache[id];
-      evicted++;
-    }
-  }
-
-  if (evicted > 0) state.log(`SESSION-CLEANUP: evicted ${evicted} expired cache entries`);
-}, 3600_000);
-
-process.on("SIGTERM", () => { scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });
-process.on("SIGINT", () => { scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });
+process.on("SIGTERM", () => { state.retention.stop(); scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });
+process.on("SIGINT", () => { state.retention.stop(); scoring.saveScores(); try { taskRuntime.close(); } catch {} process.exit(0); });

@@ -226,6 +226,8 @@ These apply to every task, everywhere, regardless of harness (see `registries/co
 
 Four more gates are equally mandatory, at their own trigger rather than on every turn: `verification.checks` (verification-before-completion, before any completion claim), `skill.check` (before any action, check whether a skill already covers it), `tool.discovery` (search before declaring a tool absent), and `user.native_question` (every question to the user goes through the harness's native mechanism, batched into one question — `AskUserQuestion` on Claude Code, `request_user_input` / `update_plan` on Codex, `question` on OpenCode, `ask_followup_question` on Kilo; see `policies/questions.md`).
 
+One more is mandatory by domain — `D1`, `ui.design_system` → [Impeccable](https://impeccable.style) (`impeccable`, Apache-2.0; `registries/core-profile.json` order 13, `domain_conditional: true`). It applies to every task whose pre-evaluation domain is `FRONTEND`, or that creates, changes, reviews or audits UI or visual design: `/impeccable shape` (or `critique`) before building — `/impeccable init` first when the project has no `PRODUCT.md` — and `/impeccable audit` + `/impeccable polish` before G5; each `workflows/<type>.md` names the command for each phase. `ui-ux-pro-max`, `frontend-design`, `design-system`, `ui-styling` and `web-design-guidelines` stay available as complements — they never substitute for it silently, and the resolver will not bind them in its place. A missing Impeccable follows the same portability rule as the core tools: gap declared first, install recommended once, degraded only after an explicit refusal.
+
 #### Installing the core tools
 
 `llm-orchestrator init` reports which of these are missing and prints the matching command. The
@@ -244,6 +246,7 @@ can `npx`.
 | `docs.current` | context7 | `claude mcp add context7 -- npx -y @upstash/context7-mcp` |
 | `research.retrieve` | exa | `claude mcp add exa -- npx -y exa-mcp-server` |
 | `tool.discovery` | harness-native tool search | built in, nothing to install |
+| `ui.design_system` (frontend/UI tasks) | impeccable | `npx impeccable install` from the project root (detects Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Copilot, … and installs into each; refresh with `npx impeccable update`), or on Claude Code `/plugin marketplace add pbakaus/impeccable` then `/plugin install impeccable@impeccable` (skill id `impeccable:impeccable`). A harness the installer does not detect (Kilo is not in its published list) is a declared gap. Start a new project with `/impeccable init` |
 
 The `/plugin ...` lines are Claude Code commands, typed in a session. The `claude mcp add ...` lines
 are shell commands; on Codex, OpenCode or Kilo, register the same MCP server through that harness's
@@ -253,7 +256,9 @@ Every one of these is optional in the sense that the core still runs without it 
 in **declared degraded mode**, and every plan and report says so. That is the design, not a
 workaround.
 
-The eight rows above are `registries/core-profile.json` orders 1–8, in that order. The same eight, in the same order, appear in `SKILL.md`, `policies/capabilities.md` and the `task` command checklist, and `lib/first-run.mjs` checks exactly these for presence — `tests/coherence.test.mjs` fails if any of those six lists drifts.
+`init` reports a missing `impeccable` on a project whose discovery finds a UI framework (the `frontend` domain: Vue, Nuxt, React, Next, Svelte, Angular, Solid, Preact, Astro, Lit). `doctor` reports it, with the install hint, when the task it is asked about triggers it — `doctor --task feature --domain FRONTEND`, or a UI signal such as `--signals web-ui`.
+
+The first eight rows of the core table above are `registries/core-profile.json` orders 1–8, in that order. The same eight, in the same order, appear in `SKILL.md`, `policies/capabilities.md` and the `task` command checklist, and `lib/first-run.mjs` checks exactly these for presence — `tests/coherence.test.mjs` fails if any of those six lists drifts.
 
 ### Registries
 

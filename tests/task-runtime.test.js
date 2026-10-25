@@ -37,6 +37,34 @@ const res = () => ({ setHeader() {} });
 const options = {
   headers: { "x-llm-proxy-task-id": "t", "x-llm-proxy-client-id": "client" },
 };
+test("eligibility preparation runs once per candidate batch and refreshes after request changes", async () => {
+  const rt = createTaskRuntime({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "runtime-batch-")), getProviders: () => routes });
+  let preparations = 0;
+  rt.setEligibility((_provider, body, prepared) => {
+    assert.equal(prepared, body.messages[0].content);
+    return true;
+  }, body => { preparations++; return body.messages[0].content; });
+  try {
+    await rt.handle({ messages: [{ role: "user", content: "first" }] }, res(), options, async body => {
+      rt.orderCandidates(routes, body);
+      assert.equal(preparations, 1);
+      body.messages[0].content = "second";
+      await rt.beforeDispatch(routes[0], body);
+      assert.equal(preparations, 2);
+    });
+  } finally { rt.close(); }
+});
+test("new explicit task checks its healthy model before scanning unrelated fallback accounts", async () => {
+  const rt = createTaskRuntime({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "runtime-explicit-fast-")), getProviders: () => routes });
+  const checked = [];
+  rt.setEligibility(p => { checked.push(p.name); return true; });
+  try {
+    await rt.handle({ model: routes[0].model, messages: [{ role: "user", content: "hello" }] }, res(), options, async body => {
+      assert.equal((await rt.beforeDispatch(routes[0], body)).name, "A");
+      assert.ok(!checked.includes("C"), "unrelated account should be checked only when preferred model is unavailable");
+    });
+  } finally { rt.close(); }
+});
 test("runtime pins real dispatch across calls and moves same canonical model to healthy account", async () => {
   const rt = createTaskRuntime({
     dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "runtime-")),
@@ -178,7 +206,7 @@ test("failed internal retrieval is replayed with matching error tool result", as
   });
   await rt.handle({ messages: [] }, res(), options, async () => {
     const body = {
-      messages: [],
+      messages: [{ role: "tool", tool_call_id: "old", content: "INFO repeat\n".repeat(400) }],
       tools: [
         {
           type: "function",
@@ -306,4 +334,52 @@ test("critical bug task retains revision-bound review gate and rejects stale exe
     },
   );
   rt.close();
+});
+test("native-streaming dispatch never swaps to an openai-protocol provider", async () => {
+  const nativeRoutes = [
+    { name: "OpenAIish", family: "openai", protocol: "openai", model: "openai/gpt-test", key: "fixture", caps: ["text", "tools"], context: 10000, account_ref: "one" },
+    { name: "NativeOne", family: "claude", protocol: "anthropic", model: "claude/claude-test", key: "fixture", caps: ["text", "tools"], context: 10000, account_ref: "two" },
+  ];
+  const rt = createTaskRuntime({
+    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "runtime-native-")),
+    getProviders: () => nativeRoutes,
+  });
+  const request = { messages: [{ role: "user", content: "hello" }], _requireNativeStreaming: true };
+  await rt.handle(request, res(), options, async (body) => {
+    const chosen = await rt.beforeDispatch(nativeRoutes[0], body);
+    assert.equal(chosen.protocol, "anthropic");
+    assert.notEqual(chosen.name, "OpenAIish");
+  });
+  rt.close();
+});
+
+test("small tool results do not advertise unavailable original retrieval", async () => {
+ const rt = createTaskRuntime({dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "no-original-")), getProviders: () => routes});
+ try { await rt.handle({messages: []}, res(), options, async () => {
+  const body = {messages: [{role: "tool", tool_call_id: "r", content: "TOOL_RESULT_731"}], tools: [{type: "function", function: {name: "read", parameters: {type: "object"}}}]};
+  await rt.beforeDispatch(routes[0], body);
+  assert.deepEqual(body.tools.map(t => t.function.name), ["read"]);
+  assert.equal(body.messages[0].content, "TOOL_RESULT_731");
+ }); } finally {rt.close();}
+});
+
+
+test("growing input switches pinned task to a larger tool-capable model and keeps the new pin", async () => {
+ const small = {...routes[0], context: 10000};
+ const textOnly = {...routes[2], name: "TextOnly", model: "other/text", context: 100000, caps: ["text"]};
+ const large = {...routes[2], name: "Large", model: "other/large", context: 100000};
+ const rt = createTaskRuntime({dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "context-growth-")), getProviders: () => [small, textOnly, large]});
+ const tools = [{type: "function", function: {name: "read", parameters: {type: "object"}}}];
+ try {
+  await rt.handle({model: small.model, _inputTokens: 1000, tools, messages: [{role: "user", content: "work"}]}, res(), options, async body => {
+   assert.equal((await rt.beforeDispatch(small, body)).name, small.name);
+  });
+  await rt.handle({model: small.model, _inputTokens: 12000, tools, messages: [{role: "user", content: "work"}]}, res(), options, async body => {
+   assert.equal((await rt.beforeDispatch(small, body)).name, large.name);
+   assert.equal(rt.current().allocation.reason, "capability_mismatch");
+  });
+  await rt.handle({model: small.model, _inputTokens: 1000, tools, messages: [{role: "user", content: "work"}]}, res(), options, async body => {
+   assert.equal((await rt.beforeDispatch(small, body)).name, large.name);
+  });
+ } finally {rt.close();}
 });

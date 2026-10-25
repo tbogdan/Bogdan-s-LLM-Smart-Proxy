@@ -36,3 +36,6 @@ __pycache__/
 
 # Local code navigation state
 .serena/
+
+# Local runtime provider backups
+data/providers.json.bak-*

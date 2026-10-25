@@ -182,11 +182,12 @@ test("Codex auth bind mount stays writable for token refresh", () => {
   assert.doesNotMatch(compose, /codex-auth\.json:\/root\/\.codex\/auth\.json:ro/);
 });
 
-test("Graphiti MCP image allows Compose service host headers for internal MCP traffic", () => {
-  const dockerfile = read("Dockerfile.graphiti-mcp");
+test("Graphiti MCP binds all interfaces so Compose service host headers are accepted", () => {
+  const config = read("config/graphiti-mcp-neo4j.yaml");
+  const compose = read("docker-compose.yml");
 
-  assert.match(dockerfile, /TransportSecuritySettings/);
-  assert.match(dockerfile, /graphiti-mcp:\*/);
+  assert.match(config, /host:\s*"0\.0\.0\.0"/);
+  assert.doesNotMatch(compose, /FastMCP/);
 });
 
 test("public env only exposes operator-owned source and routing settings", () => {
@@ -202,6 +203,10 @@ test("public env only exposes operator-owned source and routing settings", () =>
     "COMPOSE_PROJECT_NAME",
     "LLM_PROXY_PORT",
     "CODEX_PROXY_PORT",
+    "LLM_PROXY_MAX_BODY_BYTES",
+    "LLM_PROXY_BODY_TIMEOUT_MS",
+    "LLM_PROXY_MAX_INFLIGHT_REQUESTS",
+    "LLM_PROXY_MAX_INFLIGHT_BODY_BYTES",
     "DATA_DIR",
     "DEV_MODE",
     "ENABLE_WINDSURF",
@@ -245,6 +250,31 @@ test("public env only exposes operator-owned source and routing settings", () =>
     "LLM_ROUTING_POLICY",
     "LLM_PROXY_PROMPT_INJECTION",
     "WINDSURF_ENTERPRISE",
+    "LLM_PROXY_CODEX_BACKEND_TIMEOUT_MS",
+    "LLM_PROXY_CACHE_MAX_ENTRIES",
+    "LLM_PROXY_CACHE_TTL_MS",
+    "LLM_PROXY_CACHE_MAX_PATHS_PER_SESSION",
+    "LLM_PROXY_CACHE_MAX_BYTES",
+    "LLM_PROXY_CLEANUP_INTERVAL_MS",
+    "LLM_PROXY_MEMORY_LIMIT",
+    "LLM_PROXY_CPU_LIMIT",
+    "LLM_PROXY_PIDS_LIMIT",
+    "CODEX_PROXY_MEMORY_LIMIT",
+    "CODEX_PROXY_CPU_LIMIT",
+    "CODEX_PROXY_PIDS_LIMIT",
+    "BENCH_ENFORCE_GATES",
+    "LLM_PROXY_HTTP_MAX_SOCKETS",
+    "LLM_PROXY_HTTP_MAX_TOTAL_SOCKETS",
+    "LLM_PROXY_HTTP_MAX_FREE_SOCKETS",
+    "LLM_PROXY_HTTP_MAX_REQUESTS",
+    "LLM_PROXY_UPSTREAM_TIMEOUT_MS",
+    "LLM_PROXY_MAX_UPSTREAM_RESPONSE_BYTES",
+    "LLM_PROXY_MAX_UPSTREAM_ERROR_BYTES",
+    "LLM_PROXY_MAX_STREAM_BUFFER_BYTES",
+    "LLM_PROXY_MAX_RETAINED_UPSTREAM_BYTES",
+    "LLM_PROXY_NATIVE_MAX_REQUESTS",
+    "LLM_PROXY_METRICS_SAMPLE_SIZE",
+
   ]);
 
   for (const pattern of [

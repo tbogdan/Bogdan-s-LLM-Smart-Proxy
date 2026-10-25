@@ -136,6 +136,19 @@
     "schema": "gemini"
   },
   {
+    "id": "antigravity",
+    "modelsUrl": null,
+    "billingBasis": "api",
+    "keyEnvs": [
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY"
+    ],
+    "pricingUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+    "schema": "gemini-interactions",
+    "native": "gemini-interactions",
+    "notes": "Antigravity preview agents only via Interactions API (POST /v1beta/interactions; agent field, remote environment, store=true). Curated routes; model listing under family gemini is evidence only."
+  },
+  {
     "id": "llm7",
     "modelsUrl": "https://api.llm7.io/v1/models",
     "billingBasis": "api",
@@ -153,7 +166,7 @@
     "keyEnvs": [
       "OVH_API_KEY"
     ],
-    "pricingUrl": "https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
+    "pricingUrl": "https://www.ovhcloud.com/en/public-cloud/prices/",
     "schema": "openai"
   },
   {
@@ -306,7 +319,33 @@
       "MOONSHOT_API_KEY"
     ],
     "pricingUrl": "https://platform.kimi.ai/docs/pricing/chat",
-    "schema": "openai"
+    "schema": "openai",
+    "modelRetirements": [
+      {
+        "id": "kimi-k2.5",
+        "retiredAt": "2026-12-31T23:59:59Z",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "scope": "K2 series; no new registrations from 2026-10-31, existing users supported until end of December 2026"
+      },
+      {
+        "id": "kimi-k2.6",
+        "retiredAt": "2026-12-31T23:59:59Z",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "scope": "K2 series; no new registrations from 2026-10-31, existing users supported until end of December 2026"
+      },
+      {
+        "id": "kimi-k2.7-code",
+        "retiredAt": "2026-12-31T23:59:59Z",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "scope": "K2 series; no new registrations from 2026-10-31, existing users supported until end of December 2026"
+      },
+      {
+        "id": "kimi-k2.7-code-highspeed",
+        "retiredAt": "2026-12-31T23:59:59Z",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "scope": "K2 series; no new registrations from 2026-10-31, existing users supported until end of December 2026"
+      }
+    ]
   },
   {
     "id": "xiaomi",
@@ -317,7 +356,21 @@
       "MIMO_API_KEY"
     ],
     "pricingUrl": "https://mimo.mi.com/docs/en-US/price/pay-as-you-go",
-    "schema": "openai"
+    "schema": "openai",
+    "modelRetirements": [
+      {
+        "id": "mimo-v2.5",
+        "retiredAt": "2026-10-21T02:00:00Z",
+        "source": "https://mimo.mi.com/docs/en-US/price/pay-as-you-go",
+        "scope": "Xiaomi MiMo API; legacy ID retired and replaced by mimo-v2.6-flash"
+      },
+      {
+        "id": "mimo-v2.5-pro",
+        "retiredAt": "2026-10-21T02:00:00Z",
+        "source": "https://mimo.mi.com/docs/en-US/price/pay-as-you-go",
+        "scope": "Xiaomi MiMo API; legacy ID retired and replaced by mimo-v2.6-pro"
+      }
+    ]
   },
   {
     "id": "xai",
@@ -326,7 +379,7 @@
     "keyEnvs": [
       "XAI_API_KEY"
     ],
-    "pricingUrl": "https://docs.x.ai/developers/models",
+    "pricingUrl": "https://docs.x.ai/developers/pricing",
     "schema": "openai"
   },
   {
@@ -336,7 +389,7 @@
     "keyEnvs": [
       "PERPLEXITY_API_KEY"
     ],
-    "pricingUrl": "https://docs.perplexity.ai/docs/getting-started/pricing",
+    "pricingUrl": "https://docs.perplexity.ai/docs/agent-api/models",
     "schema": "openai"
   },
   {
@@ -346,7 +399,7 @@
     "keyEnvs": [
       "TOGETHER_API_KEY"
     ],
-    "pricingUrl": "https://www.together.ai/pricing",
+    "pricingUrl": "https://docs.together.ai/docs/serverless-models",
     "schema": "together"
   },
   {
@@ -356,7 +409,7 @@
     "keyEnvs": [
       "FIREWORKS_API_KEY"
     ],
-    "pricingUrl": "https://fireworks.ai/pricing",
+    "pricingUrl": "https://docs.fireworks.ai/serverless/pricing",
     "schema": "openai"
   },
   {

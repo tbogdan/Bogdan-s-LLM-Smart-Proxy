@@ -6,6 +6,19 @@ const http = require("node:http");
 
 const adapters = require("../lib/provider-adapters");
 
+test("Codex sanitizes namespace collision names and restores response identity", () => {
+  const provider = { family: "codex", protocol: "codex", model: "codex/test" };
+  const prepared = adapters.prepareOpenAICompatibleRequest(provider, {
+    messages: [],
+    tools: [{ type: "function", function: { name: "mcp__two.read", parameters: { type: "object" } } }],
+  }, false);
+  assert.match(prepared.tools[0].function.name, /^[a-zA-Z0-9_-]+$/);
+  const restored = JSON.parse(adapters.restoreOpenAICompatibleResponse(provider, JSON.stringify({
+    choices: [{ message: { tool_calls: [{ type: "function", function: { name: prepared.tools[0].function.name, arguments: "{}" } }] } }],
+  }), prepared));
+  assert.equal(restored.choices[0].message.tool_calls[0].function.name, "mcp__two.read");
+});
+
 test("prepareOpenAICompatibleRequest sanitizes Copilot tool names for wire format and restores them in responses", () => {
   const provider = {
     name: "Copilot-claudesonnet46",

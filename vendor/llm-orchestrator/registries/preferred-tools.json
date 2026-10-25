@@ -173,13 +173,32 @@
       "source": "caveman crew role"
     },
     {
+      "id": "impeccable",
+      "aliases": [
+        "impeccable:impeccable"
+      ],
+      "kind": "skill",
+      "capabilities": [
+        "ui.design_system"
+      ],
+      "scope": "user",
+      "source": "mandatory UI implementation (domain-conditional core)",
+      "display_name": "Impeccable",
+      "recommendation_kind": "product",
+      "installable": true,
+      "install": "`npx impeccable install` (shell, project root); or in Claude Code: `/plugin marketplace add pbakaus/impeccable` then `/plugin install impeccable@impeccable`",
+      "source_url": "https://impeccable.style",
+      "license": "Apache-2.0",
+      "notes": "One skill, invoked /impeccable <command> <target>. `npx impeccable install` runs from the project root and installs for every harness folder it detects (Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Copilot, ...); `npx impeccable update` refreshes it. The Claude Code plugin exposes it as impeccable:impeccable. A harness the installer does not detect is a declared gap."
+    },
+    {
       "id": "design-system",
       "kind": "skill",
       "capabilities": [
         "ui.design_system"
       ],
       "scope": "project",
-      "source": "preferred UI implementation",
+      "source": "UI complement to impeccable (never a substitute)",
       "display_name": "Design system",
       "recommendation_kind": "product",
       "installable": true
@@ -191,7 +210,7 @@
         "ui.design_system"
       ],
       "scope": "project",
-      "source": "preferred UI implementation"
+      "source": "UI complement to impeccable (never a substitute)"
     },
     {
       "id": "stripe-best-practices",

@@ -19,6 +19,10 @@
   explicit refusal continue in declared degraded mode with a `degraded: exa` line and those claims
   labelled unverified.
 
+- **`impeccable` when the question is about UI or visual design** (`ui.design_system`): **Evidence**
+  — `/impeccable critique` and `/impeccable audit` on the surface in question, read-only; the
+  report cites their findings.
+
 ## Optional (trigger)
 
 - Semantic-code MCP — symbol-level questions across a large codebase.

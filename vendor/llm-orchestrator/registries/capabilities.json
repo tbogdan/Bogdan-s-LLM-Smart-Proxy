@@ -16,7 +16,7 @@
     { "id": "review.adversarial", "description": "Challenge a conclusion or diff with an independent adversarial pass" },
     { "id": "refactor.coverage_first", "description": "Confirm behavioral coverage exists before the first refactor edit" },
     { "id": "config.migration_author", "description": "Author schema/config migrations through a dedicated migration authority, never hand-written" },
-    { "id": "ui.design_system", "description": "Apply the project design system and styling review to new or changed UI" },
+    { "id": "ui.design_system", "description": "Run Impeccable (shape/critique before building, audit + polish before review) on any task that creates, changes, reviews or audits UI or visual design; other design skills complement it, never substitute" },
     { "id": "traceability.cypilot", "description": "Maintain artifact/code traceability for PR-shaped or spec-shaped work" },
     { "id": "code.semantic_edit", "description": "Use symbol-aware semantic editing for large or cross-file code changes" },
     { "id": "code.locate", "description": "Locate code read-only (definitions, call sites, cross-file references) before editing" },

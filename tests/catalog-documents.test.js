@@ -17,6 +17,43 @@ test("Codex official embedded HTML table retains credit values", () => {
   );
   assert.equal(c.prices[0].creditInputPerMTok, 250);
 });
+test("OpenAI document parser reads the current short/long table with 30m and 12h cache writes", () => {
+  const text = [
+    "### Standard pricing data",
+    "| Model | Short context input | Short context output | Short context cached input | Short context 30m write | Short context 12h write | Long context input | Long context output | Long context cached input | Long context 30m write | Long context 12h write |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| gpt-fixture (<272K context length) | $2.00 | $10.00 | $0.20 | $2.50 | $5.00 | $4.00 | $15.00 | $0.40 | $5.00 | $10.00 |",
+    "",
+    "| Model | Input | Output | Cached input |",
+    "| --- | --- | --- | --- |",
+    "| gpt-fixture-mini | $0.75 | $4.50 | $0.075 |",
+    "",
+    "#### Flex",
+    "| Model | Short context input | Short context output | Short context cached input | Short context 30m write | Short context 12h write | Long context input | Long context output | Long context cached input | Long context 30m write | Long context 12h write |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| gpt-fixture | $1.00 | $5.00 | $0.10 | $1.25 | $2.50 | - | - | - | - | - |",
+  ].join("\n");
+  const r = parseDocumentCatalog("openai", text);
+  const standard = r.prices.find(
+    (p) => p.upstreamModel === "gpt-fixture" && p.serviceTier === "standard",
+  );
+  assert.equal(standard.inputPerMTok, 2);
+  assert.equal(standard.outputPerMTok, 10);
+  assert.equal(standard.cacheReadPerMTok, 0.2);
+  assert.equal(standard.cacheWritePerMTok, 2.5);
+  assert.equal(standard.cacheWrite12hPerMTok, 5);
+  assert.equal(standard.contextTiers[1].inputPerMTok, 4);
+  assert.equal(standard.contextTiers[1].cacheWrite12hPerMTok, 10);
+  const mini = r.prices.find(
+    (p) => p.upstreamModel === "gpt-fixture-mini" && p.serviceTier === "standard",
+  );
+  assert.equal(mini.inputPerMTok, 0.75);
+  assert.equal(mini.cacheWritePerMTok, null);
+  assert.equal(mini.contextTiers, undefined);
+  const flex = r.prices.find((p) => p.serviceTier === "flex");
+  assert.equal(flex.inputPerMTok, 1);
+  assert.equal(flex.contextTiers, undefined);
+});
 test("OpenAI document parser separates Standard/Batch and long-context rates", () => {
   const text =
     "### Standard pricing data\n| Model | Short context input | Cached | Write | Output | Long input | Cached | Write | Output |\n| gpt-fixture | $2 | $0.2 | $2.5 | $10 | $4 | $0.4 | $5 | $15 |\n### Batch pricing data\n| gpt-fixture | $1 | $0.1 | $1.25 | $5 | $2 | $0.2 | $2.5 | $7.5 |";

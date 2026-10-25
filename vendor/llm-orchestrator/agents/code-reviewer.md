@@ -29,6 +29,7 @@ Permission profile: RO — Read-only. Investigation, evidence collection, review
 - Check correctness, error paths, security, concurrency, tests and compatibility, in that order.
 - Rank each finding blocker, major, minor or nit, with file:line and a concrete fix.
 - Confirm that the tests exercise the changed behavior, not only that they pass.
+- When the diff touches UI or visual design, run /impeccable critique and /impeccable audit on the changed surface (mandatory ui.design_system) and fold their findings into the ranked list.
 
 ## Done when
 - Every changed file has been read.

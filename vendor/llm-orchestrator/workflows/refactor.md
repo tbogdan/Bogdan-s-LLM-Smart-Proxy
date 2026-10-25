@@ -11,6 +11,10 @@
 - Identify behavior and compatibility invariants before touching anything. Externally visible
   contracts are preserved — no renamed error keys, no removed response fields, no moved routes.
 - Small transformations with disjoint ownership, each verifiable on its own.
+- **`impeccable` when the refactor touches UI** (`ui.design_system`): **Analyze** —
+  `/impeccable audit` for the baseline; **Incremental** — `/impeccable extract` to pull repeated styles into
+  tokens and components; **Review** — `/impeccable audit` against the baseline (no new findings)
+  and `/impeccable polish` for design-system alignment. Never a silent substitute.
 
 ## Optional (trigger)
 

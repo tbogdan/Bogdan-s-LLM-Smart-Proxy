@@ -19,7 +19,7 @@ Permission profile: RW — Read-write within an assigned bounded shard.
 - Does not merge, push, or deploy unless explicitly the dispatch contract's target.
 
 ## Tools
-- Skills: `systematic-debugging`, `test-driven-development`.
+- Skills: `impeccable`, `systematic-debugging`, `test-driven-development`.
 - MCP servers: `playwright`. Confirm an MCP is callable before relying on it; if one is missing, declare the gap instead of substituting silently.
 
 ## Operating principles
@@ -27,6 +27,7 @@ Permission profile: RW — Read-write within an assigned bounded shard.
 - Reproduce the defect in a test or a browser run before changing code.
 - Use the design system components and tokens already in the project instead of new styles.
 - Check keyboard access, focus, loading, empty and error states of the changed view.
+- Run Impeccable on the affected surface (mandatory ui.design_system): /impeccable audit and /impeccable harden for a bug, the targeted command the plan names (layout, typeset, colorize, ...) for a feature build, /impeccable polish before review; never substitute another design skill silently.
 
 ## Done when
 - The failing test passes, or with G3 not_applicable the checks named in the dispatch pass, and the changed flow was exercised in a browser, with commands and exit status recorded.

@@ -12,7 +12,7 @@ import { normalizeHarness } from '../lib/harness.mjs';
 import { resolveCapabilities } from '../lib/capability-resolver.mjs';
 import { discoverProject } from '../lib/project-discovery.mjs';
 import { discoverTools } from '../lib/tool-discovery.mjs';
-import { checkMandatoryTools } from '../lib/first-run.mjs';
+import { checkConditionalMandatoryTools, checkMandatoryTools } from '../lib/first-run.mjs';
 
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_DIRECTORY_ENTRIES = 64;
@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile);
 class HelpRequested extends Error {}
 
 function usage() {
-  return 'Usage: doctor --project <root> --harness <codex|claude|opencode|kilo> [--inventory <json> --confirm-runtime-inventory] [--task <type>] [--phase <plan|build|verify|review|investigate>] [--role <id>] [--signals <comma-separated>] [--requires-shell] [--nontrivial] [--decisions <json>] [--user-skills] [--native-core]';
+  return 'Usage: doctor --project <root> --harness <codex|claude|opencode|kilo> [--inventory <json> --confirm-runtime-inventory] [--task <type>] [--phase <plan|build|verify|review|investigate>] [--role <id>] [--domain <FRONTEND|BACKEND|DB|INFRA|UNKNOWN|project domain>] [--signals <comma-separated>] [--requires-shell] [--nontrivial] [--decisions <json>] [--user-skills] [--native-core]';
 }
 
 function parseArgs(args) {
@@ -43,7 +43,7 @@ function parseArgs(args) {
       values.flags.add(key);
       continue;
     }
-    if (!['--project', '--harness', '--inventory', '--task', '--phase', '--role', '--signals', '--decisions'].includes(key)
+    if (!['--project', '--harness', '--inventory', '--task', '--phase', '--role', '--domain', '--signals', '--decisions'].includes(key)
       || !args[index + 1] || values[key]) throw new Error(usage());
     values[key] = args[index + 1];
     index += 1;
@@ -58,7 +58,9 @@ function parseArgs(args) {
   if (!IDENTIFIER.test(role)) throw new Error(usage());
   const signals = values['--signals'] ? values['--signals'].split(',').map((item) => item.trim().toLowerCase()).filter(Boolean) : [];
   if (signals.some((signal) => !IDENTIFIER.test(signal))) throw new Error(usage());
-  return { ...values, task, phase, role, signals };
+  const domain = values['--domain'] === undefined ? undefined : values['--domain'].trim().toLowerCase();
+  if (domain !== undefined && !IDENTIFIER.test(domain)) throw new Error(usage());
+  return { ...values, task, phase, role, signals, domain };
 }
 
 async function isInside(root, candidate, kind) {
@@ -190,7 +192,7 @@ try {
   });
   const capabilityPlan = resolveCapabilities({
     profile: project,
-    task: { type: args.task, signals: args.signals, requires_shell: args.flags.has('--requires-shell'), nontrivial: args.flags.has('--nontrivial') },
+    task: { type: args.task, domain: args.domain, signals: args.signals, requires_shell: args.flags.has('--requires-shell'), nontrivial: args.flags.has('--nontrivial') },
     phase: args.phase,
     role: args.role,
     inventory,
@@ -198,7 +200,7 @@ try {
   });
   // Disk/config presence of the mandatory core tools (read-only, presence only). Presence on disk is not
   // proof of a callable tool in this session, so it is reported as its own state, never as `present`.
-  const onDisk = new Map((await checkMandatoryTools(root)).map((entry) => [entry.id, entry]));
+  const onDisk = new Map([...await checkMandatoryTools(root), ...await checkConditionalMandatoryTools(root, { profile: project })].map((entry) => [entry.id, entry]));
   const declareFirst = {
     order: capabilityPlan.mandatory.map((requirement) => {
       const disk = onDisk.get(requirement.id);

@@ -170,6 +170,35 @@
       "manual_implementation": "single-explicit-message"
     },
     {
+      "id": "ui.design_system",
+      "level": "mandatory",
+      "order": 13,
+      "scope": "task",
+      "domain_conditional": true,
+      "reason": "Any task whose domain is FRONTEND, or that creates, changes, reviews or audits UI or visual design, runs Impeccable: shape (or critique) before building, audit and polish before G5. Other design skills complement it; they never substitute for it silently.",
+      "applies_when": {
+        "any_of": [
+          { "any_task_domains": ["frontend"] },
+          { "any_task_signals": ["frontend", "ui", "web-ui", "visual-bug", "visual-design", "rendered-behavior", "ui-review", "design-system"] }
+        ]
+      },
+      "acceptance": ["impeccable-pass"],
+      "preferred_implementations": ["impeccable"],
+      "allowed_alternatives": [],
+      "exclusive_implementations": true,
+      "complements": ["ui-ux-pro-max", "frontend-design", "design-system", "ui-styling", "web-design-guidelines"],
+      "build_note": "Build has no fixed command: after shape it is an ordinary /impeccable new-work request, or the targeted command the plan names (layout, typeset, colorize, animate, adapt, clarify, onboard, ...). craft is a deprecated alias and is not used.",
+      "phase_commands": {
+        "feature": { "plan": ["init", "shape"], "review": ["critique", "audit"], "verify": ["polish"] },
+        "bug": { "evidence": ["audit"], "fix": ["harden"], "verify": ["audit"] },
+        "refactor": { "analyze": ["audit"], "incremental": ["extract"], "review": ["audit", "polish"] },
+        "review": { "analyze": ["critique", "audit"] },
+        "investigation": { "evidence": ["critique", "audit"] }
+      },
+      "gap_declared_first": true,
+      "degraded_mode_after_refusal": true
+    },
+    {
       "id": "workflow.selection",
       "level": "required",
       "scope": "core",

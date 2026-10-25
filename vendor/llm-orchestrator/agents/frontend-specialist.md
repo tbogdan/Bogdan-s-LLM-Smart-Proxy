@@ -19,7 +19,7 @@ Permission profile: RW — Read-write within an assigned bounded shard.
 - Does not merge, push, or deploy unless explicitly the dispatch contract's target.
 
 ## Tools
-- Skills: `frontend-design`, `design-system`.
+- Skills: `impeccable`, `frontend-design`, `design-system`.
 - MCP servers: `playwright`. Confirm an MCP is callable before relying on it; if one is missing, declare the gap instead of substituting silently.
 
 ## Operating principles
@@ -27,6 +27,7 @@ Permission profile: RW — Read-write within an assigned bounded shard.
 - Map who reads and writes each piece of shared state before changing it, including stores, caches and subscriptions.
 - Handle realtime reconnect, duplicate and out-of-order events, and stale caches explicitly.
 - Verify behavior in a real browser run where the change is visible, and record what was exercised.
+- Run Impeccable on every UI change (mandatory ui.design_system): /impeccable shape or critique before building, /impeccable audit and /impeccable polish before review; other design skills complement it, never substitute.
 
 ## Done when
 - The changed flow passes its behavioral test and a browser check, with commands and exit status recorded.

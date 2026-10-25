@@ -774,6 +774,7 @@ test("createOpenAIStreamFrameParser suppresses repeated full tool argument snaps
 });
 
 test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completion", async () => {
+  const metrics=require("../lib/performance-metrics");metrics.reset();
   const server = http2.createServer();
   const seen = [];
   const completionDelayMs = 120;
@@ -817,9 +818,44 @@ test("streamWindsurfCloud streams HTTP/2 Connect response chunks before completi
     assert.equal(chunks.join("").includes("early "), true);
     assert.equal(chunks.join("").includes("done"), true);
     assert.equal(firstChunkAt[0] < completionDelayMs, true);
+    assert.deepEqual(metrics.snapshot().upstream,{dispatches:1,errors:0,cancels:0,retries:0,fallbacks:0,byCategory:{provider:1,helper:0,ancillary:0,other:0}});
   } finally {
     await closeServer(server);
   }
+});
+
+test("postModelConfigProto counts the actual HTTP/2 helper request through terminal body", async () => {
+  const metrics=require("../lib/performance-metrics");metrics.reset();
+  const server=http2.createServer();server.on("stream",stream=>{stream.respond({":status":200});stream.end(Buffer.from("config"));});
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  try{
+    const response=await cloud.postModelConfigProto({key:"fixture",origin:`http://127.0.0.1:${server.address().port}`,path:"/config"},Buffer.from("request"));
+    assert.equal(response.body.toString(),"config");
+    const s=metrics.snapshot().upstream;assert.equal(s.dispatches,1);assert.equal(s.byCategory.helper,1);assert.equal(s.errors,0);
+  }finally{await closeServer(server);}
+});
+
+test("postWindsurf counts the actual nonstream HTTP/2 provider request", async () => {
+  const metrics=require("../lib/performance-metrics");metrics.reset();
+  const server=http2.createServer();server.on("stream",stream=>{stream.respond({":status":200});stream.end(Buffer.from("reply"));});
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  try{
+    const response=await cloud.postWindsurf({key:"fixture",origin:`http://127.0.0.1:${server.address().port}`,path:"/chat"},{model:"fixture",messages:[{role:"user",content:"hi"}]});
+    assert.equal(response.status,200);assert.equal(metrics.snapshot().upstream.byCategory.provider,1);assert.equal(metrics.snapshot().upstream.errors,0);
+  }finally{await closeServer(server);}
+});
+
+test("Windsurf HTTP/2 streaming client cancellation settles as cancel", async () => {
+  const metrics=require("../lib/performance-metrics"),transport=require("../lib/http-transport"),{EventEmitter}=require("node:events");metrics.reset();
+  const server=http2.createServer();let arrived;const seen=new Promise(resolve=>arrived=resolve);
+  server.on("stream",stream=>{stream.respond({":status":200});stream.write(cloud.connectEnvelope(cloud.encodeString(3,"partial")));arrived();});
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  try{
+    const downstream=new EventEmitter();
+    const pending=transport.withOwnership(()=>cloud.streamWindsurfCloud({key:"fixture",origin:`http://127.0.0.1:${server.address().port}`,path:"/chat",upstream_model:"fixture"},{model:"windsurf/fixture",messages:[{role:"user",content:"hi"}],stream:true},{}),downstream);
+    await seen;downstream.emit("close");await assert.rejects(pending,{code:"UPSTREAM_CLIENT_ABORTED"});
+    const s=metrics.snapshot().upstream;assert.equal(s.dispatches,1);assert.equal(s.cancels,1);assert.equal(s.errors,0);
+  }finally{server.closeAllConnections?.();await closeServer(server);}
 });
 
 test("streamWindsurfCloud uses a stream idle timeout and resets it after chunks", async () => {

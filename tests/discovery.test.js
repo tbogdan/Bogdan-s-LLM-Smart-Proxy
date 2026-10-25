@@ -97,7 +97,7 @@ test("getEndpoints ignores old provider keys without supported enable flags", ()
 test("loadSeed returns exactly scoped provider families and groups", () => {
   const seed = discovery.loadSeed();
 
-  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["alibaba", "bigmodel", "cerebras", "claude", "cline", "cloudflare", "codex", "cohere", "copilot", "deepseek", "gemini", "githubmodels", "groq", "huggingface", "kilo", "kiro", "llm7", "mistral", "modelscope", "nvidia", "ollama", "openai", "openrouter", "ovh", "sambanova", "siliconflow", "windsurf"]);
+  assert.deepEqual([...new Set(seed.providers.map((provider) => provider.family))].sort(), ["alibaba", "bigmodel", "cerebras", "claude", "cline", "cloudflare", "codex", "cohere", "copilot", "deepseek", "fireworks", "gemini", "githubmodels", "groq", "huggingface", "kilo", "kimi", "kiro", "llm7", "mistral", "modelscope", "nebius", "nvidia", "ollama", "openai", "openrouter", "ovh", "perplexity", "sambanova", "siliconflow", "together", "windsurf", "xai", "xiaomi"]);
   assert.deepEqual(Object.keys(seed.groups).sort(), ["auto-assess", "auto-coding", "auto-max", "auto-memory", "auto-sm", "auto-text", "auto-thinking", "auto-tools", "coding-sm"]);
   assert.deepEqual(
     Object.fromEntries(
@@ -112,6 +112,36 @@ test("loadSeed returns exactly scoped provider families and groups", () => {
   for (const provider of seed.providers) {
     assert.match(provider.model, /^([a-z0-9]+)\//);
   }
+
+  for (const family of [
+    "kimi",
+    "xiaomi",
+    "together",
+    "fireworks",
+    "xai",
+    "perplexity",
+    "nebius",
+  ]) {
+    assert.equal(
+      seed.providers.some((provider) => provider.family === family),
+      true,
+      `seed should include ${family}`,
+    );
+  }
+  assert.equal(
+    seed.providers.some((provider) => provider.probe === false),
+    true,
+  );
+  assert.equal(
+    discovery.shouldProbeSeedProvider({
+      family: "groq",
+      protocol: "openai",
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      key_env: "GROQ_API_KEY",
+      probe: false,
+    }),
+    false,
+  );
 
   for (const model of [
     "windsurf/gpt-5-5-low",

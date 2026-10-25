@@ -22,6 +22,7 @@ async function withServer(handler, fn) {
   try {
     return await fn(`http://127.0.0.1:${port}/v1/chat/completions`);
   } finally {
+    server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
 }
@@ -14946,4 +14947,54 @@ test("coolWindsurfPeers cools the whole Windsurf family but leaves other familie
   } finally {
     state.PROVIDERS = originalProviders;
   }
+});
+
+test("explicit model that is rate limited/credit-exhausted fails over to another model", async () => {
+  await withRoutingState(async () => {
+    const originalProviders = state.PROVIDERS;
+    // First provider answers the requested (but unavailable) model with a
+    // route-level failure; the auto fallback then serves the same request
+    // from a different model.
+    let fallbackServed = false;
+    await withServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+        if (body.model === "requested/dead-model") {
+          res.writeHead(429, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { code: "rate_limit", message: "This request would exceed your account's rate limit." } }));
+          return;
+        }
+        fallbackServed = true;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          id: "chatcmpl-fallback",
+          object: "chat.completion",
+          model: body.model,
+          choices: [{ index: 0, message: { role: "assistant", content: "FAILOVER-OK" }, finish_reason: "stop" }],
+        }));
+      });
+    }, async (url) => {
+      state.GROUPS = { "auto-coding": "coding" };
+      state.PROVIDERS = [
+        provider(url, { name: "Requested-Dead", model: "requested/dead-model", caps: ["text", "coding", "tools"] }),
+        provider(url, { name: "Healthy-Backup", model: "healthy/backup-model", caps: ["text", "coding", "tools"] }),
+      ];
+      try {
+        const fake = new FakeClientResponse();
+        await routing.handleChatCompletion({
+          model: "requested/dead-model",
+          messages: [{ role: "user", content: "Say FAILOVER-OK." }],
+        }, fake);
+        assert.equal(fake.status, 200);
+        const parsed = JSON.parse(fake.body);
+        assert.equal(parsed.choices[0].message.content, "FAILOVER-OK");
+        assert.equal(parsed.model, "healthy/backup-model");
+        assert.ok(fallbackServed, "fallback provider must have served the request");
+      } finally {
+        state.PROVIDERS = originalProviders;
+      }
+    });
+  });
 });

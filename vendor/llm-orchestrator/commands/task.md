@@ -22,6 +22,14 @@ core tool in this order (present / gap declared / explicit user refusal):
 8. `exa` for any external or current fact (research.retrieve)
 9. `verification-before-completion` (verification.checks)
 
+Domain-conditional — when the task's domain is FRONTEND, or it creates, changes, reviews or audits
+UI or visual design, also declare:
+
+D1. `impeccable` (ui.design_system) — `/impeccable shape` (or `critique`) before building,
+    `audit` + `polish` before G5; `/impeccable init` first when PRODUCT.md is missing.
+    ui-ux-pro-max, frontend-design, design-system, ui-styling and web-design-guidelines complement
+    it — never substitute for it silently.
+
 Questions: native, batched, once — every question to the user (mandatory-tool gap, batched
 "skip or fix?" minor findings, destructive confirmation, surviving scope ambiguity) goes through the
 harness's native question mechanism (user.native_question), batched into ONE question at the decision

@@ -47,7 +47,9 @@ function normalizeTask(task) {
   return {
     ...task,
     type: TASK_TYPE_ALIASES[normalizedKey] ?? rawType.toLowerCase(),
-    signals: values(task.signals).map(signal => String(signal).toLowerCase())
+    signals: values(task.signals).map(signal => String(signal).toLowerCase()),
+    // The pre-evaluation `domain` (FRONTEND|BACKEND|DB|INFRA|UNKNOWN or a project domain).
+    domain: task.domain === undefined || task.domain === null ? undefined : String(task.domain).trim().toLowerCase()
   };
 }
 
@@ -55,14 +57,18 @@ function hasAny(actual, expected) {
   return values(expected).some(item => actual.has(item));
 }
 
-function conditionMatches(condition = {}, { profile, task, phase, role }) {
+function conditionMatches(condition = {}, context) {
+  const { profile, task, phase, role } = context;
   if (condition.always === true) return true;
+  // any_of: at least one nested condition must match, alongside every sibling key.
+  if (Array.isArray(condition.any_of) && !condition.any_of.some(nested => conditionMatches(nested, context))) return false;
   const signals = new Set(values(task.signals));
   const domains = new Set(values(profile.domains));
   const languages = new Set(values(profile.languages));
   const frameworks = new Set(values(profile.frameworks));
 
   if (condition.any_task_types && !condition.any_task_types.includes(task.type)) return false;
+  if (condition.any_task_domains && !condition.any_task_domains.includes(task.domain)) return false;
   if (condition.any_task_signals && !hasAny(signals, condition.any_task_signals)) return false;
   if (condition.all_task_signals && !condition.all_task_signals.every(item => signals.has(item))) return false;
   if (condition.any_project_domains && !hasAny(domains, condition.any_project_domains)) return false;
@@ -124,7 +130,29 @@ function candidatesForCapability(entries, capability) {
   return entries.filter(entry => values(entry.capabilities).includes(capability));
 }
 
-function selectBinding({ entries, capability, profile, decisions }) {
+/**
+ * The implementation names a requirement accepts when it is `exclusive_implementations`:
+ * its preferred implementations and allowed alternatives, with their registry aliases.
+ * `null` means any implementation of the capability may bind (the default).
+ */
+function exclusiveNames(requirement, preferredTools) {
+  if (requirement.exclusive_implementations !== true) return null;
+  const names = new Set();
+  for (const id of [...values(requirement.preferred_implementations), ...values(requirement.allowed_alternatives)]) {
+    names.add(id);
+    for (const alias of values(entryById(preferredTools, id)?.aliases)) names.add(alias);
+  }
+  return names;
+}
+
+function admitted(entry, names) {
+  if (!entry || !names) return Boolean(entry);
+  return names.has(entry.id) || values(entry.aliases).some(alias => names.has(alias));
+}
+
+function selectBinding({ entries: allEntries, capability, profile, decisions, only = null }) {
+  // An exclusive requirement never binds a substitute, whichever path would have picked it.
+  const entries = only ? allEntries.filter(entry => admitted(entry, only)) : allEntries;
   const deniedEntries = candidatesForCapability(entries, capability)
     .filter(entry => entry.operation_denied === true || values(entry.denied_capabilities).includes(capability));
   if (deniedEntries.length > 0) return { denied: deniedEntries };
@@ -234,7 +262,25 @@ export function resolveCapabilities({ profile = {}, task = {}, phase, role, inve
     const preferred = values(requirement.preferred_implementations)
       .map(id => entryById(preferredTools, id))
       .filter(entry => entry && preferenceForTask(entry, normalizedTask));
-    const selection = selectBinding({ entries, capability: requirement.id, profile, decisions });
+    const only = exclusiveNames(requirement, preferredTools);
+    // An exclusive requirement never obeys a binding to a substitute, and never drops one silently:
+    // it says so, and an explicit user choice of a substitute counts as the refusal of the preferred one.
+    let userSubstitute = null;
+    if (only) {
+      const nameAdmitted = name => only.has(name) || admitted(entryById(entries, name), only);
+      // A decline is never a binding: declining a complement is not choosing it as a substitute.
+      const decision = userBinding(values(decisions).filter(item => item.installation !== 'declined'), requirement.id);
+      const userName = decision?.binding ?? decision?.implementation ?? decision?.tool;
+      if (userName && !nameAdmitted(userName)) {
+        userSubstitute = userName;
+        warnings.push(`exclusive: ${requirement.id} ignores binding ${userName}`);
+      }
+      const projectName = projectBinding(profile, requirement.id);
+      if (projectName && !nameAdmitted(projectName) && projectName !== userName) {
+        warnings.push(`exclusive: ${requirement.id} ignores binding ${projectName}`);
+      }
+    }
+    const selection = selectBinding({ entries, capability: requirement.id, profile, decisions, only });
     const primaryWasDeclined = preferred.some(entry => declined(decisions, requirement.id, entry.id));
 
     if (selection.denied) {
@@ -276,7 +322,15 @@ export function resolveCapabilities({ profile = {}, task = {}, phase, role, inve
       degraded = true;
       fallbackPlan.push({ capability: requirement.id, implementation, reason: 'declined-installation', limitations: ['Requires a concrete manual evidence record.'] });
     } else if (requirement.level === 'mandatory') {
-      if (capabilityDeclined(decisions, requirement.id)) {
+      if (userSubstitute) {
+        requirement.status = 'degraded';
+        degraded = true;
+        warnings.push(`degraded: ${requirement.id} — the user chose ${userSubstitute} instead of ${values(requirement.preferred_implementations)[0]}; that choice is the explicit refusal, and ${userSubstitute} does not satisfy the requirement; continuing in declared degraded mode.`);
+        fallbackPlan.push({ capability: requirement.id, implementation: null, reason: 'user-chose-substitute', substitute: userSubstitute });
+      } else if (only
+        ? values(decisions).some(decision => decision.installation === 'declined' && decision.capability === requirement.id && (!decision.implementation || only.has(decision.implementation)))
+        : capabilityDeclined(decisions, requirement.id)) {
+        // For an exclusive requirement only a decline of an admitted implementation is a refusal.
         requirement.status = 'degraded';
         degraded = true;
         warnings.push(`degraded: ${requirement.id} — mandatory capability declined by explicit user refusal; continuing in declared degraded mode.`);

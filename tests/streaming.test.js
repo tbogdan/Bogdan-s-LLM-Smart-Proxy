@@ -99,6 +99,34 @@ function requestBody() {
   };
 }
 
+test("native entry point uses OpenAI validation after task runtime swaps provider", async () => {
+  await withNoScoreWrites(async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end();
+    }, async (url) => {
+      const selected = streamProvider(url);
+      const clientRes = new FakeClientResponse();
+      const runtime = {
+        beforeDispatch: async () => selected,
+        recordFailure: async () => {},
+        retryable: () => false,
+      };
+      await require("../lib/task-context").run({ runtime }, async () => {
+        await assert.rejects(
+          routing.routeNativeStreamToProvider(
+            { name: "Unavailable-Claude", protocol: "anthropic" }, requestBody(), clientRes,
+          ),
+          (err) => err.statusCode === 502 && err.headersSent === false &&
+            !String(err.body).includes("Unsupported native streaming"),
+        );
+      });
+      assert.equal(clientRes.status, null);
+      assert.equal(clientRes.ended, false);
+    });
+  });
+});
+
 test("routeStreamToProvider rejects empty streams before sending client headers", async () => {
   await withNoScoreWrites(async () => {
     await withServer((_req, res) => {
@@ -3730,3 +3758,36 @@ test("extractSseTextForDiagnostics reads text without repeating SSE metadata", (
 
   assert.equal(routing.extractSseTextForDiagnostics(sse), "Hello world");
 });
+
+
+for (const native of [false, true]) {
+  test(`upstream rejection stays private through ${native ? "native" : "legacy"} routing`, async () => {
+    await withNoScoreWrites(async () => {
+      const originalLog = state.log;
+      const logs = [];
+      state.log = message => logs.push(String(message));
+      try {
+        await withServer((_req, res) => {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: { message: "input exceeds context window PRIVATE_UPSTREAM_123" } }));
+        }, async url => {
+          const response = new FakeClientResponse();
+          let caught;
+          try {
+            await (native ? routing.routeNativeStreamToProvider : routing.routeStreamToProvider)(streamProvider(url), requestBody(), response);
+          } catch (error) { caught = error; }
+          assert.ok(caught);
+          const transport = require("../lib/http-transport");
+          const inner = caught.error || caught;
+          assert.match(transport.safeErrorText(inner), /context_length_exceeded/);
+          assert.match(inner.body, /PRIVATE_UPSTREAM_123/);
+          assert.doesNotMatch(JSON.stringify(caught), /PRIVATE_UPSTREAM_123/);
+          assert.doesNotMatch(logs.join("\n"), /PRIVATE_UPSTREAM_123/);
+          assert.doesNotMatch(JSON.stringify(state.scores), /PRIVATE_UPSTREAM_123/);
+          assert.doesNotMatch(response.chunks.join(""), /PRIVATE_UPSTREAM_123/);
+          inner.release?.();
+        });
+      } finally { state.log = originalLog; }
+    });
+  });
+}

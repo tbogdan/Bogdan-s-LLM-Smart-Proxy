@@ -1054,6 +1054,7 @@ function loadProvidersFromFile() {
 
 function shouldProbeSeedProvider(provider, env = process.env) {
   if (!provider || typeof provider !== "object") return false;
+  if (provider.probe === false) return false;
   const keyEnv = providerConfig.resolveKeyEnv(provider, env);
   const key = (keyEnv ? env[keyEnv] : null) || provider.default_key || "";
   if (!key && !provider.no_auth) return true;
@@ -1112,9 +1113,9 @@ async function testSeedProviders(seed) {
         ...sp,
         alive: true,
         last_tested: existing?.last_tested || null,
-        reason: "adapter_probe_skipped",
+        reason: sp.probe_skip_reason || "adapter_probe_skipped",
       });
-      log(`  SKIP:  ${sp.name} (adapter probe not implemented)`);
+      log(`  SKIP:  ${sp.name} (${sp.probe_skip_reason || "adapter probe not implemented"})`);
       continue;
     }
 

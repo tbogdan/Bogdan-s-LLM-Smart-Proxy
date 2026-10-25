@@ -333,7 +333,8 @@ test('coherence 9: every CLI flag in README exists in a usage string, and vice v
   const modelsReport = read('bin/model-thinking-report.mjs');
   const runUsage = read('bin/run.mjs');
   const gateUsage = read('bin/gate.mjs');
-  const usageText = `${cliOptions}\n${routeUsage}\n${attribution}\n${unified}\n${modelsDiscover}\n${modelsReport}\n${runUsage}\n${gateUsage}`;
+  const doctorUsage = read('bin/doctor.mjs').match(/return 'Usage: doctor[^']*'/)[0];
+  const usageText = `${cliOptions}\n${routeUsage}\n${attribution}\n${unified}\n${modelsDiscover}\n${modelsReport}\n${runUsage}\n${gateUsage}\n${doctorUsage}`;
 
   const readmeFlags = new Set([...readme.matchAll(/(?<![\w-])--[a-z][a-z0-9-]+/g)].map((match) => match[0]));
   const ignored = new Set(['--test', '--pure', '--no-data']);

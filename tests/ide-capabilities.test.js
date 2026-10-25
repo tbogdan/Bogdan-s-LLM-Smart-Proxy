@@ -4,6 +4,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const ide = require("../lib/ide-capabilities");
 
+test("client metadata takes precedence over cross-model provider name", () => {
+  assert.equal(ide.detectIdeClient({ model: "claude/claude-sonnet-5-5", client_metadata: { originator: "codex_cli_rs" } }).id, "codex");
+  assert.equal(ide.detectIdeClient({ model: "codex/gpt-5.6-luna" }, { headers: { "user-agent": "claude-code" } }).id, "claude_code");
+});
+
 test("detectRuntimeProfile identifies Claude VSCode from attribution headers", () => {
   const profile = ide.detectRuntimeProfile({
     model: "auto-coding",

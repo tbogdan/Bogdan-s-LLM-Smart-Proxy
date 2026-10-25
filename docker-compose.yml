@@ -1,5 +1,10 @@
 services:
   llm-proxy:
+    entrypoint: ["/bin/sh", "/opt/proxy-resource-entrypoint.sh"]
+    command: ["node", "llm-proxy.js"]
+    mem_limit: "${LLM_PROXY_MEMORY_LIMIT:-2g}"
+    cpus: "${LLM_PROXY_CPU_LIMIT:-2.0}"
+    pids_limit: ${LLM_PROXY_PIDS_LIMIT:-256}
     build: .
     ports:
       - "127.0.0.1:${LLM_PROXY_PORT:-18900}:18900"
@@ -7,6 +12,9 @@ services:
       - path: .env
         required: false
     environment:
+      PROXY_RESOURCE_MEMORY: "${LLM_PROXY_MEMORY_LIMIT:-2g}"
+      PROXY_RESOURCE_CPUS: "${LLM_PROXY_CPU_LIMIT:-2.0}"
+      PROXY_RESOURCE_PIDS: "${LLM_PROXY_PIDS_LIMIT:-256}"
       LLM_PROXY_PORT: "18900"
       MEMORY_ENABLED: "${MEMORY_ENABLED:-false}"
       MEMORY_BACKEND: "${MEMORY_BACKEND:-local}"
@@ -33,6 +41,8 @@ services:
       LLM_PROXY_AI_SUMMARY_MIN_MESSAGES: "1"
       CODEX_API_KEY: proxy
     volumes:
+      - ./scripts/resource-guard.js:/opt/proxy-resource-guard.js:ro
+      - ./scripts/resource-entrypoint.sh:/opt/proxy-resource-entrypoint.sh:ro
       - ./data:/data
     restart: unless-stopped
 
@@ -50,10 +60,21 @@ services:
     restart: unless-stopped
 
   codex-proxy:
+    entrypoint: ["/bin/sh", "/opt/proxy-resource-entrypoint.sh"]
+    command: ["openai-oauth", "--host", "0.0.0.0", "--port", "10531"]
+    environment:
+      PROXY_RESOURCE_MEMORY: "${CODEX_PROXY_MEMORY_LIMIT:-1g}"
+      PROXY_RESOURCE_CPUS: "${CODEX_PROXY_CPU_LIMIT:-1.0}"
+      PROXY_RESOURCE_PIDS: "${CODEX_PROXY_PIDS_LIMIT:-256}"
+    mem_limit: "${CODEX_PROXY_MEMORY_LIMIT:-1g}"
+    cpus: "${CODEX_PROXY_CPU_LIMIT:-1.0}"
+    pids_limit: ${CODEX_PROXY_PIDS_LIMIT:-256}
     build:
       context: .
       dockerfile: Dockerfile.codex
     volumes:
+      - ./scripts/resource-guard.js:/opt/proxy-resource-guard.js:ro
+      - ./scripts/resource-entrypoint.sh:/opt/proxy-resource-entrypoint.sh:ro
       - ./data/codex-auth.json:/root/.codex/auth.json
     ports:
       - "127.0.0.1:${CODEX_PROXY_PORT:-10531}:10531"
@@ -105,46 +126,4 @@ services:
       PATH: "/root/.local/bin:${PATH}"
     volumes:
       - ./config/graphiti-mcp-neo4j.yaml:/app/mcp/config/config.yaml:ro
-    command:
-      - sh
-      - -lc
-      - |
-        python - <<'PY'
-        from pathlib import Path
-
-        server_path = Path("/app/mcp/src/graphiti_mcp_server.py")
-        server = server_path.read_text()
-
-        if "from mcp.server.transport_security import TransportSecuritySettings" not in server:
-            import_needle = "from mcp.server.fastmcp import FastMCP\n"
-            if import_needle not in server:
-                raise SystemExit("Graphiti MCP server import shape changed; update docker-compose.yml patch")
-            server = server.replace(
-                import_needle,
-                "from mcp.server.fastmcp import FastMCP\nfrom mcp.server.transport_security import TransportSecuritySettings\n",
-                1,
-            )
-
-        mcp_needle = """mcp = FastMCP(
-            'Graphiti Agent Memory',
-            instructions=GRAPHITI_MCP_INSTRUCTIONS,
-        )
-        """
-        mcp_replacement = """mcp = FastMCP(
-            'Graphiti Agent Memory',
-            instructions=GRAPHITI_MCP_INSTRUCTIONS,
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=False,
-                allowed_hosts=['graphiti-mcp', 'graphiti-mcp:8000', 'localhost', 'localhost:8000', '127.0.0.1', '127.0.0.1:8000', '[::1]', '[::1]:8000'],
-            ),
-        )
-        """
-        if "transport_security=TransportSecuritySettings(" not in server:
-            if mcp_needle not in server:
-                raise SystemExit("Graphiti MCP server FastMCP shape changed; update docker-compose.yml patch")
-            server = server.replace(mcp_needle, mcp_replacement, 1)
-
-        server_path.write_text(server)
-        PY
-        exec uv run main.py
     restart: unless-stopped

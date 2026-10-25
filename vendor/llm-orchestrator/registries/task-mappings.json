@@ -52,11 +52,11 @@
       "obligations": {
         "mandatory": [
           { "capability": "workflow.brainstorm", "trigger": "Before entering plan mode.", "preferred_implementations": ["superpowers-workflows"], "allowed_alternatives": ["native-workflow-selection"] },
-          { "capability": "workflow.tdd", "trigger": "The failing test is written before implementation.", "preferred_implementations": ["superpowers-workflows"], "allowed_alternatives": ["native-workflow-selection"] }
+          { "capability": "workflow.tdd", "trigger": "The failing test is written before implementation.", "preferred_implementations": ["superpowers-workflows"], "allowed_alternatives": ["native-workflow-selection"] },
+          { "capability": "ui.design_system", "trigger": "Domain FRONTEND, or any new or changed UI: /impeccable shape (init first when PRODUCT.md is missing) at Plan, an ordinary new-work request or the targeted command the plan names at Build, critique + audit at Review, polish before G5. design-system, ui-styling, frontend-design and ui-ux-pro-max complement it, never substitute.", "preferred_implementations": ["impeccable"], "allowed_alternatives": [] }
         ],
         "optional": [
           { "capability": "docs.current", "trigger": "Any library/SDK API surface, even a familiar one.", "preferred_implementations": ["context7"], "allowed_alternatives": ["native-web"] },
-          { "capability": "ui.design_system", "trigger": "Any new UI.", "preferred_implementations": ["design-system", "ui-styling"], "allowed_alternatives": [] },
           { "capability": "billing.provider_evidence", "trigger": "A money path is touched.", "preferred_implementations": ["stripe-best-practices"], "allowed_alternatives": [] },
           { "capability": "code.semantic_edit", "trigger": "A large cross-file edit is planned.", "preferred_implementations": ["serena"], "allowed_alternatives": [] }
         ],
@@ -77,7 +77,8 @@
         "mandatory": [
           { "capability": "workflow.systematic_debugging", "trigger": "Reproduce before fixing (BUG_FIX).", "preferred_implementations": ["superpowers-workflows"], "allowed_alternatives": ["native-workflow-selection"] },
           { "capability": "incident.telemetry_first", "trigger": "INCIDENT: before any hypothesis.", "preferred_implementations": ["production-telemetry-collector"], "allowed_alternatives": [] },
-          { "capability": "incident.protocol_order", "trigger": "INCIDENT: start -> evidence -> fix -> verify -> close, in order.", "preferred_implementations": ["incident-orchestration"], "allowed_alternatives": [] }
+          { "capability": "incident.protocol_order", "trigger": "INCIDENT: start -> evidence -> fix -> verify -> close, in order.", "preferred_implementations": ["incident-orchestration"], "allowed_alternatives": [] },
+          { "capability": "ui.design_system", "trigger": "The defect is in UI or visual design: /impeccable audit on the affected surface at Evidence, /impeccable harden at Fix, /impeccable audit again at Verify. Other design skills complement it, never substitute.", "preferred_implementations": ["impeccable"], "allowed_alternatives": [] }
         ],
         "optional": [
           { "capability": "code.locate", "trigger": "Symptom crosses layers.", "preferred_implementations": ["route-data-flow-tracer"], "allowed_alternatives": [] },
@@ -100,7 +101,8 @@
       ],
       "obligations": {
         "mandatory": [
-          { "capability": "refactor.coverage_first", "trigger": "Coverage must exist before the first edit.", "preferred_implementations": ["project-test-runner"], "allowed_alternatives": [] }
+          { "capability": "refactor.coverage_first", "trigger": "Coverage must exist before the first edit.", "preferred_implementations": ["project-test-runner"], "allowed_alternatives": [] },
+          { "capability": "ui.design_system", "trigger": "The refactor touches UI: /impeccable audit for the baseline at Analyze, /impeccable extract at Incremental, /impeccable audit + /impeccable polish at Review. Other design skills complement it, never substitute.", "preferred_implementations": ["impeccable"], "allowed_alternatives": [] }
         ],
         "optional": [
           { "capability": "code.semantic_edit", "trigger": "Symbol-level moves across many files.", "preferred_implementations": ["serena"], "allowed_alternatives": [] }
@@ -118,7 +120,8 @@
       ],
       "obligations": {
         "mandatory": [
-          { "capability": "review.adversarial", "trigger": "On the synthesis — never ship a single-source conclusion.", "preferred_implementations": ["adversarial-skeptic"], "allowed_alternatives": [] }
+          { "capability": "review.adversarial", "trigger": "On the synthesis — never ship a single-source conclusion.", "preferred_implementations": ["adversarial-skeptic"], "allowed_alternatives": [] },
+          { "capability": "ui.design_system", "trigger": "The question is about UI or visual design: /impeccable critique + /impeccable audit on the surface at Evidence, read-only. Other design skills complement it, never substitute.", "preferred_implementations": ["impeccable"], "allowed_alternatives": [] }
         ],
         "optional": [
           { "capability": "code.semantic_edit", "trigger": "Symbol-aware exploration of a large codebase.", "preferred_implementations": ["serena"], "allowed_alternatives": [] },
@@ -192,7 +195,8 @@
       ],
       "obligations": {
         "mandatory": [
-          { "capability": "review.independent", "trigger": "Every review. An independent-reviewer seat if a risk floor applies — cut the implementer, never the reviewer.", "preferred_implementations": ["independent-reviewer"], "allowed_alternatives": [] }
+          { "capability": "review.independent", "trigger": "Every review. An independent-reviewer seat if a risk floor applies — cut the implementer, never the reviewer.", "preferred_implementations": ["independent-reviewer"], "allowed_alternatives": [] },
+          { "capability": "ui.design_system", "trigger": "The diff or target is UI or visual design: /impeccable critique + /impeccable audit at Analyze; findings join the ranked list. Other design skills complement it, never substitute.", "preferred_implementations": ["impeccable"], "allowed_alternatives": [] }
         ],
         "optional": [
           { "capability": "review.adversarial", "trigger": "Money, auth, or frozen-build-shaped diffs.", "preferred_implementations": ["adversarial-skeptic"], "allowed_alternatives": [] },

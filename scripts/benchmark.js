@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const {gateConfig, evaluateGates, gateExitCode} = require("../lib/performance-gates");
 const path = require("node:path");
 const {
   DEFAULT_CASES,
@@ -14,6 +15,11 @@ const {
   summarizeRuns,
   usageFromResponse,
 } = require("../lib/benchmark");
+const {
+  PERFORMANCE_SUITES,
+  performanceConfig,
+  runPerformanceSuite,
+} = require("../lib/performance-benchmark");
 
 function loadEnvFile(filePath = ".env") {
   const fullPath = path.resolve(filePath);
@@ -112,6 +118,30 @@ function configFromArgs(args) {
 
 function selectedCases(config) {
   return casesForSuite(config.suite).slice(0, config.maxCases);
+}
+
+function performanceExecutionMode(args) {
+  const suite = String(args.suite || "").trim().toLowerCase();
+  if (!PERFORMANCE_SUITES.has(suite)) return null;
+  if (args.fixture === true) return "fixture";
+  if (args["live-provider"] === true) return "live";
+  throw new Error("Performance suites require explicit --fixture or --live-provider opt-in");
+}
+
+function renderPerformancePlan(config, mode) {
+  return [
+    "Proxy performance benchmark dry run",
+    "===================================",
+    `Suite:       ${config.suite}`,
+    `Mode:        ${mode}`,
+    `Repeat:      ${config.repeat}`,
+    `Warmup:      ${config.warmup}`,
+    `Concurrency: ${config.concurrency}`,
+    `Timeout:     ${config.timeoutMs}ms`,
+    `Requests:    ${config.repeat + config.warmup}`,
+    "",
+    "Percentiles use nearest-rank; warmups are excluded from reported measurements.",
+  ].join("\n") + "\n";
 }
 
 function renderPlan(config, cases) {
@@ -382,6 +412,35 @@ async function main() {
   loadEnvFile();
   const args = parseArgs(process.argv.slice(2));
   const config = configFromArgs(args);
+  if (PERFORMANCE_SUITES.has(config.suite)) {
+    const mode = performanceExecutionMode({ ...args, suite: config.suite });
+    const perf = { suite: config.suite, ...performanceConfig(args) };
+    if (!config.run) {
+      const dryRun = { dry_run: true, mode, config: perf };
+      process.stdout.write(config.json ? `${JSON.stringify(dryRun, null, 2)}\n` : renderPerformancePlan(perf, mode));
+      return;
+    }
+    let result;
+    let cleanup = null;
+    try {
+      if (mode === "fixture") {
+        const fixture = await require("./performance-fixture").runLocalFixture(perf);
+        result = fixture.report;
+        cleanup = fixture.cleanup;
+      } else {
+        result = await runPerformanceSuite({ ...perf, baseUrl: config.baseUrl, serverMemory: null });
+        result.fixture = { mode: "live-provider-opt-in" };
+      }
+      const gates = gateConfig();
+      result.gates = evaluateGates(result, gates);
+      process.exitCode = gateExitCode(result.gates, gates.enforce);
+      if (config.output) result.output = writeOutput(config.output, result);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    } finally {
+      if (cleanup) await cleanup();
+    }
+  }
   const cases = selectedCases(config);
 
   if (!config.run) {
@@ -418,7 +477,23 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`benchmark failed: ${err.stack || err.message || err}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`benchmark failed: ${err.stack || err.message || err}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  casesForSuite,
+  configFromArgs,
+  main,
+  parseArgs,
+  performanceExecutionMode,
+  postChatCompletion,
+  renderPlan,
+  runBenchmark,
+  selectedCases,
+  telemetryFromHeaders,
+  writeOutput,
+};

@@ -2172,3 +2172,49 @@ test("transformRequest does not inject placeholder user message for non-Anthropi
   const userMsgs = result.messages.filter((m) => m.role === "user" && m.content === "Continue.");
   assert.equal(userMsgs.length, 0, "should not inject placeholder for non-Anthropic provider");
 });
+
+ test("passive answers preserve the read schema required by OpenCode native profiles", async () => {
+ const p = {...provider, family: "opencode", model: "opencode/mimo-v2.6-flash-free", access_policy: "native_tool_profile"};
+ const tools = [{type: "function", function: {name: "read", parameters: {type: "object", properties: {path: {type: "string"}}}}}];
+ const result = await transforms.transformRequest(p, {model: p.model, messages: [{role: "user", content: "Reply exactly: PROVIDER_OK_42"}], tools});
+ assert.equal(require("../lib/opencode").nativeRequestCompatible(p, result), true);
+ });
+
+test("compact prompt mode keeps tool instructions bounded and preserves caller instructions", async () => {
+ const old = process.env.LLM_PROXY_PROMPT_INJECTION;
+ process.env.LLM_PROXY_PROMPT_INJECTION = "compact";
+ try {
+ const result = await transforms.transformRequest(provider, {model: "auto-coding", messages: [{role: "system", content: "Caller instruction: use fixture only."}, {role: "user", content: "Read fixture.txt and return its contents."}], tools: [{type: "function", function: {name: "read", parameters: {type: "object", properties: {path: {type: "string"}}}}}]});
+ const system = result.messages[0].content;
+ assert.ok(system.includes("Caller instruction: use fixture only."));
+ assert.ok(system.length < 2000, `system has ${system.length} characters`);
+ assert.ok(system.includes("tool results"));
+ assert.ok(!system.includes("Current UTC date/time"));
+ } finally {if (old === undefined) delete process.env.LLM_PROXY_PROMPT_INJECTION; else process.env.LLM_PROXY_PROMPT_INJECTION = old;}
+});
+
+
+test("Codex output ceiling alone does not compact a transcript that fits actual context", async () => {
+ const old = compaction.compactMessagesAsync;
+ const oldLog = state.log;
+ let calls = 0;
+ const logs = [];
+ compaction.compactMessagesAsync = async () => { calls++; return null; };
+ state.log = line => logs.push(line);
+ try {
+  const request = {model: "codex/test", max_tokens: 128000, messages: [
+   {role: "system", content: "Keep history."},
+   {role: "user", content: "x ".repeat(60000)},
+   {role: "assistant", content: "ack"},
+   {role: "user", content: "y ".repeat(60000)},
+   {role: "assistant", content: "ack"}
+  ]};
+  const input = compaction.estimateTokens(request.messages);
+  assert.ok(input + request.max_tokens > 272000 * 0.55);
+  assert.ok(input + request.max_tokens < 272000 * 0.9);
+  const output = await transforms.transformRequest({...provider, family: "codex", model: "codex/test", context: 272000}, request);
+  assert.equal(calls, 0);
+  assert.equal(output.max_tokens, 128000);
+  assert.ok(!logs.some(line => line.includes("POST-COMPACT")));
+ } finally {compaction.compactMessagesAsync = old; state.log = oldLog;}
+});

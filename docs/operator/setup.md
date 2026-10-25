@@ -20,6 +20,16 @@ Those host-side helpers may require the relevant CLI/Node runtime. The core cont
 
 OpenAI-compatible clients use `http://localhost:18900/v1`, with your configured port. Use a discovered model ID or `auto`. Anthropic clients use `http://localhost:18900` as the API base, calling `/v1/messages`.
 
+Prefer the setup command over hand-editing client files:
+
+```bash
+npm run proxy -- setup claude on [--model claude/claude-sonnet-4-6] [--no-restart]
+npm run proxy -- setup codex on [--model codex/gpt-5.6-luna] [--no-restart]
+npm run proxy -- setup all off
+```
+
+For `claude` it merges `ANTHROPIC_BASE_URL` (+ `ANTHROPIC_API_KEY=proxy`, the proxy trusts localhost and uses server-side keys; `ENABLE_TOOL_SEARCH=true` so Claude Code keeps optimistic ToolSearch through the proxy, which forwards `tool_reference` blocks and the client's `anthropic-beta` headers upstream) into `~/.claude/settings.json` without touching your model or permissions, and exports the same env globally in your shell profile. Claude Code, the VS Code / Cursor / Antigravity Claude extensions read the same file, so CLI and IDEs are covered together. For `codex` it adds a `[model_providers.llm-proxy]` Responses provider (`base_url http://localhost:18900/v1`, `env_key LLM_PROXY_API_KEY`) and selects it, preserving the rest of `~/.codex/config.toml`. Every mutation is preceded by a timestamped `.bak-proxy-*` backup; `off` restores it byte-for-byte.
+
 Example Codex custom provider; merge it into your existing configuration without replacing unrelated settings:
 
 ```toml
@@ -36,6 +46,28 @@ An explicitly configured custom Responses provider may expose different native C
 For SDK clients, send a stable task and client ID. Generate a fresh task ID when the user starts different work. The returned task ID is available in `X-LLM-Proxy-Task-ID`.
 
 ## Diagnose
+
+`LLM_PROXY_PROMPT_INJECTION=compact` keeps caller instructions and adds a short
+proxy control prompt instead of the full workflow manual. It omits a per-request
+clock value so an otherwise identical prefix stays stable. `full`, `hidden_only`
+and `off` remain available. This reduces prompt overhead; it does not by itself
+prove an upstream cache hit. Recreate the proxy container after changing `.env`.
+
+Original-content retrieval is advertised only when tool history contains a
+compressed original. Small unchanged tool results do not add a retrieval tool
+or require an extra inference round.
+
+The task model limit counts three **functional canonical models**, not all models
+ever attempted. Unavailable or context-incompatible pinned models can be replaced;
+the router prefers another eligible account for the same canonical model first.
+`models` records occupied functional slots; `modelHistory` retains attempted model
+identities and `retiredModels` records replacements. Ordinary continuations retain
+their pin, and adding a fourth healthy specialist remains disallowed.
+
+An oversized input triggers selection of a compatible larger-context route before
+upstream dispatch. A large output ceiling alone does not trigger early transcript
+compaction when the full input/output budget fits with headroom. Near the hard
+context boundary, the complete output reservation still participates in fit checks.
 
 `./setup.sh doctor` is read-only and makes no inference call. It distinguishes healthy runtime, configured routes, model list and unverified inference. A selected inference smoke is explicit:
 
@@ -74,4 +106,6 @@ service; prefer the read-only model-list script for routine inventory refresh.
 
 Run `node scripts/refresh-model-catalog.js --mode list --env-file .env`. This only calls configured model-list endpoints; it performs no inference. The resulting private `data/model-inventory.json` records account exposure, not proven capability. Native OAuth providers may require their existing dedicated discovery adapters.
 
-`data/model-catalog-evidence.json` records dated direct API Standard prices and source URLs. `/v1/models` exposes `price_evidence` only for exact model/provider identity. Set `billing_basis: "api"` on an explicitly direct API route to apply those prices; subscriptions remain unknown in USD. New listed IDs require verified adapter/capability metadata before promotion into `providers.json`. Long-context pricing and plan multipliers require separate evidence.
+`data/model-catalog-evidence.json` records dated direct API Standard prices and source URLs. `/v1/models` exposes `price_evidence` only for exact model/provider identity. Set `billing_basis: "api"` on an explicitly direct API route to apply those prices; subscriptions remain unknown in USD. New listed IDs are not promoted implicitly; the explicit seed-refresh command adds selected catalog routes with metadata heuristics and `probe: false` (catalog-only, not inference-validated). Long-context pricing and plan multipliers require separate evidence.
+
+To refresh the bundled fallback routes without inference, run `node scripts/refresh-seed-from-catalog.js --write`, then `node scripts/merge-seed-into-providers.js --write`. The second command preserves existing discovered/provisioned routes and writes a backup. Generated seed routes carry `probe: false`, so discovery marks them catalog-only instead of probing every model.

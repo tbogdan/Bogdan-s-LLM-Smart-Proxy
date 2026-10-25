@@ -11,6 +11,10 @@
   reproduction, does not pass G1.
 - Exactly one falsifiable hypothesis at G2, recorded in `hypothesis:{task_id}`.
 - A regression test that is **observed RED** before the fix, then GREEN after.
+- **`impeccable` when the defect is in UI or visual design** (`ui.design_system`): **Evidence** —
+  `/impeccable audit` on the affected surface; **Fix** — `/impeccable harden` for error, overflow,
+  i18n and edge-case defects; **Verify** — `/impeccable audit` again on the same surface. Another
+  design skill never stands in for it silently.
 
 ## Optional (trigger)
 

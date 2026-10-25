@@ -64,6 +64,25 @@ async function withEnv(name, value, fn) {
   }
 }
 
+test("translateInput accepts incremental Codex namespace custom tools", () => {
+  const chat = responses.translateInput({
+    model: "codex/gpt-5.6-luna",
+    input: [
+      { type: "additional_tools", tools: [{ type: "namespace", name: "functions", tools: [
+        { type: "custom", name: "exec", description: "Execute JavaScript" },
+        { type: "function", name: "wait", parameters: { type: "object" } },
+      ] }] },
+      { role: "user", content: "Run the command." },
+    ],
+  }, { client: "codex" });
+  assert.ok(chat.tools.some(t => t.function.name === "exec"));
+  assert.ok(chat.tools.some(t => t.function.name === "wait"));
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.exec.kind, "custom");
+  assert.equal(chat._llmProxyResponsesToolRegistry.byName.exec.namespace, "functions");
+  assert.notEqual(chat.tools.find(t => t.function.name === "exec").function.parameters.properties.input.description, "Execute JavaScript");
+  assert.equal(chat.messages.length, 1);
+});
+
 test("translateInput maps Responses API messages, tools, and model aliases to chat completions", () => {
   const chat = responses.translateInput({
     model: "gpt-5.4",
@@ -987,7 +1006,8 @@ test("MockResponse finalizes streaming tool calls when upstream only sends DONE"
   assert.equal(completed.response.output[0].status, "completed");
 });
 
-test("MockResponse converts custom tool calls into Responses custom_tool_call items", () => {
+for (const namespace of [undefined, "functions"]) {
+test(`MockResponse converts custom tool calls with namespace ${namespace || "none"}`, () => {
   const events = [];
   const res = new responses.MockResponse(
     (event) => events.push(event),
@@ -995,7 +1015,7 @@ test("MockResponse converts custom tool calls into Responses custom_tool_call it
     () => {},
     {
       toolRegistry: {
-        byName: { apply_patch: { kind: "custom", name: "apply_patch" } },
+        byName: { apply_patch: { kind: "custom", name: "apply_patch", namespace, childName: "apply_patch" } },
       },
     },
   );
@@ -1021,10 +1041,13 @@ test("MockResponse converts custom tool calls into Responses custom_tool_call it
   const inputDone = events.find((event) => event.type === "response.custom_tool_call_input.done");
   const completed = events.find((event) => event.type === "response.completed");
   assert.equal(added.item.type, "custom_tool_call");
+  assert.equal(added.item.namespace, namespace);
   assert.equal(inputDone.input, "*** Begin Patch\n*** End Patch");
   assert.deepEqual(completed.response.output.map((item) => item.type), ["custom_tool_call"]);
   assert.equal(completed.response.output[0].input, "*** Begin Patch\n*** End Patch");
+  assert.equal(completed.response.output[0].namespace, namespace);
 });
+}
 
 test("MockResponse keeps distinct output indexes for mixed text and tool call streams", () => {
   const events = [];

@@ -75,7 +75,7 @@ test(
         "http://127.0.0.1:" + upstream.address().port + "/v1/chat/completions",
       key_env: "FIXTURE_KEY_" + i,
       caps: ["text", "tools"],
-      context: 131072,
+      context: i === 0 ? 131072 : 262144,
       tier: 2,
       alive: true,
     }));
@@ -117,7 +117,7 @@ test(
         await new Promise((r) => setTimeout(r, 50));
       }
       assert.ok(ready, log);
-      const send = async (task, model) => {
+      const send = async (task, model, content = "Explain cache reuse in one sentence.") => {
         const r = await fetch(
           "http://127.0.0.1:" + port + "/v1/chat/completions",
           {
@@ -132,7 +132,7 @@ test(
               messages: [
                 {
                   role: "user",
-                  content: "Explain cache reuse in one sentence.",
+                  content,
                 },
               ],
               max_tokens: 100,
@@ -155,6 +155,12 @@ test(
           (c) => !Object.keys(c).some((k) => k.startsWith("_llmProxyTask")),
         ),
       );
+      // Context growth selects a fitting route before any failed upstream call.
+      const beforeGrowth = calls.length;
+      await send("growing", "openai/gpt-test");
+      await send("growing", "openai/gpt-test", "Summarize supplied context. " + "context evidence ".repeat(40000));
+      await send("growing", "openai/gpt-test");
+      assert.deepEqual(calls.slice(beforeGrowth).map(c => c.model), ["gpt-test", "gpt-other", "gpt-other"]);
       denied = true;
       const beforeDenied = calls.length;
       const forbidden = await fetch(
@@ -177,13 +183,16 @@ test(
       assert.equal(calls.length - beforeDenied, 1);
       denied = false;
       depleted = true;
+      // The preceding auto-text denial may choose either model as timings
+      // change. Count only this depletion attempt, not that independent task.
+      const beforeDepleted = calls.filter((c) => c.model === "gpt-test").length;
       await send("same", "openai/gpt-test");
       assert.equal(calls.at(-1).model, "gpt-other");
-      assert.equal(calls.filter((c) => c.model === "gpt-test").length, 3);
+      assert.equal(calls.filter((c) => c.model === "gpt-test").length - beforeDepleted, 1);
       const d = await (
         await fetch("http://127.0.0.1:" + port + "/v1/orchestration")
       ).json();
-      assert.equal(d.stats.dispatches, 6);
+      assert.equal(d.stats.dispatches, 9);
     } finally {
       child.kill("SIGTERM");
       await new Promise((r) => child.once("exit", r));

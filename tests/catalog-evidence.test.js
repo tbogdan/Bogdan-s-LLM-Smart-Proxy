@@ -72,7 +72,7 @@ test("public evidence strips account access and preserves region/currency price 
       ],
     },
   ]);
-  assert.equal(result.providers.length, 37);
+  assert.equal(result.providers.length, 38);
   assert.equal(result.prices.length, 2);
   assert.ok(!JSON.stringify(result).includes("private-account"));
   assert.equal(result.models[0].availability, undefined);
@@ -137,5 +137,34 @@ test("officially retired provider cannot hydrate as alive from either seed or pr
     assert.equal(result.providers.length, 1);
     assert.equal(result.providers[0].alive, false);
     assert.match(result.providers[0].disabled_reason, /retired/);
+  }
+});
+test("model retirements disable elapsed IDs without disabling future ones", () => {
+  const {
+    hydrateProvidersFile,
+  } = require("../lib/providers");
+  const { PROVIDERS } = require("../lib/provider-catalog");
+  const make = (upstream) => ({
+    name: upstream,
+    family: "xiaomi",
+    model: `xiaomi/${upstream}`,
+    upstream_model: upstream,
+    url: "https://api.xiaomimimo.com/v1/chat/completions",
+    protocol: "openai",
+    key_env: "XIAOMI_API_KEY",
+    caps: ["text"],
+  });
+  const result = hydrateProvidersFile({
+    providers: [make("mimo-v2.5"), make("mimo-v2.6-pro")],
+  });
+  const definition = PROVIDERS.find((p) => p.id === "xiaomi");
+  for (const provider of result.providers) {
+    const retirement = definition.modelRetirements.find(
+      (r) => r.id === provider.upstream_model,
+    );
+    const elapsed =
+      retirement && Date.parse(retirement.retiredAt) <= Date.now();
+    assert.equal(provider.alive, !elapsed);
+    if (elapsed) assert.equal(provider.model_status, "retired");
   }
 });
