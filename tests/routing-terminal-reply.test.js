@@ -73,3 +73,15 @@ test("routeToProvider returns terminal DONE on first dispatch without hidden con
   assert.equal(JSON.parse(result.body).choices[0].message.content,"DONE");
   assert.equal(calls,1);
 });
+
+
+test("terminal reply may be followed by a no-more-tools constraint, not unfinished work",()=>{
+  for(const suffix of [" No other tools."," No more tools."]){
+    const body=request();body.messages[0].content+=suffix;
+    assert.equal(observe(body).action,"allow");
+    body.messages.at(-1).is_error=true;
+    assert.notEqual(observe(body).action,"allow");
+  }
+  const body=request();body.messages[0].content+=" No other tools. Also run the remaining tests.";
+  assert.notEqual(observe(body).action,"allow");
+});

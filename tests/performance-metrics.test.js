@@ -82,9 +82,13 @@ test("metrics endpoint is versioned and stats keeps its session schema", async t
     stdio: ["ignore", "pipe", "pipe"],
   });
   let logs = ""; child.stdout.on("data", chunk => logs += chunk); child.stderr.on("data", chunk => logs += chunk);
-  t.after(() => { child.kill("SIGTERM"); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  t.after(async () => {
+    if(child.exitCode===null&&child.signalCode===null){const exited=new Promise(resolve=>child.once("exit",resolve));child.kill("SIGTERM");await exited;}
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
   let ready = false;
-  for (let i = 0; i < 60; i++) {
+  const readyDeadline=Date.now()+10000;
+  while(Date.now()<readyDeadline) {
     try { ready = (await fetch(`http://127.0.0.1:${port}/health`)).ok; if (ready) break; } catch {}
     await new Promise(resolve => setTimeout(resolve, 25));
   }

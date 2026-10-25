@@ -3,9 +3,11 @@ const test=require("node:test"),assert=require("node:assert/strict"),http=requir
 
 async function fixture(t,mode){
   const calls=[], aborted=[];
+  let assessmentStartedResolve;
+  const assessmentStarted=new Promise(resolve=>{assessmentStartedResolve=resolve;});
   const upstream=http.createServer(async(req,res)=>{
     let raw="";for await(const c of req)raw+=c;
-    const body=JSON.parse(raw),assessment=JSON.stringify(body).includes("LLM proxy routing classifier");calls.push({assessment,model:body.model});
+    const body=JSON.parse(raw),assessment=JSON.stringify(body).includes("LLM proxy routing classifier");calls.push({assessment,model:body.model});if(assessment)assessmentStartedResolve();
     res.setHeader("Content-Type","application/json");
     if(assessment && ["timeout","abort"].includes(mode) && body.model==="assess-0") {
       res.once("close",()=>{if(!res.writableEnded)aborted.push(body.model);});
@@ -28,14 +30,17 @@ async function fixture(t,mode){
   const coder={...base,name:"Primary-Coder",model:"codex/primary-coder",upstream_model:"primary-coder",caps:["text","coding","tools"],tier:3,cost_group:3,speed_group:4,quality_group:4,thinking_effort:"medium"};
   fs.writeFileSync(path.join(dir,"providers.json"),JSON.stringify({providers:[...assessors,coder],groups:{"auto-assess":"assessment","auto-coding":"coding","auto-text":"text"}}));
   const reserve=http.createServer();await new Promise(resolve=>reserve.listen(0,"127.0.0.1",resolve));const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
-  child=spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),ASSESSMENT_FIXTURE_KEY:"fixture",LLM_PROXY_AI_ASSESSMENT:"always",LLM_PROXY_AI_ASSESSMENT_MODEL:"auto-assess",LLM_PROXY_AI_ASSESSMENT_MAX_PROVIDERS:"6",LLM_PROXY_AI_ASSESSMENT_TIMEOUT_MS:"500",LLM_PROXY_PROBE_ENABLED:"false",MEMORY_ENABLED:"false",DEV_MODE:"false"},stdio:["ignore","pipe","pipe"]});
+  child=spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),ASSESSMENT_FIXTURE_KEY:"fixture",LLM_PROXY_AI_ASSESSMENT:"always",LLM_PROXY_AI_ASSESSMENT_MODEL:"auto-assess",LLM_PROXY_AI_ASSESSMENT_MAX_PROVIDERS:"6",LLM_PROXY_AI_ASSESSMENT_TIMEOUT_MS:mode==="abort"?"5000":"500",LLM_PROXY_PROBE_ENABLED:"false",MEMORY_ENABLED:"false",DEV_MODE:"false"},stdio:["ignore","pipe","pipe"]});
   let logs="";child.stdout.on("data",c=>logs+=c);child.stderr.on("data",c=>logs+=c);
   let ready=false;for(let i=0;i<100;i++){try{if((await fetch(`http://127.0.0.1:${port}/health`)).ok){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,25));}assert.ok(ready,logs);
   const controller=new AbortController();
   const pending=fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{signal:controller.signal,method:"POST",headers:{"Content-Type":"application/json","x-llm-proxy-task-id":"assessment-"+mode,"x-llm-proxy-client-id":"fixture"},body:JSON.stringify({model:"auto-coding",messages:[{role:"user",content:"Implement the requested code change, inspect the project configuration and verify the tests with Bash."}],tools:[{type:"function",function:{name:"Bash",parameters:{type:"object",properties:{command:{type:"string"}},required:["command"]}}}],max_tokens:128})});
   if(mode==="abort"){
-    for(let i=0;i<100&&!calls.some(c=>c.assessment);i++)await new Promise(resolve=>setTimeout(resolve,5));
-    assert.ok(calls.some(c=>c.assessment),"assessment must start before client cancellation");
+    pending.catch(()=>{});
+    let readyTimer;
+    try { await Promise.race([assessmentStarted,new Promise((_,reject)=>{readyTimer=setTimeout(()=>reject(new Error("assessment must start before client cancellation\n"+logs)),10000);})]); }
+    catch(error){controller.abort();await pending.catch(()=>{});throw error;}
+    finally{clearTimeout(readyTimer);}
     controller.abort();await assert.rejects(pending,{name:"AbortError"});
     await new Promise(resolve=>setTimeout(resolve,150));return {calls,logs,aborted};
   }
