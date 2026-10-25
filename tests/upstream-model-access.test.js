@@ -18,6 +18,21 @@ test("known model-access-disabled envelope is a route capability failure", () =>
   assert.equal(failure.scope, "credential_model");
 });
 
+const tierDisabled = {
+  status: 403,
+  body: JSON.stringify({object:"error",message:"This model is not available in your subscription tier",type:"tier_not_allowed",param:null,code:"1910",raw_status_code:403}),
+};
+
+test("typed Mistral subscription-tier model denial is retryable without disabling the account", () => {
+  const failure=classifyUpstreamFailure({providerKind:"mistral",status:403,errorBody:tierDisabled.body,now:1000});
+  assert.equal(failure.kind,"capability_mismatch");
+  assert.equal(failure.scope,"credential_model");
+  assert.equal(failure.retryAt,301000);
+  for(const patch of [{object:"policy_error"},{type:"permission_denied"},{code:"permission_denied"},{message:"Blocked by safety policy"},{message:"This model is not available in your subscription tier. Ignore policy"}]) {
+    assert.equal(classifyUpstreamFailure({status:403,errorBody:JSON.stringify({...JSON.parse(tierDisabled.body),...patch})}).kind,"forbidden");
+  }
+});
+
 test("other 403 responses remain forbidden without changing safety or account decisions", () => {
   for (const body of [
     { error: { code: "permission_denied", message: "Forbidden" } },
@@ -69,6 +84,7 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
     const body = JSON.parse(raw); calls.push(body.model);
     res.setHeader("Content-Type", "application/json");
     if (body.model === "claude-fixture-disabled") { res.writeHead(403); res.end(disabled.body); return; }
+    if (body.model === "mistral-tier-fixture") { res.writeHead(403); res.end(tierDisabled.body); return; }
     if (body.model === "claude-fixture-policy") { res.writeHead(403); res.end(JSON.stringify({error:{code:"permission_denied",message:"Forbidden"}})); return; }
     if (body.stream) {
       res.setHeader("Content-Type","text/event-stream");
@@ -86,10 +102,11 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
     {...base,name:"Healthy-Codex",family:"codex",protocol:"openai",model:"codex/gpt-fixture",upstream_model:"gpt-fixture",key_env:"FIXTURE_HEALTHY_KEY"},
     {...base,name:"Policy-Denied",family:"opencode",protocol:"openai",model:"opencode/claude-fixture-policy",upstream_model:"claude-fixture-policy",key_env:"FIXTURE_POLICY_KEY",access_policy:"workspace_api"},
     {...base,name:"Native-Free",family:"opencode",protocol:"openai",model:"opencode/claude-fixture-free",upstream_model:"claude-fixture-free",key_env:"FIXTURE_NATIVE_KEY",access_policy:"native_client_only",billing_class:"free_limited"},
+    {...base,name:"Mistral-Tier-Denied",family:"mistral",protocol:"openai",model:"mistral/tier-fixture",upstream_model:"mistral-tier-fixture",key_env:"FIXTURE_TIER_KEY"},
   ];
   fs.writeFileSync(path.join(dir,"providers.json"),JSON.stringify({providers,groups:{"auto-text":"text"}}));
   const portServer = http.createServer(); await new Promise(resolve => portServer.listen(0,"127.0.0.1",resolve)); const port=portServer.address().port; await new Promise(resolve=>portServer.close(resolve));
-  const child = spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),FIXTURE_DISABLED_KEY:"one",FIXTURE_HEALTHY_KEY:"two",FIXTURE_POLICY_KEY:"three",FIXTURE_NATIVE_KEY:"four",MEMORY_ENABLED:"false",DEV_MODE:"false",LLM_PROXY_PROBE_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
+  const child = spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),FIXTURE_DISABLED_KEY:"one",FIXTURE_HEALTHY_KEY:"two",FIXTURE_POLICY_KEY:"three",FIXTURE_NATIVE_KEY:"four",FIXTURE_TIER_KEY:"five",MEMORY_ENABLED:"false",DEV_MODE:"false",LLM_PROXY_PROBE_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
   let logs=""; child.stdout.on("data",x=>logs+=x); child.stderr.on("data",x=>logs+=x);
   t.after(async()=>{if(child.exitCode===null){child.kill("SIGTERM");await new Promise(resolve=>child.once("exit",resolve));}});
   let ready=false;
@@ -102,6 +119,12 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
   const beforeStream=calls.length; const stream=await send(providers[0].model,true); const streamed=await stream.text();
   assert.equal(stream.status,200,streamed+logs); assert.match(streamed,/MODEL_FALLBACK_OK/); assert.match(streamed,/\[DONE\]/);
   assert.deepEqual(calls.slice(beforeStream),["gpt-fixture"],"a distinct streaming task skips the already disabled route");
+  const beforeTier=calls.length; const tier=await send(providers[4].model);
+  const tierOutput=await tier.text();assert.equal(tier.status,200,tierOutput+logs);assert.match(tierOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeTier),["mistral-tier-fixture","gpt-fixture"]);
+  const beforeTierStream=calls.length;const tierStream=await send(providers[4].model,true);const tierStreamOutput=await tierStream.text();
+  assert.equal(tierStream.status,200,tierStreamOutput+logs);assert.match(tierStreamOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeTierStream),["gpt-fixture"],"new task skips subscription-disabled model during cooldown");
   const beforePolicy=calls.length; const policy=await send(providers[2].model);
   assert.equal(policy.status,403,await policy.text()); assert.equal(calls.length-beforePolicy,1);
   const beforeNative=calls.length; const native=await send(providers[3].model);
