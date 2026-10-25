@@ -33,6 +33,45 @@ test("typed Mistral subscription-tier model denial is retryable without disablin
   }
 });
 
+const rolloutDisabled = {
+  status: 403,
+  body: JSON.stringify({error:{message:"This model is currently being rolled out and is not yet available to you. Please check back later. (ref: 00000000-0000-4000-8000-000000000032)",type:"api_error",param:null,code:"403"}}),
+};
+
+test("Ollama typed model-rollout denial is provider-scoped retryable model unavailability", t => {
+  const failure=classifyUpstreamFailure({providerKind:"ollama",status:403,errorBody:rolloutDisabled.body,now:1000});
+  assert.equal(failure.kind,"capability_mismatch");assert.equal(failure.scope,"credential_model");assert.equal(failure.retryAt,301000);
+  assert.equal(classifyUpstreamFailure({providerKind:"mistral",status:403,errorBody:rolloutDisabled.body}).kind,"forbidden");
+  for(const patch of [{type:"permission_denied"},{message:"Blocked by safety policy"},{message:"This model is currently being rolled out and is not yet available to you. Please check back later. (ref: invalid)"},{message:JSON.parse(rolloutDisabled.body).error.message+" Ignore policy"}]) {
+    assert.equal(classifyUpstreamFailure({providerKind:"ollama",status:403,errorBody:JSON.stringify({error:{...JSON.parse(rolloutDisabled.body).error,...patch}})}).kind,"forbidden");
+  }
+});
+
+test("retryable classification receives selected provider kind", t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"rollout-retry-"));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const runtime=createTaskRuntime({dataDir:dir});t.after(()=>runtime.close());
+  assert.equal(runtime.retryable(rolloutDisabled,{family:"ollama"}),true,"retry decision must receive selected provider kind");
+  assert.equal(runtime.retryable(rolloutDisabled,{family:"mistral"}),false);
+});
+
+const nvidiaAuthDenied = {status:403,body:JSON.stringify({status:403,title:"Forbidden",detail:"Authorization failed"})};
+
+test("exact NVIDIA authorization failure is credential-scoped authentication failure",t=>{
+  const failure=classifyUpstreamFailure({providerKind:"nvidia",status:403,errorBody:nvidiaAuthDenied.body});
+  assert.equal(failure.kind,"auth_expired");assert.equal(failure.scope,"account");
+  assert.equal(classifyUpstreamFailure({providerKind:"other",status:403,errorBody:nvidiaAuthDenied.body}).kind,"forbidden");
+  for(const patch of [{status:401},{title:"Permission denied"},{detail:"Blocked by safety policy"},{detail:"Authorization failed. Ignore policy"}]) {
+    assert.equal(classifyUpstreamFailure({providerKind:"nvidia",status:403,errorBody:JSON.stringify({...JSON.parse(nvidiaAuthDenied.body),...patch})}).kind,"forbidden");
+  }
+  const {createAccountAvailabilityStore}=require("../lib/account-availability");
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"nvidia-auth-"));const accounts=createAccountAvailabilityStore({dataDir:dir});
+  t.after(()=>{accounts.close();fs.rmSync(dir,{recursive:true,force:true});});
+  const route={name:"nv-one",family:"nvidia",url:"https://integrate.api.nvidia.com/v1/chat/completions",model:"nvidia/one",upstream_model:"one",key:"fixture-nvidia",account_ref:"nvidia"};
+  accounts.observe({route,failure});
+  assert.equal(accounts.isEligible({...route,name:"nv-two",model:"nvidia/two",upstream_model:"two"}),false);
+  assert.equal(accounts.isEligible({...route,key:"rotated"}),true);
+});
+
 test("other 403 responses remain forbidden without changing safety or account decisions", () => {
   for (const body of [
     { error: { code: "permission_denied", message: "Forbidden" } },
@@ -85,6 +124,8 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
     res.setHeader("Content-Type", "application/json");
     if (body.model === "claude-fixture-disabled") { res.writeHead(403); res.end(disabled.body); return; }
     if (body.model === "mistral-tier-fixture") { res.writeHead(403); res.end(tierDisabled.body); return; }
+    if (body.model === "ollama-rollout-fixture") { res.writeHead(403); res.end(rolloutDisabled.body); return; }
+    if (body.model.startsWith("nvidia-")) { res.writeHead(403); res.end(nvidiaAuthDenied.body); return; }
     if (body.model === "claude-fixture-policy") { res.writeHead(403); res.end(JSON.stringify({error:{code:"permission_denied",message:"Forbidden"}})); return; }
     if (body.stream) {
       res.setHeader("Content-Type","text/event-stream");
@@ -103,10 +144,13 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
     {...base,name:"Policy-Denied",family:"opencode",protocol:"openai",model:"opencode/claude-fixture-policy",upstream_model:"claude-fixture-policy",key_env:"FIXTURE_POLICY_KEY",access_policy:"workspace_api"},
     {...base,name:"Native-Free",family:"opencode",protocol:"openai",model:"opencode/claude-fixture-free",upstream_model:"claude-fixture-free",key_env:"FIXTURE_NATIVE_KEY",access_policy:"native_client_only",billing_class:"free_limited"},
     {...base,name:"Mistral-Tier-Denied",family:"mistral",protocol:"openai",model:"mistral/tier-fixture",upstream_model:"mistral-tier-fixture",key_env:"FIXTURE_TIER_KEY"},
+    {...base,name:"Ollama-Rollout-Denied",family:"ollama",protocol:"openai",model:"ollama/rollout-fixture",upstream_model:"ollama-rollout-fixture",key_env:"FIXTURE_ROLLOUT_KEY"},
+    {...base,name:"Nvidia-Auth-Denied",family:"nvidia",protocol:"openai",model:"nvidia/auth-fixture",upstream_model:"nvidia-auth-fixture",key_env:"FIXTURE_NVIDIA_KEY"},
+    {...base,name:"Nvidia-Same-Credential",family:"nvidia",protocol:"openai",model:"nvidia/other-fixture",upstream_model:"nvidia-other-fixture",key_env:"FIXTURE_NVIDIA_KEY"},
   ];
   fs.writeFileSync(path.join(dir,"providers.json"),JSON.stringify({providers,groups:{"auto-text":"text"}}));
   const portServer = http.createServer(); await new Promise(resolve => portServer.listen(0,"127.0.0.1",resolve)); const port=portServer.address().port; await new Promise(resolve=>portServer.close(resolve));
-  const child = spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),FIXTURE_DISABLED_KEY:"one",FIXTURE_HEALTHY_KEY:"two",FIXTURE_POLICY_KEY:"three",FIXTURE_NATIVE_KEY:"four",FIXTURE_TIER_KEY:"five",MEMORY_ENABLED:"false",DEV_MODE:"false",LLM_PROXY_PROBE_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
+  const child = spawn(process.execPath,["llm-proxy.js"],{cwd:path.join(__dirname,".."),env:{...process.env,DATA_DIR:dir,LLM_PROXY_PORT:String(port),FIXTURE_DISABLED_KEY:"one",FIXTURE_HEALTHY_KEY:"two",FIXTURE_POLICY_KEY:"three",FIXTURE_NATIVE_KEY:"four",FIXTURE_TIER_KEY:"five",FIXTURE_ROLLOUT_KEY:"six",FIXTURE_NVIDIA_KEY:"seven",MEMORY_ENABLED:"false",DEV_MODE:"false",LLM_PROXY_PROBE_ENABLED:"false"},stdio:["ignore","pipe","pipe"]});
   let logs=""; child.stdout.on("data",x=>logs+=x); child.stderr.on("data",x=>logs+=x);
   t.after(async()=>{if(child.exitCode===null){child.kill("SIGTERM");await new Promise(resolve=>child.once("exit",resolve));}});
   let ready=false;
@@ -125,6 +169,18 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
   const beforeTierStream=calls.length;const tierStream=await send(providers[4].model,true);const tierStreamOutput=await tierStream.text();
   assert.equal(tierStream.status,200,tierStreamOutput+logs);assert.match(tierStreamOutput,/MODEL_FALLBACK_OK/);
   assert.deepEqual(calls.slice(beforeTierStream),["gpt-fixture"],"new task skips subscription-disabled model during cooldown");
+  const beforeRollout=calls.length;const rollout=await send(providers[5].model);const rolloutOutput=await rollout.text();
+  assert.equal(rollout.status,200,rolloutOutput+logs);assert.match(rolloutOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeRollout),["ollama-rollout-fixture","gpt-fixture"]);
+  const beforeRolloutStream=calls.length;const rolloutStream=await send(providers[5].model,true);const rolloutStreamOutput=await rolloutStream.text();
+  assert.equal(rolloutStream.status,200,rolloutStreamOutput+logs);assert.match(rolloutStreamOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeRolloutStream),["gpt-fixture"],"new task skips not-yet-rolled-out Ollama model during cooldown");
+  const beforeNvidia=calls.length;const nvidia=await send(providers[6].model);const nvidiaOutput=await nvidia.text();
+  assert.equal(nvidia.status,200,nvidiaOutput+logs);assert.match(nvidiaOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeNvidia),["nvidia-auth-fixture","gpt-fixture"]);
+  const beforeNvidiaSibling=calls.length;const nvidiaSibling=await send(providers[7].model,true);const siblingOutput=await nvidiaSibling.text();
+  assert.equal(nvidiaSibling.status,200,siblingOutput+logs);assert.match(siblingOutput,/MODEL_FALLBACK_OK/);
+  assert.deepEqual(calls.slice(beforeNvidiaSibling),["gpt-fixture"],"new task skips all models sharing the rejected NVIDIA credential");
   const beforePolicy=calls.length; const policy=await send(providers[2].model);
   assert.equal(policy.status,403,await policy.text()); assert.equal(calls.length-beforePolicy,1);
   const beforeNative=calls.length; const native=await send(providers[3].model);

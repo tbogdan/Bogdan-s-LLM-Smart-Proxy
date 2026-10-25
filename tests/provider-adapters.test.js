@@ -288,3 +288,29 @@ test("routeNativeStream sends Anthropic Messages shape and converts Anthropic SS
     }
   }
 });
+
+
+test("OpenRouter wire model repairs only a legacy vendor-only truncated nested ID", () => {
+  const route={family:"openrouter",protocol:"openai",model:"openrouter/minimax/minimax-m2.5:free",upstream_model:"minimax"};
+  const request={model:"auto-coding",messages:[{role:"user",content:"Reply ok."}]};
+  for(const stream of [false,true]) assert.equal(adapters.prepareOpenAICompatibleRequest(route,request,stream).model,"minimax/minimax-m2.5:free");
+  for(const upstream of ["minimax/minimax-m2.5:free","custom-routing-alias","minimax/other"]) assert.equal(adapters.prepareOpenAICompatibleRequest({...route,upstream_model:upstream},request,false).model,upstream);
+  assert.equal(adapters.prepareOpenAICompatibleRequest({...route,family:"other"},request,false).model,"minimax");
+  assert.equal(route.upstream_model,"minimax","wire repair must not mutate operator configuration");
+  assert.equal(request.model,"auto-coding");
+});
+
+test("OpenRouter native streaming sends complete vendor/model slug to actual HTTP transport", async t => {
+  let model;
+  const server=http.createServer(async(req,res)=>{
+    let raw="";for await(const chunk of req)raw+=chunk;model=JSON.parse(raw).model;
+    res.writeHead(200,{"Content-Type":"text/event-stream"});
+    res.end('data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  const route={name:"Legacy-OpenRouter-Nested",family:"openrouter",protocol:"openai",model:"openrouter/minimax/minimax-m2.5:free",upstream_model:"minimax",key:"fixture",url:`http://127.0.0.1:${server.address().port}/v1/chat/completions`};
+  let output="";
+  await adapters.routeNativeStream(route,{messages:[{role:"user",content:"Say ok."}],max_tokens:16},{onChunk:chunk=>{output+=chunk;}});
+  assert.equal(model,"minimax/minimax-m2.5:free");assert.match(output,/ok/);
+});
