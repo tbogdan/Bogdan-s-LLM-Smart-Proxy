@@ -97,3 +97,37 @@ test("expired circuit allows one recovery probe and success reopens account", ()
 });
 
 test('expired credentials disable every route sharing the account',()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'auth-account-'));const store=createAccountAvailabilityStore({dataDir:dir});const route={name:'A',family:'openai',account_ref:'one'};store.observe({route,failure:classifyUpstreamFailure({status:401,errorBody:JSON.stringify({error:{code:'token_expired'}})})});assert.equal(store.isEligible({...route,name:'B'}),false);assert.equal(store.isEligible({...route,name:'C',account_ref:'two'}),true);store.close();});
+
+
+test("authentication quarantine follows credential while quota survives rotation and policy denial stays eligible", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "credential-health-"));
+  const store = createAccountAvailabilityStore({ dataDir: dir });
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const route = { name: "a", family: "claude", account_ref: "one", key: "revoked" };
+  store.observe({ route, failure: classifyUpstreamFailure({ status: 401 }) });
+  assert.equal(store.isEligible({ ...route, name: "b" }), false);
+  assert.equal(store.isEligible({ ...route, key: "rotated" }), true);
+  const policy = { ...route, key: "policy" };
+  store.observe({ route: policy, failure: classifyUpstreamFailure({ status: 403, errorBody: '{"error":{"type":"permission_error"}}' }) });
+  assert.equal(store.isEligible(policy), true);
+  store.observe({ route, failure: { kind: "credit_exhausted", scope: "account" } });
+  assert.equal(store.isEligible({ ...route, key: "rotated" }), false);
+});
+
+
+test("legacy account auth evidence requalifies credentials without clearing quota", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-auth-"));
+  const store = createAccountAvailabilityStore({ dataDir: dir });
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const legacy = { name: "old", family: "claude", account_ref: "one" };
+  store.observe({ route: legacy, failure: classifyUpstreamFailure({ status: 401 }) });
+  const fresh = { ...legacy, key: "fresh", url: "https://api.anthropic.com/v1/messages" };
+  assert.equal(store.isEligible(fresh), true);
+  store.observe({ route: fresh, failure: classifyUpstreamFailure({ status: 401 }) });
+  assert.equal(store.isEligible(fresh), false);
+  assert.equal(store.isEligible({ ...fresh, key: "rotated" }), true);
+  assert.equal(store.isEligible({ ...fresh, family: "other" }), true);
+  assert.equal(store.isEligible({ ...fresh, url: "https://other.example/v1/messages" }), true);
+  store.observe({ route: legacy, failure: { kind: "credit_exhausted", scope: "account" } });
+  assert.equal(store.isEligible({ ...fresh, key: "rotated" }), false);
+});

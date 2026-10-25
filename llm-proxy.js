@@ -75,7 +75,7 @@ function trackSessionTokens(sessionId, inputTokens, outputTokens, providerName) 
 const taskRuntime = require("./lib/task-runtime").createTaskRuntime({ dataDir: state.DATA_DIR, getProviders: () => state.PROVIDERS, compression: process.env.LLM_PROXY_CONTEXT_OPTIMIZER !== "off" });
 routing.init({ sendError, trackSessionTokens, taskRuntime: process.env.LLM_PROXY_TASK_ROUTING === "off" ? undefined : taskRuntime });
 responses.init({ handleChatCompletion: routing.handleChatCompletion, taskRuntime: process.env.LLM_PROXY_TASK_ROUTING === "off" ? undefined : taskRuntime });
-anthropicGateway.init({ handleChatCompletion: routing.handleChatCompletion });
+anthropicGateway.init({ handleChatCompletion: routing.handleChatCompletion, taskRuntime });
 
 // ---------------------------------------------------------------------------
 // Thinking probe
@@ -528,6 +528,7 @@ function formatUptime(seconds) {
 // per-request (Codex polls plugins/accounts/analytics very frequently).
 const codexBackendUnmappedSeen = state.codexBackendUnmappedSeen;
 const server = http.createServer(async (req, res) => {
+  providersMod.refreshClaudeCredentials();
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   let pathname = urlObj.pathname;
   const method = req.method;

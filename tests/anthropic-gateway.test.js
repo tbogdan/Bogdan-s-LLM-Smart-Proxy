@@ -1323,3 +1323,75 @@ test("streaming Anthropic bridge maps message-level OpenAI tool calls to Anthrop
   assert.equal(body.includes('\\"file_path\\":\\"/tmp/run_cmd.py\\"'), true);
   assert.equal(/Tool call error/i.test(body), false);
 });
+
+
+test("revoked direct credentials are quarantined across models while fallback and rotation work", async (t) => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "direct-auth-"));
+  const runtime = require("../lib/task-runtime").createTaskRuntime({ dataDir: dir });
+  const oldProviders = state.PROVIDERS, oldLog = state.log;
+  const logs = [], attempts = [];
+  state.log = (line) => logs.push(line);
+  let fallback = 0;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    attempts.push(req.headers["x-api-key"]);
+    const bad = req.headers["x-api-key"] === "sk-ant-api03-revoked";
+    res.writeHead(bad ? 401 : 200, { "content-type": "application/json" });
+    res.end(JSON.stringify(bad ? { error: { type: "authentication_error", message: "PRIVATE_BODY revoked" } } : { content: [{ type: "text", text: "direct" }] }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const route = { name: "auth-a", family: "claude", protocol: "anthropic", model: "claude/model-a", upstream_model: "model-a", key: "sk-ant-api03-revoked", account_ref: "shared", alive: true, url: `http://127.0.0.1:${server.address().port}/v1/messages` };
+  state.PROVIDERS = [route, { ...route, name: "auth-b", model: "claude/model-b", upstream_model: "model-b" }];
+  gateway.init({ taskRuntime: runtime, handleChatCompletion: async (_body, res) => {
+    fallback++;
+    res.writeHead(200, {});
+    res.end(JSON.stringify({ choices: [{ message: { content: "fallback" }, finish_reason: "stop" }] }));
+  } });
+  t.after(async () => { state.PROVIDERS = oldProviders; state.log = oldLog; gateway.init({}); runtime.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(dir, { recursive: true, force: true }); });
+  async function request(model) {
+    const res = new FakeResponse();
+    await gateway.handleMessagesHTTP({ headers: {} }, res, JSON.stringify({ model, max_tokens: 10, messages: [{ role: "user", content: "hello" }] }));
+    assert.equal(res.status, 200);
+    return JSON.parse(res.chunks.join("")).content[0].text;
+  }
+  assert.equal(await request("model-a"), "fallback");
+  assert.equal(await request("model-a"), "fallback");
+  assert.equal(await request("model-b"), "fallback");
+  assert.equal(attempts.length, 1);
+  assert.equal(fallback, 3);
+  assert.equal(runtime.isProviderAvailable(route), false);
+  state.PROVIDERS.push({ ...route, name: "auth-healthy", key: "sk-ant-api03-healthy" });
+  assert.equal(await request("model-a"), "direct");
+  route.key = "sk-ant-api03-rotated";
+  assert.equal(await request("model-a"), "direct");
+  assert.deepEqual(attempts, ["sk-ant-api03-revoked", "sk-ant-api03-healthy", "sk-ant-api03-rotated"]);
+  assert.equal(logs.some(line => line.includes("PRIVATE_BODY")), false);
+});
+
+
+test("cooled native Claude never passes direct requests to an Anthropic-compatible third party", async (t) => {
+  const scoring = require("../lib/scoring");
+  const oldProviders = state.PROVIDERS;
+  let thirdPartyCalls = 0, fallbackCalls = 0;
+  const server = http.createServer((req, res) => {
+    req.resume(); thirdPartyCalls++;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ content: [{ type: "text", text: "third-party" }] }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const native = { name: "native-cooled-selector-test", family: "claude", protocol: "anthropic", model: "claude/claude-sonnet-5-5", upstream_model: "claude-sonnet-5-5", key: "sk-ant-api03-fixture", alive: true, url: `http://127.0.0.1:${server.address().port}/v1/messages` };
+  state.PROVIDERS = [native, { ...native, name: "opencode-compatible-selector-test", family: "opencode", model: "opencode/claude-sonnet-5-5" }];
+  scoring.setCooldown(native.name, 60000, "test");
+  gateway.init({ handleChatCompletion: async (_body, res) => {
+    fallbackCalls++;
+    res.writeHead(200, {});
+    res.end(JSON.stringify({ choices: [{ message: { content: "fallback" }, finish_reason: "stop" }] }));
+  } });
+  t.after(async () => { state.PROVIDERS = oldProviders; gateway.init({}); await new Promise(resolve => server.close(resolve)); });
+  const res = new FakeResponse();
+  await gateway.handleMessagesHTTP({ headers: {} }, res, JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 10, messages: [{ role: "user", content: "hello" }] }));
+  assert.equal(thirdPartyCalls, 0);
+  assert.equal(fallbackCalls, 1);
+  assert.equal(JSON.parse(res.chunks.join("")).content[0].text, "fallback");
+});
