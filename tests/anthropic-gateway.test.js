@@ -1395,3 +1395,158 @@ test("cooled native Claude never passes direct requests to an Anthropic-compatib
   assert.equal(fallbackCalls, 1);
   assert.equal(JSON.parse(res.chunks.join("")).content[0].text, "fallback");
 });
+
+
+test("streaming bridge merges final tool snapshots without replaying delta arguments", async () => {
+  const first = { index: 0, id: "call_a", type: "function", function: { name: "Bash", arguments: '{"command":"echo ' } };
+  const second = { index: 1, id: "call_b", type: "function", function: { name: "Bash", arguments: '{"command":"pwd"}' } };
+  gateway.init({ handleChatCompletion: async (_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const emit = choice => response.write(`data: ${JSON.stringify({ choices: [choice] })}
+
+`);
+    emit({ delta: { tool_calls: [first, second] }, finish_reason: null });
+    emit({ delta: { tool_calls: [{ index: 0, function: { arguments: 'ha' } }] }, finish_reason: null });
+    emit({ delta: { tool_calls: [{ index: 0, function: { arguments: 'ha"}' } }] }, finish_reason: null });
+    // Final snapshots may omit indexes and list calls in a different order.
+    const snapshot = { message: { tool_calls: [
+      { id: "call_b", type: "function", function: { name: "Bash", arguments: '{"command":"pwd"}' } },
+      { id: "call_a", type: "function", function: { name: "Bash", arguments: '{"command":"echo haha"}' } },
+    ] }, finish_reason: "tool_calls" };
+    emit(snapshot); emit(snapshot);
+    response.end();
+  } });
+  const response = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, response, JSON.stringify({
+    model: "auto-coding", stream: true, messages: [{ role: "user", content: "run the requested commands" }],
+    tools: [{ name: "Bash", input_schema: { type: "object", required: ["command"], properties: { command: { type: "string" } } } }],
+  }));
+  const events = response.chunks.join("").split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+  const starts = events.filter(event => event.type === "content_block_start" && event.content_block.type === "tool_use");
+  assert.deepEqual(starts.map(event => event.content_block.id), ["call_a", "call_b"]);
+  const argumentsById = Object.fromEntries(starts.map(start => [start.content_block.id,
+    JSON.parse(events.filter(event => event.type === "content_block_delta" && event.index === start.index)
+      .map(event => event.delta.partial_json || "").join(""))]));
+  assert.deepEqual(argumentsById, { call_a: { command: "echo haha" }, call_b: { command: "pwd" } });
+  assert.equal(events.filter(event => event.type === "message_stop").length, 1);
+  assert.equal(events.some(event => event.delta?.text?.includes("Tool call error")), false);
+});
+
+test("streaming bridge preserves repeated genuine argument fragments", async () => {
+  gateway.init({ handleChatCompletion: async (_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const [index, argumentsText] of ['{"command":"echo ', 'ha', 'ha', '"}'].entries()) {
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0,
+        ...(index === 0 ? { id: "repeat_call", function: { name: "Bash", arguments: argumentsText } } : { function: { arguments: argumentsText } }) } ] }, finish_reason: null }] })}
+
+`);
+    }
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}
+
+`);
+    response.end();
+  } });
+  const response = new FakeResponse();
+  await gateway.handleMessagesHTTP({}, response, JSON.stringify({ model: "auto-coding", stream: true,
+    messages: [{ role: "user", content: "run echo haha" }], tools: [{ name: "Bash", input_schema: {
+      type: "object", required: ["command"], properties: { command: { type: "string" } } } }],
+  }));
+  const events = response.chunks.join("").split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+  const argumentsText = events.filter(event => event.delta?.type === "input_json_delta").map(event => event.delta.partial_json).join("");
+  assert.deepEqual(JSON.parse(argumentsText), { command: "echo haha" });
+});
+
+
+test("native failed tool results cannot qualify a tiny terminal reply and stay private upstream", () => {
+  const routing = require("../lib/routing");
+  const adapters = require("../lib/provider-adapters");
+  const profile = { taskKind: "agentic_coding", taskLevel: 3, contextLevel: 3, level: 3,
+    stepShape: { shape: "write_heavy", gate: "run_behavior" } };
+  const native = isError => ({ model: "auto-coding", max_tokens: 128,
+    tools: [{ name: "Bash", input_schema: { type: "object", required: ["command"], properties: { command: { type: "string" } } } }],
+    messages: [
+      { role: "user", content: "Run Bash to create a test file. Then reply DONE." },
+      { role: "assistant", content: [{ type: "tool_use", id: "native_failure", name: "Bash", input: { command: "touch result.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "native_failure", is_error: isError, content: isError ? "Permission denied" : "" }] },
+    ],
+  });
+  const body = gateway.translateRequest(native(true));
+  assert.deepEqual(body._llmProxyFailedToolCallIds, ["native_failure"]);
+  const observed = { content: "DONE", hasToolCalls: false, stallingHeuristic: true };
+  assert.notEqual(routing.classifyResponseExpectation(body, observed, profile).action, "allow");
+  const copied = JSON.parse(JSON.stringify(body));
+  const outbound = adapters.prepareOpenAICompatibleRequest({ family: "codex", protocol: "openai", model: "fixture" }, copied, false);
+  assert.equal(Object.hasOwn(outbound, "_llmProxyFailedToolCallIds"), false);
+  assert.equal(outbound.messages.at(-1).is_error, undefined);
+  assert.equal(outbound.messages.at(-1).content, "Permission denied");
+  const successful = gateway.translateRequest(native(false));
+  assert.equal(routing.classifyResponseExpectation(successful, observed, profile).action, "allow");
+});
+
+
+test("native failed tool metadata survives actual gateway routing sanitization", async t => {
+  const routing = require("../lib/routing");
+  const previousProviders = state.PROVIDERS;
+  let wire;
+  let dispatches = 0;
+  const server = http.createServer((req, res) => {
+    let raw = ""; req.setEncoding("utf8"); req.on("data", chunk => { raw += chunk; });
+    req.on("end", () => {
+      wire = JSON.parse(raw);
+      dispatches++;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "failed-native-terminal", model: "fixture/native-tool-result",
+        choices: [{ index: 0, message: { role: "assistant", content: "DONE" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 } }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const provider = { name: "Native-Tool-Failure-Fixture", family: "openai", protocol: "openai", model: "fixture/native-tool-result",
+    url: `http://127.0.0.1:${server.address().port}/v1/chat/completions`, key: "fixture", alive: true,
+    context_window: 128000, max_tokens: 1024 };
+  const previousScore = state.scores[provider.name];
+  state.PROVIDERS = [provider];
+  routing.init({ sendError: (res, status, message, extra = {}) => { res.writeHead(status, {}); res.end(JSON.stringify({ error: { message, ...extra } })); }, trackSessionTokens: () => {} });
+  gateway.init({ handleChatCompletion: routing.handleChatCompletion });
+  t.after(() => { state.PROVIDERS = previousProviders; gateway.init({});
+    if (previousScore === undefined) delete state.scores[provider.name]; else state.scores[provider.name] = previousScore;
+    server.closeAllConnections?.(); server.close();
+  });
+  const response = new FakeResponse();
+  const nativeRequest = { model: provider.model, max_tokens: 128,
+    tools: [{ name: "Bash", input_schema: { type: "object", required: ["command"], properties: { command: { type: "string" } } } }],
+    messages: [
+      { role: "user", content: "Implement and verify the requested file-writing feature in this repository. Run its Python test and verify the exact contents of result.txt using Bash. Complete the implementation and tests before reporting. Then reply DONE." },
+      { role: "assistant", content: [{ type: "tool_use", id: "failed_call", name: "Bash", input: { command: "touch result.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "failed_call", is_error: true, content: "Permission denied" }] },
+    ],
+  };
+  await gateway.handleMessagesHTTP({ headers: {} }, response, JSON.stringify(nativeRequest));
+  assert.ok(wire, "the local provider must be called");
+  assert.ok(wire.tools?.length > 0, "fixture must retain callable tools for terminal classification");
+  assert.equal(Object.hasOwn(wire, "_llmProxyFailedToolCallIds"), false);
+  assert.equal(wire.messages.some(message => Object.hasOwn(message, "is_error")), false);
+  const answer = JSON.parse(response.chunks.join(""));
+  assert.equal(response.status, 409);
+  assert.match(answer.error.detail, /hidden continuation: heuristic_stall/);
+  assert.notEqual(answer.content?.map(part => part.text || "").join(""), "DONE");
+
+  nativeRequest.messages.at(-1).content[0].is_error = false;
+  nativeRequest.messages.at(-1).content[0].content = "";
+  const successfulResponse = new FakeResponse();
+  const beforeSuccess = dispatches;
+  await gateway.handleMessagesHTTP({ headers: {} }, successfulResponse, JSON.stringify(nativeRequest));
+  assert.equal(successfulResponse.status, 200);
+  assert.equal(JSON.parse(successfulResponse.chunks.join("")).content[0].text, "DONE");
+  assert.equal(dispatches - beforeSuccess, 1);
+
+  // External OpenAI requests cannot forge native bridge validation metadata.
+  const external = gateway.translateRequest(nativeRequest);
+  external._llmProxyFailedToolCallIds = ["failed_call"];
+  const externalResponse = new FakeResponse();
+  const beforeExternal = dispatches;
+  await routing.handleChatCompletion(external, externalResponse);
+  assert.equal(externalResponse.status, 200);
+  assert.equal(JSON.parse(externalResponse.chunks.join("")).choices[0].message.content, "DONE");
+  assert.equal(dispatches - beforeExternal, 1);
+});
