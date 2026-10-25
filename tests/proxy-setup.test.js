@@ -240,3 +240,26 @@ test("valid proxy origins survive generated shell evaluation literally", () => {
     } finally { fs.rmSync(home, { recursive: true, force: true }); }
   }
 });
+
+
+test("claude on exposes selectable Auto without changing selected model or classifier", () => {
+  const { paths } = tempPaths();
+  fs.mkdirSync(path.dirname(paths.claudeSettings), { recursive: true });
+  const original = { model: "sonnet", env: { CLAUDE_CODE_AUTO_MODE_MODEL: "codex/gpt-5.6-luna" } };
+  fs.writeFileSync(paths.claudeSettings, JSON.stringify(original));
+  setup.setupTarget("claude", paths, { proxyUrl: "http://127.0.0.1:18900" });
+  const saved = JSON.parse(fs.readFileSync(paths.claudeSettings, "utf8"));
+  assert.equal(saved.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "auto-coding");
+  assert.equal(saved.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, "Auto (Proxy)");
+  assert.match(saved.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION, /complexity/i);
+  assert.equal(saved.model, "sonnet");
+  assert.equal(saved.env.ANTHROPIC_MODEL, undefined);
+  assert.equal(saved.env.CLAUDE_CODE_AUTO_MODE_MODEL, original.env.CLAUDE_CODE_AUTO_MODE_MODEL);
+  assert.equal(setup.setupTarget("claude", paths, { proxyUrl: "http://127.0.0.1:18900" }).changed, false);
+  setup.teardownClaude(paths, { proxyUrl: "http://127.0.0.1:18900" });
+  const off = JSON.parse(fs.readFileSync(paths.claudeSettings, "utf8"));
+  assert.equal(off.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
+  assert.equal(off.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, undefined);
+  assert.equal(off.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION, undefined);
+  assert.equal(off.env.CLAUDE_CODE_AUTO_MODE_MODEL, original.env.CLAUDE_CODE_AUTO_MODE_MODEL);
+});

@@ -30,6 +30,8 @@ npm run proxy -- setup all off
 
 For `claude` it merges `ANTHROPIC_BASE_URL` (+ `ANTHROPIC_API_KEY=proxy`, the proxy trusts localhost and uses server-side keys; `ENABLE_TOOL_SEARCH=true` so Claude Code keeps optimistic ToolSearch through the proxy, which forwards `tool_reference` blocks and the client's `anthropic-beta` headers upstream) into `~/.claude/settings.json` without touching your model or permissions, and exports the same env globally in your shell profile. Claude Code, the VS Code / Cursor / Antigravity Claude extensions read the same file, so CLI and IDEs are covered together. For `codex` it adds a `[model_providers.llm-proxy]` Responses provider (`base_url http://localhost:18900/v1`, `env_key LLM_PROXY_API_KEY`) and selects it, preserving the rest of `~/.codex/config.toml`. Every mutation is preceded by a timestamped `.bak-proxy-*` backup; `off` restores it byte-for-byte.
 
+Claude setup also registers **Auto (Proxy)** (`auto-coding`) as a custom model picker entry using `ANTHROPIC_CUSTOM_MODEL_OPTION` and its display-name/description variables. Restart the Claude Code session, then select **Auto (Proxy)** from `/model` or the IDE model selector. Existing Sonnet/Opus selection and the safety classifier remain unchanged. An existing `availableModels` restriction must permit `auto-coding`; setup does not broaden an allowlist. `off` removes the managed custom entry or restores the original backup.
+
 Example Codex custom provider; merge it into your existing configuration without replacing unrelated settings:
 
 ```toml
