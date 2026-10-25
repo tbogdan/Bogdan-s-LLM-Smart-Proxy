@@ -301,6 +301,20 @@ test("detectIncompatibility does not learn real context from max_tokens cap erro
   });
 });
 
+test("detectIncompatibility learns context limit from overflow errors that also mention output tokens", () => {
+  withIsolatedScoring(() => {
+    scoring.detectIncompatibility(
+      "OVH-Qwen3827B3",
+      400,
+      '{"message":"{\"error\":{\"message\":\"This model\'s maximum context length is 262144 tokens. However, you requested 32000 output tokens and your prompt contains at least 230145 input tokens, for a total of at least 262145 tokens.\"}}"}',
+      { inputTokens: 230145, estimatedTokens: 262145, providerContext: 1000000 },
+    );
+
+    const compat = scoring.getCompat("OVH-Qwen3827B3");
+    assert.equal(compat.real_context, 262144);
+  });
+});
+
 test("detectIncompatibility does not cool request-specific token limit errors as quota", () => {
   withIsolatedScoring(() => {
     scoring.detectIncompatibility(
