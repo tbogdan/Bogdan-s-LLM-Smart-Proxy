@@ -196,3 +196,27 @@ test("three functional slots allow replacing an unusable pinned model and retain
   assert.equal(record.retiredModels.at(-1).reason, "capability_mismatch");
  } finally {store.close();}
 });
+
+test("assessment helper models do not consume the primary functional budget", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tasks-helper-"));
+  const store = createTaskStore({ dataDir: dir });
+  const router = createTaskRouter({ store });
+  const fresh = resolveTaskIdentity({ clientScope: "client-helper", taskId: "helper-1" });
+  try {
+    const primary = await router.acquire({ identity: fresh, role: "primary", candidates: [candidates[0]], event: "start" });
+    assert.equal(primary.providerId, "a");
+    for (const role of ["assessment", "memory"]) {
+      for (let i = 1; i <= 3; i += 1) {
+        await router.acquire({ identity: fresh, role, candidates: [candidates[i % candidates.length]], event: "specialist" });
+      }
+    }
+    const nextPrimary = await router.acquire({ identity: fresh, role: "primary", candidates: [candidates[1]], event: "specialist" });
+    assert.equal(nextPrimary.providerId, "b");
+    const record = router.inspect(fresh.key);
+    assert.equal(record.models.length, 2, "only primary models consume the functional budget");
+    assert.ok(record.models.includes("lab/a"));
+    assert.ok(record.models.includes("lab/b"));
+  } finally {
+    store.close();
+  }
+});
