@@ -214,3 +214,29 @@ test("restartApps restarts only running apps via injected hooks", () => {
   assert.ok(calls.some(([c]) => c === "osascript"));
   assert.ok(calls.some(([c]) => c === "open"));
 });
+
+
+test("proxy URL rejects shell injection and non-origin inputs before writing files", () => {
+  const invalid = ['http://$(id)', 'http://`id`', 'http://host";id', 'http://host\nname', 'http://user:pass@host', 'http://host?x=1', 'http://host#x', 'http://host/path', 'http://host:99999', 'http://bad_host', 'http://host\\name'];
+  for (const proxyUrl of invalid) {
+    assert.throws(() => setup.normalizeProxyUrl(proxyUrl), /invalid --proxy-url/, proxyUrl);
+    const { home, paths } = tempPaths();
+    try {
+      assert.throws(() => setup.setupTarget("codex", paths, { proxyUrl }), /invalid --proxy-url/);
+      assert.deepEqual(fs.readdirSync(home), []);
+      assert.throws(() => setup.applyShellBlock(paths, proxyUrl), /invalid --proxy-url/);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+});
+
+test("valid proxy origins survive generated shell evaluation literally", () => {
+  const { execFileSync } = require("node:child_process");
+  for (const proxyUrl of ['http://localhost:18900', 'https://proxy.example:8443', 'http://[::1]:18900']) {
+    const { home, paths } = tempPaths();
+    try {
+      setup.applyShellBlock(paths, proxyUrl);
+      const value = execFileSync('/bin/sh', ['-c', '. "$1"; printf "%s" "$ANTHROPIC_BASE_URL"', 'fixture', paths.shellFile], { encoding: 'utf8' });
+      assert.equal(value, proxyUrl);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  }
+});
