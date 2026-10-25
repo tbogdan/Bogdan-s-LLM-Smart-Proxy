@@ -2218,3 +2218,32 @@ test("Codex output ceiling alone does not compact a transcript that fits actual 
   assert.ok(!logs.some(line => line.includes("POST-COMPACT")));
  } finally {compaction.compactMessagesAsync = old; state.log = oldLog;}
 });
+
+
+test("active task caps large output reservations without repeated compaction or history changes", async () => {
+ const originals = {compact: compaction.compactMessagesAsync, estimate: compaction.estimateTokens, schema: compaction.estimateRequestSchemaTokens, log: state.log};
+ let calls = 0;
+ const logs = [];
+ compaction.compactMessagesAsync = async () => {calls++; return null;};
+ compaction.estimateTokens = () => 124141;
+ compaction.estimateRequestSchemaTokens = () => 17435;
+ state.log = line => logs.push(line);
+ try {
+  const messages = [{role:"system",content:"Preserve history."}, {role:"user",content:"Read fixture"}, {role:"assistant",content:null,tool_calls:[{id:"read_1",type:"function",function:{name:"read",arguments:'{"path":"fixture"}'}}]}, {role:"tool",tool_call_id:"read_1",content:"Full fixture content"}, {role:"user",content:"Continue"}];
+  const request = {model:"codex/test",max_tokens:128000,messages,tools:[{type:"function",function:{name:"read",parameters:{type:"object",properties:{path:{type:"string"}}}}}]};
+  const snapshot = request.messages.map(m=>({role:m.role,content:m.content}));
+  await require("../lib/task-context").run({identity:{key:"test"}}, async () => {
+   for (let i=0;i<3;i++) {
+    const output = await transforms.transformRequest({...provider,family:"codex",model:"codex/test",context:272000},request);
+    assert.equal(output.max_tokens, Math.floor((272000-124141-17435)*0.95));
+    assert.deepEqual(output.messages.filter(m=>m.role!=="system" && !(m.role==="assistant" && m.content===" " && !m.tool_calls)).map(m=>({role:m.role,content:m.content})), snapshot.filter(m=>m.role!=="system"));
+    const call = output.messages.find(m=>m.tool_calls)?.tool_calls[0];
+    assert.equal(call.function.arguments, '{"path":"fixture"}');
+    assert.equal(output.messages.find(m=>m.role==="tool").tool_call_id,call.id);
+   }
+  });
+  assert.equal(calls,0);
+  assert.deepEqual(request.messages.map(m=>({role:m.role,content:m.content})),snapshot);
+  assert.ok(!logs.some(line=>line.includes("POST-COMPACT")));
+ } finally {compaction.compactMessagesAsync=originals.compact; compaction.estimateTokens=originals.estimate; compaction.estimateRequestSchemaTokens=originals.schema;state.log=originals.log;}
+});

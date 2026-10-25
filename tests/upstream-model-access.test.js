@@ -15,7 +15,7 @@ const disabled = {
 test("known model-access-disabled envelope is a route capability failure", () => {
   const failure = classifyUpstreamFailure({ providerKind: "opencode", status: disabled.status, errorBody: disabled.body });
   assert.equal(failure.kind, "capability_mismatch");
-  assert.equal(failure.scope, "route");
+  assert.equal(failure.scope, "credential_model");
 });
 
 test("other 403 responses remain forbidden without changing safety or account decisions", () => {
@@ -44,7 +44,8 @@ test("disabled equivalent model moves task to healthy distinct model without acc
     assert.equal(selected.name, denied.name);
     assert.equal(runtime.retryable(disabled), true);
     await runtime.recordFailure(selected, disabled);
-    assert.equal(runtime.isProviderAvailable(denied), true, "request/model evidence must not disable whole account");
+    assert.equal(runtime.isProviderAvailable(denied), false, "known disabled model is temporarily skipped");
+    assert.equal(runtime.isProviderAvailable({...denied, model:"opencode/other-model", upstream_model:"other-model"}), true, "model evidence must not disable whole account");
     selected = await runtime.beforeDispatch(denied, body);
     attempts.push(selected.name);
     assert.equal(selected.name, healthy.name);
@@ -100,7 +101,7 @@ test("actual proxy recovers model-access 403 but preserves native OpenCode restr
   assert.deepEqual(calls,["claude-fixture-disabled","gpt-fixture"]);
   const beforeStream=calls.length; const stream=await send(providers[0].model,true); const streamed=await stream.text();
   assert.equal(stream.status,200,streamed+logs); assert.match(streamed,/MODEL_FALLBACK_OK/); assert.match(streamed,/\[DONE\]/);
-  assert.deepEqual(calls.slice(beforeStream),["claude-fixture-disabled","gpt-fixture"]);
+  assert.deepEqual(calls.slice(beforeStream),["gpt-fixture"],"a distinct streaming task skips the already disabled route");
   const beforePolicy=calls.length; const policy=await send(providers[2].model);
   assert.equal(policy.status,403,await policy.text()); assert.equal(calls.length-beforePolicy,1);
   const beforeNative=calls.length; const native=await send(providers[3].model);
